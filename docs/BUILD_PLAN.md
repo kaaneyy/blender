@@ -74,12 +74,12 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 
 ## PHASE 4 — Live Preview (frontend)
 
-- [~] T4.1 React app shell: prompt box + chat refine panel (left), 3D viewport (center), auto-generated controls panel (right). *Layout scaffold only.*
-- [ ] T4.2 Controls panel is 100% schema-driven: sliders from `parameters[]`, switches from `toggles[]`, dropdowns from `materials[]`. Zero per-asset UI code.
-- [ ] T4.3 Three.js preview builders mirroring Phase 3 (`/frontend/src/builders/*.ts`) — approximate is fine; parity on dimensions is mandatory. Rebuild mesh on any control change (<16ms target; debounce heavy assets).
-- [ ] T4.4 Viewport features: orbit/pan/zoom, ground grid in ft/m, 6ft human silhouette for scale, dimension annotations (height/width callouts), imperial↔metric toggle.
-- [ ] T4.5 Code-violation UI: slider handle turns red + tooltip with code citation when outside range; "snap to code" button.
-- [ ] T4.6 Fast path: preview never waits on the server. Server round-trips only for LLM calls and final export.
+- [x] T4.1 React app shell: prompt box + chat refine panel (left), 3D viewport (center), auto-generated controls panel (right). *Prompt box present but disabled until Phase 2 ships.*
+- [x] T4.2 Controls panel is 100% schema-driven: sliders from `parameters[]`, switches from `toggles[]`, dropdowns from `materials[]`. Zero per-asset UI code. → `frontend/src/components/ControlsPanel.tsx`
+- [x] T4.3 Three.js preview builders mirroring Phase 3 (`/frontend/src/builders/*.ts`) — approximate is fine; parity on dimensions is mandatory. Rebuild mesh on any control change (<16ms target; debounce heavy assets). *`streetLight.ts` is a 1:1 port of the Python primitive layer; rebuild is a synchronous useMemo.*
+- [x] T4.4 Viewport features: orbit/pan/zoom, ground grid in ft/m, 6ft human silhouette for scale, dimension annotations (height/width callouts), imperial↔metric toggle.
+- [x] T4.5 Code-violation UI: slider handle turns red + tooltip with code citation when outside range; "snap to code" button. *Client-side check reads the same `standards/us_codes.json` the Python validator uses.*
+- [x] T4.6 Fast path: preview never waits on the server. Server round-trips only for LLM calls and final export. *The preview app is fully client-side (deployable to static hosting/Vercel).*
 
 ## PHASE 5 — Final Render & Export
 
@@ -114,7 +114,7 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 
 ## BUILD ORDER (dependency-sorted, ship a demo at each ✂)
 1. **T0.\* → T1.\* → T3.1 + one builder (street_light) → T3.5 CLI  ✂ *(headless proof)* ← SHIPPED**
-2. T4.1–T4.4 with street_light JS mirror ✂ *(live preview, no AI yet)*
+2. **T4.1–T4.4 with street_light JS mirror ✂ *(live preview, no AI yet)* ← SHIPPED (incl. T4.5/T4.6; deploys to Vercel via root `vercel.json`)**
 3. T2.* ✂ *(prompt → spec → preview loop complete)*
 4. T5.1–T5.3 ✂ *(end-to-end: prompt → tweak → download .dae → import to SketchUp)*
 5. Remaining builders → Phase 6 → Phase 7.
