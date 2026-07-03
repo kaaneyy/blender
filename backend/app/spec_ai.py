@@ -74,6 +74,13 @@ GEOMETRY RULES
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
 - EVERY major dimension a designer would tweak must be a parameter (slider) referenced from expressions — never hard-code it. Optional features (backrest, second arm, finial, ...) must be toggles gating primitives via "visible_if".
 - Give every primitive a component (nested grouping in exports) and a material_slot. 10–40 primitives is the sweet spot; favor simple, readable massing over micro-detail.
+- COMPLETENESS: if the request names several parts or features ("a car roof with slanted solar panels"), EVERY named part MUST exist as its own component with its own primitives, parameters, and material slot. Re-read the request before answering and check nothing was dropped.
+
+TILT, SLOPE, CURVE (the model is not limited to upright boxes)
+- "rotation" is Euler XYZ radians and accepts expressions. A panel tilted toward +X by an adjustable angle: expose a unit-less parameter (e.g. {{"id": "panel_tilt", "label": "Panel Tilt", "type": "slider", "min": 0, "max": 60, "step": 1, "value": 30}} — degrees, NO unit field) and use "rotation": [0, "panel_tilt * 0.01745", 0] on a thin box.
+- Parameters WITHOUT a "unit" field are dimensionless and reach expressions unchanged (use for angles in degrees, counts, ratios). Parameters WITH a length unit arrive in meters.
+- A tilted part's supports must still reach INTO it: raise/extend the mounting posts so they interpenetrate the rotated panel near its low edge.
+- Sloped roofs: one thin rotated box per plane (two for a gable). Curves/arcs (arched arms, hoops, curved backrests): approximate with 5–8 short cylinder/box segments, each positioned and rotated a step further along the path. Domes: sphere; tapers: cone with radius_bottom/radius_top.
 
 CONNECTION RULES (think like a fabricator — every joint must be buildable in real life)
 - Every part must be physically supported through a real load path down to the ground. Before finishing, walk through your primitives joint by joint and ask: what holds this part, and how would a crew actually fasten it on site?
@@ -113,8 +120,12 @@ ENHANCE_SYSTEM = (
     "limits where they apply (AASHTO/MUTCD/ADA/IBC); per-part materials and "
     "finishes; 2-4 optional features worth exposing as toggles; and how the "
     "parts connect and mount to the ground (base plate, rails, clamps). Keep "
-    "EVERY explicit detail the user gave — only add what is missing. Plain "
-    "prose, at most 120 words, no JSON, no lists, no preamble."
+    "EVERY explicit detail the user gave — only add what is missing. If the "
+    "request names several parts or features ('a car roof with slanted solar "
+    "panels'), the brief MUST explicitly cover every one of them, with tilt/"
+    "slope angles in degrees for slanted or curved elements and how each part "
+    "mounts to the others. Plain prose, at most 120 words, no JSON, no lists, "
+    "no preamble."
 )
 
 

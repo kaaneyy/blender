@@ -82,12 +82,15 @@ def register(asset_type: str) -> Callable[[BuilderFn], BuilderFn]:
 
 
 def spec_params(spec: dict) -> Dict[str, float]:
-    """Numeric parameter values keyed by id, converted to meters."""
-    default_unit = "ft" if spec.get("units", "imperial") == "imperial" else "m"
+    """Numeric parameter values keyed by id. Values with a length unit are
+    converted to meters; unit-less parameters (angles in degrees, counts,
+    ratios) pass through unchanged so expressions can use them directly
+    (e.g. rotation "panel_tilt * 0.01745")."""
     out: Dict[str, float] = {}
     for p in spec.get("parameters", []):
         if isinstance(p.get("value"), (int, float)):
-            out[p["id"]] = convert(p["value"], p.get("unit", default_unit), "m")
+            unit = p.get("unit")
+            out[p["id"]] = convert(p["value"], unit, "m") if unit else float(p["value"])
     return out
 
 

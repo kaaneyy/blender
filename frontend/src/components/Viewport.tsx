@@ -23,6 +23,8 @@ interface FocusPoint {
   target: THREE.Vector3;
   distance: number;
   dwell: number; // seconds to linger once arrived
+  /** joint number being visited (tour stops only) — used for highlighting */
+  joint?: number;
 }
 
 interface FocusState {
@@ -85,6 +87,7 @@ function ViewportBridge({
   sunNeedleRef,
   sunAzRef,
   homeHeightRef,
+  onFocusChange,
 }: {
   focusRef: React.MutableRefObject<FocusState | null>;
   apiRef: React.MutableRefObject<ViewportApi | null>;
@@ -92,7 +95,9 @@ function ViewportBridge({
   sunNeedleRef: React.RefObject<HTMLDivElement>;
   sunAzRef: React.MutableRefObject<number>;
   homeHeightRef: React.MutableRefObject<number>;
+  onFocusChange: (fp: FocusPoint | null) => void;
 }) {
+  const lastHeadRef = useRef<FocusPoint | null>(null);
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls) as unknown as {
     target: THREE.Vector3;
@@ -176,6 +181,13 @@ function ViewportBridge({
 
   useFrame((state, dt) => {
     if (!controls) return;
+
+    // report which focus point is active (drives tour joint highlighting)
+    const head = focusRef.current?.queue[0] ?? null;
+    if (head !== lastHeadRef.current) {
+      lastHeadRef.current = head;
+      onFocusChange(head);
+    }
 
     // WASD / QE fly-through: move camera and target together on the ground
     // plane (Q/E for down/up); speed scales with zoom distance
@@ -340,6 +352,7 @@ export default function Viewport({
   const sunPos: [number, number, number] = [Math.sin(sunRad) * 20, 24, Math.cos(sunRad) * 20];
 
   const [touring, setTouring] = useState(false);
+  const [tourJoint, setTourJoint] = useState<number | null>(null);
 
   // a newly adopted asset (AI generate/refine) may be a completely different
   // size — glide the camera back to a framing overview
@@ -387,10 +400,11 @@ export default function Viewport({
     if (!byJoint.size) return;
     const queue: FocusPoint[] = [...byJoint.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([, pr]) => ({
+      .map(([n, pr]) => ({
         target: zUpToYUp(pr.location),
         distance: 0.85,
         dwell: 1.0,
+        joint: n,
       }));
     queue.push({
       target: new THREE.Vector3(0, homeHeightRef.current / 2, 0),
@@ -437,7 +451,13 @@ export default function Viewport({
 
         {/* asset is authored Z-up; rotate into Three's Y-up world */}
         <group rotation={[-Math.PI / 2, 0, 0]}>
-          <AssetMesh primitives={primitives} spec={spec} selected={selected} onSelect={onSelect} />
+          <AssetMesh
+            primitives={primitives}
+            spec={spec}
+            selected={selected}
+            onSelect={onSelect}
+            tourJoint={tourJoint}
+          />
         </group>
 
         <HumanSilhouette x={-Math.max(2, armM * 0.4)} color={colors.silhouette} />
@@ -458,6 +478,7 @@ export default function Viewport({
           sunNeedleRef={sunNeedleRef}
           sunAzRef={sunAzRef}
           homeHeightRef={homeHeightRef}
+          onFocusChange={(fp) => setTourJoint(fp?.joint ?? null)}
         />
       </Canvas>
 

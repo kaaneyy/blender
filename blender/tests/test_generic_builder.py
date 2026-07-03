@@ -114,3 +114,40 @@ class TestMaterialOverrides:
         props = resolve_material(BENCH_SPEC, "mystery")
         assert props["metallic"] == 1.0  # galvanized_steel fallback
         assert props["uv_scale"] == 1.0 and props["emission"] == 0.0
+
+
+class TestTiltedGeometry:
+    def test_dimensionless_angle_param_drives_rotation(self):
+        """Parameters without a unit (angles in degrees, counts) pass into
+        expressions unchanged — no bogus length conversion — so tilted
+        panels stay adjustable."""
+        spec = {
+            "asset_type": "solar_roof",
+            "name": "TiltTest",
+            "units": "imperial",
+            "parameters": [
+                {"id": "panel_tilt", "label": "Panel Tilt", "type": "slider",
+                 "min": 0, "max": 60, "step": 1, "value": 30},
+                {"id": "roof_width", "label": "Roof Width", "type": "slider",
+                 "min": 3, "max": 8, "step": 0.5, "value": 5, "unit": "ft"},
+            ],
+            "toggles": [],
+            "primitives": [
+                {"kind": "box", "name": "roof", "component": "roof",
+                 "location": [0, 0, 1.0],
+                 "params": {"size": ["roof_width", 1.2, 0.05]}},
+                {"kind": "box", "name": "panel", "component": "panels",
+                 "location": [0, 0, 1.15],
+                 "rotation": [0, "panel_tilt * 0.01745", 0],
+                 "params": {"size": ["roof_width - 0.2", 1.0, 0.03]}},
+            ],
+        }
+        prims = {p.name: p for p in compute_primitives(spec)}
+        # angle stays 30 degrees -> 0.5235 rad (NOT 30 ft -> 9.14 "meters")
+        assert prims["panel"].rotation[1] == pytest.approx(30 * 0.01745, abs=1e-4)
+        # length param still converts: 5 ft -> 1.524 m
+        assert prims["roof"].params["size"][0] == pytest.approx(1.524)
+        # slider change tilts the panel
+        spec["parameters"][0]["value"] = 45
+        prims = {p.name: p for p in compute_primitives(spec)}
+        assert prims["panel"].rotation[1] == pytest.approx(45 * 0.01745, abs=1e-4)

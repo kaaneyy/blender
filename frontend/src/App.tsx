@@ -61,24 +61,45 @@ export default function App() {
       ),
     }));
 
-  /** "Show real bolts & connections": ensure the connection_hardware toggle
-   * exists in the spec (so it exports too), then flip it. Turning it ON
-   * kicks off the viewport's camera tour of every connection point. */
+  /** "Show/hide bolts & connections": ensure the connection_hardware toggle
+   * exists in the spec (so it exports too), then flip it. */
   const toggleHardware = () =>
     setSpec((s) => {
       const toggles = [...(s.toggles ?? [])];
       const i = toggles.findIndex((t) => t.id === "connection_hardware");
-      let turningOn: boolean;
       if (i === -1) {
         toggles.push({ id: "connection_hardware", label: "Connection Hardware", value: true });
-        turningOn = true;
       } else {
-        turningOn = !toggles[i].value;
-        toggles[i] = { ...toggles[i], value: turningOn };
+        toggles[i] = { ...toggles[i], value: !toggles[i].value };
       }
-      if (turningOn) setTourId((t) => t + 1);
       return { ...s, toggles };
     });
+
+  /** "Tour the connections": make sure hardware is visible, then run the
+   * camera tour (each joint highlighted as the camera visits it). */
+  const startTour = () => {
+    setSpec((s) => {
+      const toggles = [...(s.toggles ?? [])];
+      const i = toggles.findIndex((t) => t.id === "connection_hardware");
+      if (i === -1) {
+        toggles.push({ id: "connection_hardware", label: "Connection Hardware", value: true });
+      } else if (!toggles[i].value) {
+        toggles[i] = { ...toggles[i], value: true };
+      }
+      return { ...s, toggles };
+    });
+    setTourId((t) => t + 1);
+  };
+
+  /** Dimension lock: locked (default) keeps the spec's slider limits and
+   * strict code clamping on export; unlocked switches the spec to advisory
+   * mode and widens the slider ranges so any dimension can be dialed in. */
+  const locked = spec.code_mode !== "advisory";
+  const toggleLock = () =>
+    setSpec((s) => ({
+      ...s,
+      code_mode: s.code_mode === "advisory" ? "strict" : "advisory",
+    }));
 
   /** Position nudge for a component or part, stored in spec.offsets (meters). */
   const updateOffset = (key: string, axis: 0 | 1 | 2, meters: number) =>
@@ -190,6 +211,9 @@ export default function App() {
             onMaterial={updateMaterial}
             onDisplayUnits={setDisplayUnits}
             onHardware={toggleHardware}
+            onTour={startTour}
+            locked={locked}
+            onLock={toggleLock}
             onReset={() => {
               setSpec(structuredClone(defaultSpec));
               setSelected(null);

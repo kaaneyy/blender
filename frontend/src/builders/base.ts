@@ -106,13 +106,15 @@ export function resolveMaterial(spec: AssetSpec, slot: string): ResolvedMaterial
   };
 }
 
-/** Numeric parameter values keyed by id, converted to meters. */
+/** Numeric parameter values keyed by id. Length-unit values convert to
+ * meters; unit-less parameters (angles in degrees, counts, ratios) pass
+ * through unchanged so expressions can use them directly (mirror of
+ * base.py spec_params). */
 export function specParams(spec: AssetSpec): Record<string, number> {
-  const defaultUnit: Unit = spec.units === "imperial" ? "ft" : "m";
   const out: Record<string, number> = {};
   for (const p of spec.parameters) {
     if (typeof p.value === "number") {
-      out[p.id] = convert(p.value, p.unit ?? defaultUnit, "m");
+      out[p.id] = p.unit ? convert(p.value, p.unit, "m") : p.value;
     }
   }
   return out;

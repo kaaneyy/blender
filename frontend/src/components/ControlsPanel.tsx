@@ -32,6 +32,10 @@ interface Props {
   onMaterial: (slot: string, patch: Partial<SpecMaterial>) => void;
   onDisplayUnits: (u: UnitSystem) => void;
   onHardware: () => void;
+  onTour: () => void;
+  /** true = spec/code slider limits enforced; false = free dimensions */
+  locked: boolean;
+  onLock: () => void;
   onReset: () => void;
 }
 
@@ -111,11 +115,13 @@ function ParamControl({
   param,
   violation,
   displayUnits,
+  locked,
   onParam,
 }: {
   param: SpecParameter;
   violation?: CodeViolation;
   displayUnits: UnitSystem;
+  locked: boolean;
   onParam: Props["onParam"];
 }) {
   if (param.type === "select" || typeof param.value === "string") {
@@ -142,8 +148,11 @@ function ParamControl({
   const toDisplay = (v: number) => convert(v, unit, dispUnit);
   const fromDisplay = (v: number) => Number(convert(v, dispUnit, unit).toFixed(6));
   const shownValue = round3(toDisplay(value));
-  const shownMin = round3(toDisplay(param.min ?? value / 2));
-  const shownMax = round3(toDisplay(param.max ?? value * 2));
+  const specMin = round3(toDisplay(param.min ?? value / 2));
+  const specMax = round3(toDisplay(param.max ?? value * 2));
+  // unlocked: widen the slider well past the model's suggested limits
+  const shownMin = locked ? specMin : round3(Math.min(specMin / 4, shownValue / 2));
+  const shownMax = locked ? specMax : round3(Math.max(specMax * 4, shownValue * 2));
   const shownStep = dispUnit === unit ? (param.step ?? 1) : toDisplay(param.step ?? 1);
 
   return (
@@ -199,6 +208,9 @@ export default function ControlsPanel({
   onMaterial,
   onDisplayUnits,
   onHardware,
+  onTour,
+  locked,
+  onLock,
   onReset,
 }: Props) {
   const hardwareOn =
@@ -210,18 +222,38 @@ export default function ControlsPanel({
     <div className="panel">
       <div className="panel__header">
         <h3>Parameters</h3>
-        <div className="unit-toggle">
-          {(["imperial", "metric"] as const).map((u) => (
-            <button
-              key={u}
-              className={displayUnits === u ? "active" : ""}
-              onClick={() => onDisplayUnits(u)}
-            >
-              {u === "imperial" ? "ft" : "m"}
-            </button>
-          ))}
+        <div className="header-tools">
+          <button
+            className={`lock-toggle${locked ? "" : " lock-toggle--open"}`}
+            onClick={onLock}
+            title={
+              locked
+                ? "Dimensions are limited to the suggested/code ranges. Click to unlock and set any size (export will no longer auto-clamp)."
+                : "Dimensions are unlocked — any size allowed, code checks are advisory only. Click to re-lock."
+            }
+          >
+            {locked ? "🔒" : "🔓"}
+          </button>
+          <div className="unit-toggle">
+            {(["imperial", "metric"] as const).map((u) => (
+              <button
+                key={u}
+                className={displayUnits === u ? "active" : ""}
+                onClick={() => onDisplayUnits(u)}
+              >
+                {u === "imperial" ? "ft" : "m"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+      {!locked && (
+        <p className="hint hint--unlock">
+          Limits unlocked: sliders reach far beyond the suggested ranges and
+          exports keep your exact dimensions (code violations are warnings
+          only).
+        </p>
+      )}
 
       {spec.parameters.map((p) => (
         <ParamControl
@@ -229,6 +261,7 @@ export default function ControlsPanel({
           param={p}
           violation={violations[p.id]}
           displayUnits={displayUnits}
+          locked={locked}
           onParam={onParam}
         />
       ))}
@@ -247,9 +280,16 @@ export default function ControlsPanel({
       <button
         className={`hardware-btn${hardwareOn ? " hardware-btn--on" : ""}`}
         onClick={onHardware}
-        title="Adds representative bolt/nut assemblies wherever components meet — included in exports too"
+        title="Adds engineered bolt/nut assemblies wherever components meet — included in exports too"
       >
-        🔩 {hardwareOn ? "Hide" : "Show"} real bolts &amp; connections
+        🔩 {hardwareOn ? "Hide" : "Show"} bolts &amp; connections
+      </button>
+      <button
+        className="hardware-btn"
+        onClick={onTour}
+        title="Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)"
+      >
+        🎥 Tour the connections
       </button>
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,

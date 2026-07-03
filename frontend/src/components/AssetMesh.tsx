@@ -78,14 +78,21 @@ function PrimitiveMesh({
   spec,
   selected,
   onSelect,
+  tourJoint,
 }: {
   prim: Primitive;
   spec: AssetSpec;
   selected: Selection | null;
   onSelect: (sel: Selection) => void;
+  tourJoint: number | null;
 }) {
-  const highlight: "none" | "part" | "group" =
-    selected?.component !== prim.component
+  const onTour =
+    tourJoint !== null &&
+    prim.component === "hardware" &&
+    prim.name.startsWith(`joint${tourJoint}_`);
+  const highlight: "none" | "part" | "group" = onTour
+    ? "part"
+    : selected?.component !== prim.component
       ? "none"
       : selected.part === prim.name
         ? "part"
@@ -148,20 +155,29 @@ export default function AssetMesh({
   spec,
   selected,
   onSelect,
+  tourJoint = null,
 }: {
   primitives: Primitive[];
   spec: AssetSpec;
   selected: Selection | null;
   onSelect: (sel: Selection) => void;
+  tourJoint?: number | null;
 }) {
   // Rebuilds are a synchronous useMemo upstream; this component only maps
   // primitives to meshes, comfortably within the 16 ms budget (T4.3).
   const items = useMemo(
     () =>
       primitives.map((p) => (
-        <PrimitiveMesh key={p.name} prim={p} spec={spec} selected={selected} onSelect={onSelect} />
+        <PrimitiveMesh
+          key={p.name}
+          prim={p}
+          spec={spec}
+          selected={selected}
+          onSelect={onSelect}
+          tourJoint={tourJoint}
+        />
       )),
-    [primitives, spec, selected, onSelect],
+    [primitives, spec, selected, onSelect, tourJoint],
   );
   return <>{items}</>;
 }

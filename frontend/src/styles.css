@@ -251,6 +251,34 @@ button:disabled {
   font-weight: 600;
 }
 
+.header-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lock-toggle {
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lock-toggle--open {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, #f59e0b 12%, var(--panel));
+}
+
+.hint--unlock {
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, #f59e0b 35%, var(--border));
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
 .unit-toggle {
   display: flex;
   border: 1px solid var(--border-2);
