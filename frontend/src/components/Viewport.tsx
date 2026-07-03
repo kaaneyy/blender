@@ -375,17 +375,23 @@ export default function Viewport({
   // back out to the whole asset
   useEffect(() => {
     if (!tourId) return;
-    const shafts = primsRef.current
-      .filter((pr) => pr.component === "hardware" && pr.name.endsWith("_shaft"))
-      .sort(
-        (a, b) => (parseInt(a.name.split("_")[1], 10) || 0) - (parseInt(b.name.split("_")[1], 10) || 0),
-      );
-    if (!shafts.length) return;
-    const queue: FocusPoint[] = shafts.map((s) => ({
-      target: zUpToYUp(s.location),
-      distance: 0.85,
-      dwell: 1.0,
-    }));
+    // one stop per joint (a joint may hold several bolts / a band clamp)
+    const byJoint = new Map<number, Primitive>();
+    for (const pr of primsRef.current) {
+      if (pr.component !== "hardware") continue;
+      const m = pr.name.match(/^joint(\d+)_/);
+      if (!m) continue;
+      const n = parseInt(m[1], 10);
+      if (!byJoint.has(n)) byJoint.set(n, pr);
+    }
+    if (!byJoint.size) return;
+    const queue: FocusPoint[] = [...byJoint.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, pr]) => ({
+        target: zUpToYUp(pr.location),
+        distance: 0.85,
+        dwell: 1.0,
+      }));
     queue.push({
       target: new THREE.Vector3(0, homeHeightRef.current / 2, 0),
       distance: Math.max(homeHeightRef.current * 2.1, 3),

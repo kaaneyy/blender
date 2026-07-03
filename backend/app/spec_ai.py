@@ -75,6 +75,13 @@ GEOMETRY RULES
 - EVERY major dimension a designer would tweak must be a parameter (slider) referenced from expressions — never hard-code it. Optional features (backrest, second arm, finial, ...) must be toggles gating primitives via "visible_if".
 - Give every primitive a component (nested grouping in exports) and a material_slot. 10–40 primitives is the sweet spot; favor simple, readable massing over micro-detail.
 
+CONNECTION RULES (think like a fabricator — every joint must be buildable in real life)
+- Every part must be physically supported through a real load path down to the ground. Before finishing, walk through your primitives joint by joint and ask: what holds this part, and how would a crew actually fasten it on site?
+- Parts that join MUST interpenetrate by 10-20 mm at the joint (e.g. a leg whose top is inside the rail it supports, a rail whose top is inside the slats it carries). Never leave parts floating or merely touching at a zero-thickness face — the app detects real overlaps to place bolts, washers, and nuts exactly there.
+- Choose the realistic connection for each joint and model its visible parts as their own primitives/components where a real one would be seen: base plates + anchor-bolt pads where a vertical member meets the ground; cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets, gussets, or collars where members meet at right angles; sleeves/sockets for post-in-tube fits. A slat can NOT attach to a leg it never touches — add the rail.
+- Round vertical poles receive horizontal members via band clamps (the app adds the clamp when a horizontal round member overlaps an upright pole) — make the arm/bracket actually reach into the pole's surface.
+- Nothing may extend below z=0; ground attachment is expressed with a plate or footing collar AT z=0.
+
 MATERIALS
 - Presets: {", ".join(MATERIAL_PRESETS)}.
 - Per slot you may override: color (hex), metalness 0-1 (reflectivity), roughness 0-1, uv_scale 0.05-20 (texture tiling), emission 0-20 (glow — use 2-6 for lamp lenses).
@@ -177,7 +184,10 @@ def _install_guide_prompts(spec: dict) -> tuple:
         "Structure: ## Overview (what it is, overall dimensions in ft/in AND meters), "
         "## Tools & materials, ## Site preparation (foundation/footing sizing guidance), "
         "## Assembly sequence (reference the spec's component names in order, with "
-        "hardware: anchor bolts, nuts, washers, torque ranges), ## Code compliance "
+        "hardware: anchor bolts, nuts, washers, torque ranges), ## Connections "
+        "(enumerate EVERY joint: which two components meet, the fastener type and "
+        "size class, and exactly how it is executed on site — drilled, through-"
+        "bolted, band-clamped, torqued, embedded), ## Code compliance "
         "checklist (cite the code_refs from the spec/standards, with the actual limits), "
         "## Inspection & maintenance. Use ONLY dimensions derivable from the spec; do "
         "not invent sizes. Include a short safety disclaimer that a licensed engineer "

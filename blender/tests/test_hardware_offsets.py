@@ -22,27 +22,110 @@ def with_hardware(spec):
     return spec
 
 
+def joint_numbers(prims):
+    import re
+
+    out = set()
+    for p in prims:
+        if p.component == "hardware":
+            m = re.match(r"^joint(\d+)_", p.name)
+            if m:
+                out.add(int(m.group(1)))
+    return out
+
+
 class TestHardware:
     def test_off_by_default(self):
         prims = compute_primitives(load("street_light.json"))
         assert not any(p.component == "hardware" for p in prims)
 
     @pytest.mark.parametrize("example", ["street_light.json", "park_bench.json"])
-    def test_generates_bolts_at_joints(self, example):
+    def test_generates_engineered_joints(self, example):
         base = compute_primitives(load(example))
         prims = compute_primitives(with_hardware(load(example)))
-        bolts = [p for p in prims if p.component == "hardware"]
-        assert bolts, "expected hardware at component joints"
-        assert len(bolts) % 3 == 0  # head + shaft + nut per connection
-        assert len(prims) == len(base) + len(bolts)
-        heads = [p for p in bolts if p.name.endswith("_head")]
-        assert all(p.params.get("segments") == 6 for p in heads), "hex heads"
-        assert all(p.material_slot == "hardware" for p in bolts)
+        hardware = [p for p in prims if p.component == "hardware"]
+        assert hardware, "expected hardware at component joints"
+        assert len(prims) == len(base) + len(hardware)
+        heads = [p for p in hardware if p.name.endswith("_head")]
+        nuts = [p for p in hardware if p.name.endswith("_nut")]
+        washers = [p for p in hardware if "_washer_" in p.name]
+        shafts = [p for p in hardware if p.name.endswith("_shaft")]
+        assert heads and nuts and shafts
+        assert len(washers) == len(heads) + len(nuts), "washer under every head and nut"
+        assert all(p.params.get("segments") == 6 for p in heads + nuts), "hex heads/nuts"
+        assert all(p.material_slot == "hardware" for p in hardware)
 
-    def test_bolt_count_bounded(self):
+    def test_joint_count_bounded(self):
         prims = compute_primitives(with_hardware(load("street_light.json")))
-        connections = len([p for p in prims if p.name.endswith("_shaft")])
-        assert 1 <= connections <= 24
+        joints = joint_numbers(prims)
+        assert 1 <= len(joints) <= 24
+
+    def test_street_light_arm_gets_band_clamp(self):
+        """A horizontal round mast arm meeting the upright pole is clamped
+        with a saddle band (+2 side bolts), like real pole fittings."""
+        prims = compute_primitives(with_hardware(load("street_light.json")))
+        bands = [p for p in prims if p.name.endswith("_band")]
+        assert bands, "expected a band clamp at the pole/arm joint"
+        band = bands[0]
+        # band wraps the pole: centered on the pole axis, near the arm height
+        assert band.location[0] == pytest.approx(0.0)
+        assert band.location[1] == pytest.approx(0.0)
+        pole_height = 30 * 0.3048
+        assert pole_height - 1.5 < band.location[2] < pole_height
+        # band radius follows the pole taper (top radius 2in=0.0508 + gap)
+        assert 0.05 < band.params["radius"] < 0.08
+
+    def test_bench_slats_bolt_vertically_through_rails(self):
+        """Seat slats sit on frame rails with real overlap; the generator
+        must produce vertical through-bolts whose head is above the slat
+        and nut below, spanning the actual joint."""
+        prims = compute_primitives(with_hardware(load("park_bench.json")))
+        vertical_shafts = [
+            p for p in prims
+            if p.name.endswith("_shaft") and p.rotation == (0.0, 0.0, 0.0)
+        ]
+        assert vertical_shafts, "expected vertical bolts at the slat/rail joints"
+        seat_height = 18 * 0.0254
+        s = vertical_shafts[0]
+        joint = s.name.split("_")[0]
+        head = next(p for p in prims if p.name == f"{joint}_bolt1_head")
+        nut = next(p for p in prims if p.name == f"{joint}_bolt1_nut")
+        assert head.location[2] > nut.location[2], "head above, nut below"
+        # the shaft actually spans the joint plane at the seat surface
+        top = s.location[2] + s.params["depth"] / 2
+        bottom = s.location[2] - s.params["depth"] / 2
+        assert bottom < seat_height < top
+
+    def test_no_bolts_between_non_touching_parts(self):
+        """Oriented bounding boxes: a rotated horizontal cylinder far from a
+        box must not generate hardware (the old conservative AABB would)."""
+        from blender.builders.hardware import compute_hardware
+        from blender.builders.base import Primitive
+
+        long_arm = Primitive(
+            kind="cylinder", name="arm", component="a",
+            location=(0.0, 0.0, 1.0), rotation=(0.0, 1.5707963, 0.0),
+            params={"radius": 0.02, "depth": 2.0},
+        )  # lies along X at z=1
+        box = Primitive(
+            kind="box", name="pad", component="b",
+            location=(0.0, 0.0, 0.2), params={"size": (0.3, 0.3, 0.3)},
+        )  # well below the arm
+        assert compute_hardware([long_arm, box]) == []
+
+    def test_oriented_extents_for_rotated_cylinder(self):
+        from blender.builders.hardware import _half_extents
+        from blender.builders.base import Primitive
+
+        bracket = Primitive(
+            kind="cylinder", name="b", component="c",
+            location=(0, 0, 0), rotation=(1.5707963, 0.0, 0.0),  # along Y
+            params={"radius": 0.016, "depth": 0.9},
+        )
+        hx, hy, hz = _half_extents(bracket)
+        assert hx == pytest.approx(0.016, abs=1e-3)
+        assert hy == pytest.approx(0.45, abs=1e-3)
+        assert hz == pytest.approx(0.016, abs=1e-3)
 
 
 class TestOffsets:
