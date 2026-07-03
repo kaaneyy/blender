@@ -1,13 +1,34 @@
 /** 3D viewport (T4.3/T4.4): orbit/pan/zoom, ground grid, 6 ft human
  * silhouette for scale, and dimension annotations that follow the spec. */
-import { Canvas } from "@react-three/fiber";
+import { useEffect } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { AssetSpec, Primitive, UnitSystem } from "../types";
 import { specParams } from "../builders";
 import { formatLength } from "../units";
 import AssetMesh from "./AssetMesh";
 
 const HUMAN_HEIGHT = 1.8288; // 6 ft
+
+/** Generated-in-memory studio environment (no network fetch) so metallic
+ * materials have something real to reflect. */
+function StudioEnvironment() {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const rt = pmrem.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = rt.texture;
+    return () => {
+      scene.environment = null;
+      rt.dispose();
+      pmrem.dispose();
+    };
+  }, [gl, scene]);
+  return null;
+}
 
 function HumanSilhouette({ x }: { x: number }) {
   return (
@@ -79,7 +100,19 @@ export default function Viewport({
   displayUnits: UnitSystem;
 }) {
   const p = specParams(spec);
-  const heightM = p.pole_height ?? p.height ?? HUMAN_HEIGHT;
+  // overall height: trust an explicit height-ish parameter, else measure the
+  // primitive list (exact for unrotated primitives, close enough otherwise)
+  const measured = Math.max(
+    HUMAN_HEIGHT * 0.25,
+    ...primitives.map((prim) => {
+      const z = prim.location[2];
+      if (prim.kind === "cylinder" || prim.kind === "cone")
+        return z + (prim.params.depth ?? 0) / 2;
+      if (prim.kind === "box") return z + (prim.params.size?.[2] ?? 0) / 2;
+      return z + (prim.params.radius ?? 0);
+    }),
+  );
+  const heightM = p.pole_height ?? p.height ?? measured;
   const armM = p.arm_length ?? 0;
   const imperial = displayUnits === "imperial";
 
@@ -89,9 +122,9 @@ export default function Viewport({
       camera={{ position: [heightM * 1.2, heightM * 0.9, heightM * 1.6], fov: 45 }}
     >
       <color attach="background" args={["#eef1f5"]} />
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[15, 25, 12]} intensity={1.4} castShadow />
-      <hemisphereLight args={["#dfe8f5", "#b7ab97", 0.35]} />
+      <StudioEnvironment />
+      <ambientLight intensity={0.35} />
+      <directionalLight position={[15, 25, 12]} intensity={1.2} castShadow />
 
       {/* ground grid: 1 ft / 5 ft cells in imperial, 0.5 m / 5 m in metric */}
       <Grid

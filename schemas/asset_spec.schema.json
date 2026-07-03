@@ -87,6 +87,73 @@
               "wood_slat",
               "lamp_lens"
             ]
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Overrides the preset base color."
+          },
+          "metalness": { "type": "number", "minimum": 0, "maximum": 1 },
+          "roughness": { "type": "number", "minimum": 0, "maximum": 1 },
+          "uv_scale": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 20,
+            "description": "Texture tiling density; applied to procedural surface detail in the preview and to texture mapping in Blender."
+          },
+          "emission": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Emission strength (e.g. lamp lenses glow)."
+          }
+        }
+      }
+    },
+    "primitives": {
+      "type": "array",
+      "description": "Custom parametric geometry for asset types without a curated builder ('generate anything' path). All dimensions are METERS, +Z up, asset grounded at z=0. Numeric fields accept expressions over parameter/toggle ids, e.g. 'seat_height + 0.02' (allowed: numbers, ids, + - * / parentheses, min(), max(), abs(); toggles evaluate to 0 or 1).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "params"],
+        "properties": {
+          "kind": { "enum": ["cylinder", "cone", "box", "sphere"] },
+          "name": { "type": "string" },
+          "component": { "type": "string", "default": "body" },
+          "location": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": ["number", "string"] }
+          },
+          "rotation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": ["number", "string"] },
+            "description": "Euler XYZ radians."
+          },
+          "material_slot": { "type": "string" },
+          "visible_if": {
+            "type": "string",
+            "description": "Expression; primitive is skipped when it evaluates to 0 (use toggle ids)."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "radius": { "type": ["number", "string"] },
+              "depth": { "type": ["number", "string"] },
+              "radius_bottom": { "type": ["number", "string"] },
+              "radius_top": { "type": ["number", "string"] },
+              "size": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": { "type": ["number", "string"] }
+              }
+            }
           }
         }
       }

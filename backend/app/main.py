@@ -1,8 +1,9 @@
 """AssetForge API (FastAPI).
 
-Milestone-1 surface: health, standards DB, schema, and spec validation.
-The LLM endpoints (/generate-spec, /refine-spec — T2.1/T2.5) and the export
-queue (/export — T5.1) land in later milestones per the build order.
+Runs two ways with the same code:
+  * uvicorn/Docker:  uvicorn backend.app.main:app
+  * Vercel Python function via api/index.py (routes are mounted under /api
+    as well, which is the path Vercel and the Vite dev proxy use).
 """
 from __future__ import annotations
 
@@ -10,7 +11,9 @@ import json
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -18,30 +21,52 @@ if str(REPO_ROOT) not in sys.path:
 
 from standards.validator import load_standards, validate_spec  # noqa: E402
 
-app = FastAPI(title="AssetForge API", version="0.1.0")
+from .llm import LLMError  # noqa: E402
+from . import spec_ai  # noqa: E402
+
+app = FastAPI(title="AssetForge API", version="0.3.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+router = APIRouter()
 
 ASSET_SPEC_SCHEMA = json.loads(
     (REPO_ROOT / "schemas" / "asset_spec.schema.json").read_text(encoding="utf-8")
 )
 
 
-@app.get("/health")
+class GenerateRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=2000)
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+
+
+class RefineRequest(BaseModel):
+    spec: dict
+    message: str = Field(min_length=1, max_length=2000)
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+
+
+@router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/standards")
+@router.get("/standards")
 def standards() -> dict:
     """Full US-code standards DB (the UI uses this for slider bounds/tooltips)."""
     return load_standards()
 
 
-@app.get("/schemas/asset-spec")
+@router.get("/schemas/asset-spec")
 def asset_spec_schema() -> dict:
     return ASSET_SPEC_SCHEMA
 
 
-@app.post("/validate-spec")
+@router.post("/validate-spec")
 def validate(spec: dict) -> dict:
     """Validate (and in strict mode clamp) an AssetSpec against US codes."""
     try:
@@ -54,3 +79,35 @@ def validate(spec: dict) -> dict:
         raise HTTPException(status_code=422, detail=f"Invalid AssetSpec: {exc.message}")
 
     return validate_spec(spec).to_dict()
+
+
+@router.post("/generate-spec")
+def generate(body: GenerateRequest) -> dict:
+    """T2.1: prompt → validated AssetSpec + code violations."""
+    try:
+        return spec_ai.generate_spec(body.prompt, body.code_mode)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
+@router.post("/refine-spec")
+def refine(body: RefineRequest) -> dict:
+    """T2.5: current spec + chat message → modified, re-validated spec."""
+    try:
+        return spec_ai.refine_spec(body.spec, body.message, body.code_mode)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
+app.include_router(router)
+app.include_router(router, prefix="/api")

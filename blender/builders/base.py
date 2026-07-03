@@ -105,14 +105,22 @@ def spec_selects(spec: dict) -> Dict[str, str]:
 
 
 def compute_primitives(spec: dict) -> List[Primitive]:
-    """Dispatch to the registered builder for spec['asset_type']."""
+    """Dispatch to the registered builder for spec['asset_type'], falling
+    back to the generic primitives-in-the-spec builder (the LLM's
+    'generate anything' path) when no curated builder exists."""
     asset_type = spec.get("asset_type", "")
-    try:
-        builder = BUILDERS[asset_type]
-    except KeyError:
-        known = ", ".join(sorted(BUILDERS)) or "<none registered>"
-        raise ValueError(f"No builder for asset_type {asset_type!r}; known: {known}")
-    return builder(spec)
+    builder = BUILDERS.get(asset_type)
+    if builder is not None:
+        return builder(spec)
+    if spec.get("primitives"):
+        from .generic import build_custom
+
+        return build_custom(spec)
+    known = ", ".join(sorted(BUILDERS)) or "<none registered>"
+    raise ValueError(
+        f"No builder for asset_type {asset_type!r} and the spec has no "
+        f"'primitives' array; curated builders: {known}"
+    )
 
 
 def mirror_x(primitives: List[Primitive], suffix: str = "_mirrored") -> List[Primitive]:
@@ -135,30 +143,68 @@ def mirror_x(primitives: List[Primitive], suffix: str = "_mirrored") -> List[Pri
     return out
 
 
+def hex_to_rgba(color: str) -> tuple:
+    c = color.lstrip("#")
+    return tuple(int(c[i : i + 2], 16) / 255 for i in (0, 2, 4)) + (1.0,)
+
+
+def resolve_material(spec: dict, slot: str) -> dict:
+    """Preset values merged with the spec's per-slot overrides (color,
+    metalness, roughness, uv_scale, emission). Pure — the same logic is
+    mirrored in the frontend so preview and export shade alike."""
+    entry = next((m for m in spec.get("materials", []) if m.get("slot") == slot), None)
+    preset_name = (entry or {}).get("preset") or (
+        "lamp_lens" if slot == "lens" else "galvanized_steel"
+    )
+    preset = MATERIAL_PRESETS.get(preset_name, MATERIAL_PRESETS["galvanized_steel"])
+    props = {
+        "base_color": preset["base_color"],
+        "metallic": preset["metallic"],
+        "roughness": preset["roughness"],
+        "uv_scale": 1.0,
+        "emission": 0.0,
+    }
+    if entry:
+        if entry.get("color"):
+            props["base_color"] = hex_to_rgba(entry["color"])
+        for spec_key, prop_key in (
+            ("metalness", "metallic"),
+            ("roughness", "roughness"),
+            ("uv_scale", "uv_scale"),
+            ("emission", "emission"),
+        ):
+            if isinstance(entry.get(spec_key), (int, float)):
+                props[prop_key] = float(entry[spec_key])
+    return props
+
+
 # --------------------------------------------------------------------------
 # Blender realization layer — everything below requires bpy.
 # --------------------------------------------------------------------------
 
-def _material_map(spec: dict) -> Dict[str, str]:
-    return {m["slot"]: m["preset"] for m in spec.get("materials", [])}
-
-
-def _get_or_create_material(preset_name: str):
+def _get_or_create_material(name: str, props: dict):
     import bpy
 
-    preset = MATERIAL_PRESETS.get(preset_name, MATERIAL_PRESETS["galvanized_steel"])
-    mat = bpy.data.materials.get(f"AF_{preset_name}")
+    mat = bpy.data.materials.get(name)
     if mat is not None:
         return mat
-    mat = bpy.data.materials.new(f"AF_{preset_name}")
+    mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf is not None:
-        bsdf.inputs["Base Color"].default_value = preset["base_color"]
-        bsdf.inputs["Metallic"].default_value = preset["metallic"]
-        bsdf.inputs["Roughness"].default_value = preset["roughness"]
+        bsdf.inputs["Base Color"].default_value = props["base_color"]
+        bsdf.inputs["Metallic"].default_value = props["metallic"]
+        bsdf.inputs["Roughness"].default_value = props["roughness"]
+        if props["emission"] > 0:
+            try:  # Blender 4.x names
+                bsdf.inputs["Emission Color"].default_value = props["base_color"]
+                bsdf.inputs["Emission Strength"].default_value = props["emission"]
+            except KeyError:  # Blender 3.x fallback
+                bsdf.inputs["Emission"].default_value = props["base_color"]
     # diffuse fallback that survives DAE/OBJ export (SketchUp path, T3.3)
-    mat.diffuse_color = preset["base_color"]
+    mat.diffuse_color = props["base_color"]
+    # consumed by the texture-mapping pass when image textures land (T3.3)
+    mat["af_uv_scale"] = props["uv_scale"]
     return mat
 
 
@@ -211,7 +257,6 @@ def build(spec: dict):
 
     primitives = compute_primitives(spec)
     asset_name = spec.get("name") or spec["asset_type"]
-    materials = _material_map(spec)
 
     root = bpy.data.collections.new(asset_name)
     bpy.context.scene.collection.children.link(root)
@@ -230,9 +275,9 @@ def build(spec: dict):
             existing.objects.unlink(obj)
         coll.objects.link(obj)
 
-        preset = materials.get(prim.material_slot)
-        if preset is None and prim.material_slot == "lens":
-            preset = "lamp_lens"
-        obj.data.materials.append(_get_or_create_material(preset or "galvanized_steel"))
+        props = resolve_material(spec, prim.material_slot)
+        obj.data.materials.append(
+            _get_or_create_material(f"AF_{asset_name}_{prim.material_slot}", props)
+        )
 
     return root

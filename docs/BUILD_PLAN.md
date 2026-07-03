@@ -52,12 +52,13 @@ ARCHITECTURE RULE: One shared JSON "AssetSpec" schema drives everything — the 
 
 ## PHASE 2 — LLM Layer (prompt → AssetSpec)
 
-- [ ] T2.1 Backend endpoint `POST /generate-spec` → calls LLM with system prompt: "Return ONLY valid AssetSpec JSON matching this schema. Choose parameter ranges from the provided standards table. No prose."
-- [ ] T2.2 Inject the relevant slice of `us_codes.json` into the LLM context so ranges come from the DB, not model memory.
-- [ ] T2.3 Post-process: parse JSON → run `validator.py` → clamp → return spec + violations to client.
-- [ ] T2.4 Provider abstraction: `llm.py` with adapters for Anthropic / OpenAI / DeepSeek behind one interface (env var selects provider).
-- [ ] T2.5 Endpoint `POST /refine-spec`: current spec + user chat message ("make it art-deco, add a second arm") → LLM returns modified spec. Always re-validate.
-- [ ] T2.6 Retry logic: if JSON parse fails, re-prompt once with the parse error appended.
+- [x] T2.1 Backend endpoint `POST /generate-spec` → calls LLM with system prompt: "Return ONLY valid AssetSpec JSON matching this schema. Choose parameter ranges from the provided standards table. No prose." → `backend/app/spec_ai.py`
+- [x] T2.2 Inject the relevant slice of `us_codes.json` into the LLM context so ranges come from the DB, not model memory. *(Whole DB is injected — it's small.)*
+- [x] T2.3 Post-process: parse JSON → run `validator.py` → clamp → return spec + violations to client. *(Plus a test-build of the geometry so unbuildable specs are rejected server-side.)*
+- [x] T2.4 Provider abstraction: `llm.py` with adapters for Anthropic / OpenAI / DeepSeek behind one interface (env var selects provider). *(Plus a keyless `mock` provider for tests/demo.)*
+- [x] T2.5 Endpoint `POST /refine-spec`: current spec + user chat message ("make it art-deco, add a second arm") → LLM returns modified spec. Always re-validate.
+- [x] T2.6 Retry logic: if JSON parse fails, re-prompt once with the parse error appended.
+- [x] T2.7 *(beyond plan)* "Generate anything": specs may carry their own `primitives` array with dimensions as sandboxed arithmetic expressions over parameter/toggle ids (`blender/builders/{expr,generic}.py`, mirrored in `frontend/src/{expr,builders/generic}.ts`) — AI-generated assets stay fully slider-parametric without a curated builder.
 
 ## PHASE 3 — Procedural Geometry (the core)
 
@@ -68,9 +69,9 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
       - [x] `street_light.py` (pole taper, arm curve, luminaire head, base plate + anchor bolts toggle)
       - [ ] `pedestrian_lamp.py` (post lantern styles: acorn, teardrop, modern)
       - [ ] `bench.py`, `bollard.py`, `traffic_sign.py`, `trash_bin.py`, `planter.py`, `hydrant.py`
-- [~] T3.3 Material system: PBR presets (galvanized steel, powder-coat black, cast iron, concrete, brushed aluminum) assigned per component slot; bake to simple diffuse for DAE (SketchUp ignores full PBR). *Presets + per-slot assignment + diffuse fallback shipped; texture baking pending.*
+- [~] T3.3 Material system: PBR presets (galvanized steel, powder-coat black, cast iron, concrete, brushed aluminum) assigned per component slot; bake to simple diffuse for DAE (SketchUp ignores full PBR). *Presets + per-slot overrides (color, metalness/reflection, roughness, uv_scale, emission) shipped as spec fields, UI sliders, and prompt-settable properties; applied to Principled BSDF in Blender and mirrored in the preview. Image-texture baking pending.*
 - [ ] T3.4 LOD generator: decimate modifier at 100% / 50% / 20% poly budget, user-selectable.
-- [x] T3.5 CLI harness: `blender -b -P build_cli.py -- spec.json out.glb` for testing without the web app. *Also runs Blender-free: `python3 blender/build_cli.py spec.json out.json` validates + dumps the primitive list.*
+- [x] T3.5 CLI harness: `blender -b -P build_cli.py -- spec.json out.glb` for testing without the web app. *Also runs Blender-free (`python3 blender/build_cli.py spec.json out.json` validates + dumps primitives) and exports native `.blend` files.*
 
 ## PHASE 4 — Live Preview (frontend)
 
@@ -107,7 +108,7 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [~] T7.1 Unit tests: validator clamping, every builder at min/mid/max params (no NaN verts, watertight where expected). *Validator + street_light covered; grows with each new builder.*
 - [ ] T7.2 Golden-file tests: spec → export → assert bounding box matches spec dims within 1%.
 - [ ] T7.3 Rate limiting + LLM cost caps per user.
-- [ ] T7.4 Sanitize LLM output strictly against JSON Schema (reject unknown fields). *Schema already sets `additionalProperties: false`; enforcement lands with Phase 2.*
+- [x] T7.4 Sanitize LLM output strictly against JSON Schema (reject unknown fields), plus a sandboxed expression evaluator (arithmetic only) so LLM specs can never execute code.
 - [ ] T7.5 Load test Blender worker; scale via queue concurrency.
 
 ---
@@ -115,7 +116,7 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 ## BUILD ORDER (dependency-sorted, ship a demo at each ✂)
 1. **T0.\* → T1.\* → T3.1 + one builder (street_light) → T3.5 CLI  ✂ *(headless proof)* ← SHIPPED**
 2. **T4.1–T4.4 with street_light JS mirror ✂ *(live preview, no AI yet)* ← SHIPPED (incl. T4.5/T4.6; deploys to Vercel via root `vercel.json`)**
-3. T2.* ✂ *(prompt → spec → preview loop complete)*
+3. **T2.* ✂ *(prompt → spec → preview loop complete)* ← SHIPPED (DeepSeek default; backend also runs as a Vercel Python function via `api/index.py`)**
 4. T5.1–T5.3 ✂ *(end-to-end: prompt → tweak → download .dae → import to SketchUp)*
 5. Remaining builders → Phase 6 → Phase 7.
 

@@ -236,6 +236,77 @@ textarea:disabled {
   word-break: break-all;
 }
 
+.chat {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.chat__msg {
+  margin: 0 0 6px;
+}
+
+.chat__msg--assetforge {
+  color: #475569;
+}
+
+.refine-row {
+  display: flex;
+  gap: 6px;
+}
+
+.refine-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.material select {
+  width: 100%;
+}
+
+.matrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.matrow__label {
+  width: 62px;
+  flex-shrink: 0;
+}
+
+.matrow input[type="range"] {
+  flex: 1;
+  accent-color: #64748b;
+}
+
+.matrow__value {
+  width: 30px;
+  text-align: right;
+}
+
+input[type="color"] {
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  width: 36px;
+  height: 24px;
+  padding: 1px;
+  background: #fff;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 4px 0;
+  width: 100%;
+}
+
 .dim-label {
   background: #fff;
   border: 1px solid #e11d48;

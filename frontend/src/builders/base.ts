@@ -7,14 +7,14 @@ export const MATERIAL_PRESETS: Record<
   string,
   { color: string; metalness: number; roughness: number }
 > = {
-  // metalness is softened vs the Blender presets: the preview has no
-  // environment map, and full metals render near-black without one
-  galvanized_steel: { color: "#9ea3a6", metalness: 0.5, roughness: 0.45 },
-  powder_coat_black: { color: "#1e2022", metalness: 0.1, roughness: 0.5 },
-  powder_coat_green: { color: "#28513a", metalness: 0.1, roughness: 0.5 },
-  cast_iron: { color: "#35363a", metalness: 0.4, roughness: 0.75 },
+  // parity with blender/builders/base.py — the viewport has a real
+  // environment map (RoomEnvironment), so full metals shade correctly
+  galvanized_steel: { color: "#9ea3a6", metalness: 1.0, roughness: 0.45 },
+  powder_coat_black: { color: "#1e2022", metalness: 0.2, roughness: 0.5 },
+  powder_coat_green: { color: "#28513a", metalness: 0.2, roughness: 0.5 },
+  cast_iron: { color: "#35363a", metalness: 0.9, roughness: 0.75 },
   concrete: { color: "#c0bcb4", metalness: 0.0, roughness: 0.9 },
-  brushed_aluminum: { color: "#d7d9db", metalness: 0.5, roughness: 0.35 },
+  brushed_aluminum: { color: "#d7d9db", metalness: 1.0, roughness: 0.35 },
   wood_slat: { color: "#96652f", metalness: 0.0, roughness: 0.65 },
   lamp_lens: { color: "#f7ecc3", metalness: 0.0, roughness: 0.15 },
 };
@@ -28,13 +28,44 @@ export function register(assetType: string, fn: BuilderFn): void {
 
 export function computePrimitives(spec: AssetSpec): Primitive[] {
   const fn = BUILDERS[spec.asset_type];
-  if (!fn) {
-    throw new Error(
-      `No preview builder for asset_type "${spec.asset_type}" ` +
-        `(known: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
-    );
+  if (fn) return fn(spec);
+  if (spec.primitives?.length) {
+    // lazy import avoided: generic.ts imports helpers from this module, so
+    // the dependency is wired in builders/index.ts instead
+    return customBuilder!(spec);
   }
-  return fn(spec);
+  throw new Error(
+    `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
+      `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
+  );
+}
+
+/** Set by builders/index.ts to avoid a circular import with generic.ts. */
+export let customBuilder: BuilderFn | null = null;
+export function setCustomBuilder(fn: BuilderFn): void {
+  customBuilder = fn;
+}
+
+export interface ResolvedMaterial {
+  color: string;
+  metalness: number;
+  roughness: number;
+  uvScale: number;
+  emission: number;
+}
+
+/** Preset merged with per-slot overrides — mirror of base.py resolve_material. */
+export function resolveMaterial(spec: AssetSpec, slot: string): ResolvedMaterial {
+  const entry = (spec.materials ?? []).find((m) => m.slot === slot);
+  const presetName = entry?.preset ?? (slot === "lens" ? "lamp_lens" : "galvanized_steel");
+  const preset = MATERIAL_PRESETS[presetName] ?? MATERIAL_PRESETS.galvanized_steel;
+  return {
+    color: entry?.color ?? preset.color,
+    metalness: entry?.metalness ?? preset.metalness,
+    roughness: entry?.roughness ?? preset.roughness,
+    uvScale: entry?.uv_scale ?? 1,
+    emission: entry?.emission ?? 0,
+  };
 }
 
 /** Numeric parameter values keyed by id, converted to meters. */

@@ -2,9 +2,9 @@
  * switches from toggles[], material dropdowns from materials[].
  * Zero per-asset UI code. Violations render red with the code citation and
  * a "snap to code" action (T4.5). */
-import type { AssetSpec, SpecParameter, UnitSystem } from "../types";
+import type { AssetSpec, SpecMaterial, SpecParameter, UnitSystem } from "../types";
 import type { CodeViolation } from "../standards";
-import { MATERIAL_PRESETS } from "../builders";
+import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
 import { counterpart } from "../units";
 
 interface Props {
@@ -13,9 +13,81 @@ interface Props {
   displayUnits: UnitSystem;
   onParam: (id: string, value: number | string) => void;
   onToggle: (id: string, value: boolean) => void;
-  onMaterial: (slot: string, preset: string) => void;
+  onMaterial: (slot: string, patch: Partial<SpecMaterial>) => void;
   onDisplayUnits: (u: UnitSystem) => void;
   onReset: () => void;
+}
+
+/** Per-slot material editor: preset dropdown + color / reflection
+ * (metalness) / roughness / UV-tiling / glow sliders. All values live in
+ * the spec, so the AI can set them from prompts too. */
+function MaterialControl({
+  spec,
+  material,
+  onMaterial,
+}: {
+  spec: AssetSpec;
+  material: SpecMaterial;
+  onMaterial: Props["onMaterial"];
+}) {
+  const resolved = resolveMaterial(spec, material.slot);
+  const slider = (
+    label: string,
+    key: "metalness" | "roughness" | "uv_scale" | "emission",
+    min: number,
+    max: number,
+    step: number,
+    value: number,
+  ) => (
+    <div className="matrow">
+      <span className="matrow__label">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onMaterial(material.slot, { [key]: Number(e.target.value) })}
+      />
+      <span className="matrow__value">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="control material">
+      <div className="control__row">
+        <span className="control__label">{material.slot}</span>
+        <input
+          type="color"
+          value={resolved.color}
+          onChange={(e) => onMaterial(material.slot, { color: e.target.value })}
+          title="Base color"
+        />
+      </div>
+      <select
+        value={material.preset}
+        onChange={(e) =>
+          // switching preset clears overrides so the preset shows true
+          onMaterial(material.slot, {
+            preset: e.target.value,
+            color: undefined,
+            metalness: undefined,
+            roughness: undefined,
+          })
+        }
+      >
+        {Object.keys(MATERIAL_PRESETS).map((k) => (
+          <option key={k} value={k}>
+            {k.replaceAll("_", " ")}
+          </option>
+        ))}
+      </select>
+      {slider("reflection", "metalness", 0, 1, 0.05, resolved.metalness)}
+      {slider("roughness", "roughness", 0, 1, 0.05, resolved.roughness)}
+      {slider("uv scale", "uv_scale", 0.25, 8, 0.25, resolved.uvScale)}
+      {slider("glow", "emission", 0, 6, 0.25, resolved.emission)}
+    </div>
+  );
 }
 
 function ParamControl({
@@ -131,16 +203,7 @@ export default function ControlsPanel({
 
       {(spec.materials?.length ?? 0) > 0 && <h3>Materials</h3>}
       {spec.materials?.map((m) => (
-        <label key={m.slot} className="control">
-          <span className="control__label">{m.slot}</span>
-          <select value={m.preset} onChange={(e) => onMaterial(m.slot, e.target.value)}>
-            {Object.keys(MATERIAL_PRESETS).map((k) => (
-              <option key={k} value={k}>
-                {k.replaceAll("_", " ")}
-              </option>
-            ))}
-          </select>
-        </label>
+        <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
       ))}
 
       <button className="reset" onClick={onReset}>

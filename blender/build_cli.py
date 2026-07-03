@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from standards.validator import validate_spec  # noqa: E402
 
-EXPORTERS = {".glb", ".gltf", ".dae", ".obj", ".fbx"}
+EXPORTERS = {".glb", ".gltf", ".dae", ".obj", ".fbx", ".blend"}
 
 
 def _cli_args() -> list[str]:
@@ -58,6 +58,9 @@ def _export(filepath: Path) -> None:
             bpy.ops.export_scene.obj(filepath=str(filepath))
     elif suffix == ".fbx":
         bpy.ops.export_scene.fbx(filepath=str(filepath))
+    elif suffix == ".blend":
+        # native Blender file: open it directly with File > Open
+        bpy.ops.wm.save_as_mainfile(filepath=str(filepath))
     else:
         raise SystemExit(f"Unsupported export format: {suffix}")
 

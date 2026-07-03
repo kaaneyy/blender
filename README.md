@@ -1,8 +1,8 @@
 # AssetForge
 
 AI parametric asset generator: prompt → parametric spec → live 3D preview →
-US-code-validated dimensions → headless Blender build → `.dae`/`.obj`/`.glb`/`.fbx`
-export for SketchUp and animation pipelines.
+US-code-validated dimensions → headless Blender build → `.blend`/`.dae`/`.obj`/`.glb`/`.fbx`
+export for Blender, SketchUp, and animation pipelines.
 
 ![AssetForge live preview](docs/preview.png)
 
@@ -10,13 +10,21 @@ The full roadmap lives in [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md). Shipped so
 
 - **Milestone 1 — headless proof**: shared schemas, US-code standards DB +
   validator, builder registry, `street_light` builder, CLI harness.
-- **Milestone 2 — live preview**: the web app above. Drag sliders, flip
-  toggles, swap materials; dimensions outside US code turn red with the code
-  citation and a "snap to code" button. A 6 ft human silhouette and live
-  dimension callouts keep the scale honest.
+- **Milestone 2 — live preview**: sliders, toggles, material controls, code
+  violations in red with citations + "snap to code", human silhouette and
+  dimension callouts for scale.
+- **Milestone 3 — the AI**: describe **any** asset in plain English
+  ("a 6 ft park bench with a backrest", "an art-deco pedestrian lamp with a
+  glowing acorn globe") and keep refining it conversationally ("make it
+  bronze", "add armrests"). Known asset types use hand-tuned builders; for
+  everything else the AI models the geometry itself as parametric primitives
+  whose dimensions stay wired to the sliders. Materials are fully editable —
+  per-part color, reflection (metalness), roughness, UV tiling, and glow —
+  by slider *or* by prompt.
 
-**Not built yet** (coming milestones): the AI prompt box (type "a 30 ft art-deco
-street light" → spec) and the final SketchUp `.dae` download from the browser.
+**Not built yet**: one-click `.dae`/`.blend` download from the browser (needs
+the Blender worker, milestone 4). Until then the export is one copy-paste
+command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sketchup).
 
 ---
 
@@ -24,47 +32,66 @@ street light" → spec) and the final SketchUp `.dae` download from the browser.
 
 ### Option A — Vercel, nothing to install (recommended)
 
-Vercel is a free hosting service that builds and publishes this app for you.
-You only use your web browser; there is nothing to download or install, and
-the free "Hobby" plan is enough.
+Vercel is a free hosting service that builds and publishes this app for you —
+including the small Python API the AI feature uses. You only need a web
+browser.
 
 1. Open **[vercel.com/signup](https://vercel.com/signup)** and choose
-   **Continue with GitHub**. Sign in with the same GitHub account that owns
-   this repository and authorize Vercel when asked.
+   **Continue with GitHub**. Sign in with the GitHub account that owns this
+   repository and authorize Vercel when asked.
 2. On your Vercel dashboard, click **Add New… → Project**.
-3. You'll see a list of your GitHub repositories. Find **blender** (this
-   repository) and click **Import**.
-   - If the repository isn't listed, click **Adjust GitHub App Permissions**
-     (or "Install"), grant Vercel access to the repository, and it will appear.
-4. On the configuration screen, **change nothing** — this repository contains
-   a `vercel.json` file that tells Vercel exactly how to build the app.
-5. Click **Deploy** and wait about a minute.
-6. Click the big preview image / **Visit** button. That URL is your app — it
-   works on any device, and you can share it.
+3. Find **blender** (this repository) in the list and click **Import**.
+   - If it isn't listed, click **Adjust GitHub App Permissions**, grant
+     Vercel access to the repository, and it will appear.
+4. On the configuration screen, **change nothing** — the repository's
+   `vercel.json` configures everything — and click **Deploy**.
+5. After about a minute, click **Visit**. That URL is your app.
 
-From now on, **every time new code is pushed to this repository, Vercel
-rebuilds and updates your URL automatically.** You never have to repeat these
-steps.
+Every push to this repository redeploys your URL automatically — you never
+repeat these steps.
 
-**What works on Vercel:** the entire live preview — sliders, toggles,
-materials, code checking, spec download.
-**What can't run on Vercel:** the final Blender export to `.dae`/`.glb`
-(Vercel has no Blender) and, later, the AI endpoints. Those will run on a
-small server (e.g. Render/Railway/Fly.io) when milestones 3–4 land —
-step-by-step instructions will be added here at that point.
+### Turn on the AI (DeepSeek)
+
+Without this step everything works except the "Describe any asset" box.
+DeepSeek is a low-cost AI provider; a few dollars of credit lasts a long
+time (a generation costs a fraction of a cent).
+
+1. Go to **[platform.deepseek.com](https://platform.deepseek.com)**, create
+   an account, add a small amount of credit (Billing → Top up), then open
+   **API Keys** and click **Create API key**. Copy the key (it starts with
+   `sk-`) — it is shown only once.
+2. In Vercel, open your project → **Settings → Environment Variables** and
+   add:
+   - **Key:** `DEEPSEEK_API_KEY` — **Value:** the key you copied
+3. Go to the **Deployments** tab, click the **⋯** menu on the newest
+   deployment, and choose **Redeploy**.
+4. Open your app URL — the prompt box now works. Type what you want, click
+   **Generate**, then keep refining in the chat ("make the pole taller",
+   "weathered bronze, rougher wood").
+
+Other providers work too — set `LLM_PROVIDER` alongside the matching key
+(`deepseek` is the default):
+
+| `LLM_PROVIDER` | Key variable | Default model |
+| --- | --- | --- |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
+| `mock` | *(none — free demo mode, returns bundled examples)* | — |
+
+Set `LLM_MODEL` to override the model. The AI's output is strictly
+schema-checked, code-clamped, and test-built before it ever reaches your
+browser; if it fails, it is retried once with the error message and then
+rejected.
 
 ### Option B — Run on your own computer (one install)
 
-1. Install **Node.js**: go to [nodejs.org](https://nodejs.org), click the
-   green **LTS** button, run the downloaded installer, keep every default.
-2. Get this code onto your computer: on the GitHub page of this repository,
-   click the green **Code** button → **Download ZIP**, then unzip it
-   somewhere easy to find (e.g. your Desktop).
-3. Open a terminal:
-   - **Windows:** press the Windows key, type `cmd`, press Enter.
-   - **Mac:** press ⌘-space, type `Terminal`, press Enter.
-4. Type these three lines, pressing Enter after each (adjust the first path
-   to wherever you unzipped):
+1. Install **Node.js**: at [nodejs.org](https://nodejs.org), click the green
+   **LTS** button and run the installer with every default.
+2. On this repository's GitHub page, click **Code → Download ZIP** and unzip
+   it somewhere easy (e.g. your Desktop).
+3. Open a terminal (Windows: Windows key, type `cmd`, Enter · Mac: ⌘-space,
+   type `Terminal`, Enter) and run, adjusting the first path:
 
    ```
    cd Desktop/blender-main/frontend
@@ -72,29 +99,85 @@ step-by-step instructions will be added here at that point.
    npm run dev
    ```
 
-5. Open **http://localhost:5173** in your browser. Leave the terminal window
-   open while you use the app; press `Ctrl+C` in it to stop.
+4. Open **http://localhost:5173**. For the AI locally you also need Python:
+   `pip install -r backend/requirements.txt`, then in a second terminal from
+   the repo folder:
+
+   ```
+   set DEEPSEEK_API_KEY=sk-...        (Windows)   |   export DEEPSEEK_API_KEY=sk-...   (Mac)
+   python -m uvicorn backend.app.main:app --port 8000
+   ```
 
 ### Option C — Full stack (for developers)
 
 ```bash
-# Python tests: validator + builders, no Blender required
-pip install pytest && pytest
-
-# Validate a spec and dump its primitive list (no Blender required)
-python3 blender/build_cli.py examples/street_light.json out/primitives.json
-
-# Full headless build + export (requires Blender)
-blender -b -P blender/build_cli.py -- examples/street_light.json out/light.dae   # SketchUp
-blender -b -P blender/build_cli.py -- examples/street_light.json out/light.glb   # web/animation
-
-# API + workers
-docker compose up --build backend
-curl -X POST localhost:8000/validate-spec -H 'content-type: application/json' \
-     -d @examples/street_light.json
+pip install pytest && pytest                     # 60 tests: validator, builders, expression sandbox, API
+python3 blender/build_cli.py examples/park_bench.json out/prims.json   # no Blender needed
+docker compose up --build backend                # API + Postgres + Redis
+LLM_PROVIDER=mock uvicorn backend.app.main:app   # keyless AI demo mode
 ```
 
 ---
+
+## Open your asset in Blender (or SketchUp)
+
+The web preview is an approximation; the *real* geometry is built by Blender
+from the same spec. Here's how to get a proper Blender object from what you
+made in the browser:
+
+1. **Install Blender** (free): [blender.org/download](https://www.blender.org/download),
+   run the installer with defaults.
+2. **In the web app, click "Download spec (.json)"** — save it somewhere
+   easy, e.g. your Desktop.
+3. **Get this repository's files** (once): GitHub → **Code → Download ZIP**,
+   unzip to your Desktop.
+4. **Run one command** in a terminal, from inside the unzipped folder:
+
+   **Mac** (Terminal):
+   ```
+   cd Desktop/blender-main
+   /Applications/Blender.app/Contents/MacOS/Blender -b -P blender/build_cli.py -- ~/Desktop/MyAsset.json ~/Desktop/MyAsset.blend
+   ```
+
+   **Windows** (Command Prompt):
+   ```
+   cd Desktop\blender-main
+   "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" -b -P blender/build_cli.py -- %USERPROFILE%\Desktop\MyAsset.json %USERPROFILE%\Desktop\MyAsset.blend
+   ```
+
+5. **Double-click the resulting `.blend`** — it opens in Blender with every
+   component (pole, arm, seat slats, …) as a named object in named
+   collections, materials already assigned.
+
+Swap the output extension to change format — same command otherwise:
+
+| Extension | Use it for |
+| --- | --- |
+| `.blend` | Native Blender file — open directly, edit everything |
+| `.dae` | **SketchUp** (File → Import) — components stay grouped and editable |
+| `.glb` | Game engines, web viewers, Blender (File → Import → glTF 2.0) |
+| `.obj` / `.fbx` | Older DCC tools, animation pipelines |
+
+Every out-of-code dimension is re-validated and clamped during this build
+(`code_mode: "strict"`), so the exported file is always code-compliant even
+if the spec was edited by hand.
+
+## Materials
+
+Each part of an asset has a material slot with a **preset** (galvanized
+steel, powder-coat, cast iron, concrete, brushed aluminum, wood, lamp lens)
+plus five overridable properties, editable as sliders in the right panel and
+settable by prompt ("matte black, slightly rough, glowing lens"):
+
+- **color** — base color picker
+- **reflection** (metalness 0–1) — how mirror-like the surface is
+- **roughness** (0–1) — sharp vs. blurry reflections
+- **uv scale** — texture tiling density (visible as surface detail in the
+  preview; drives texture mapping in Blender)
+- **glow** (emission) — self-illumination, e.g. lamp lenses
+
+These live in the spec JSON, so they survive download/export: the Blender
+build assigns the same values to Principled BSDF materials.
 
 ## Repository layout
 
@@ -102,26 +185,27 @@ curl -X POST localhost:8000/validate-spec -H 'content-type: application/json' \
 | --- | --- |
 | `schemas/` | Shared JSON Schemas (`AssetSpec`, `ExportRequest`) that drive UI, preview, and Blender alike |
 | `standards/` | `us_codes.json` (per-asset dimensional limits with citations) + pure `validator.py` |
-| `blender/` | Builder registry (`builders/base.py`), asset builders, `build_cli.py` harness, worker Dockerfile |
-| `backend/` | FastAPI service (health, standards, spec validation; LLM + export endpoints land in later milestones) |
-| `frontend/` | Vite + React + react-three-fiber live preview (deployed by Vercel) |
-| `examples/` | Ready-to-build example specs |
+| `blender/` | Builder registry, curated + generic builders, safe expression evaluator, `build_cli.py`, worker Dockerfile |
+| `backend/` | FastAPI service: spec validation + AI endpoints (`/generate-spec`, `/refine-spec`) with DeepSeek/OpenAI/Anthropic adapters |
+| `api/` | Thin Vercel serverless entrypoint wrapping the backend |
+| `frontend/` | Vite + React + react-three-fiber live preview (mirrors the Python builders 1:1) |
+| `examples/` | Ready-to-build example specs (curated `street_light`, custom-primitive `park_bench`) |
 
 ## Architecture rule
 
 One shared JSON **AssetSpec** drives everything — the Three.js preview, the
-Blender builder, and the UI controls are all generated from it. Builders are
-split into a *pure primitive layer* (`compute_primitives(spec)`, plain
-cylinders/cones/boxes in meters, no `bpy`, unit-testable anywhere) and a thin
-Blender *realization layer* (`builders/base.py:build`). The frontend mirrors
-the primitive layer 1:1 (`frontend/src/builders/`), so preview and final
-export agree on every dimension by construction. The standards DB
-(`standards/us_codes.json`) is likewise imported by both the Python validator
-and the browser — one source of truth, never copied.
+Blender builder, and the UI controls are all generated from it. Curated
+builders are split into a *pure primitive layer* (plain cylinders/cones/boxes
+in meters, no `bpy`) and a thin Blender realization layer; the frontend
+mirrors the primitive layer 1:1, so preview and export agree on every
+dimension by construction.
 
-Out-of-code dimensions are clamped automatically (`code_mode: "strict"`) or
-reported as warnings only (`"advisory"`, for props that don't need
-compliance), always with the code citation attached.
+For asset types without a curated builder, the AI writes the primitive list
+directly into the spec, with dimensions as **expressions** over the slider
+parameters (`"seat_height + 0.02"`). A sandboxed evaluator (identical in
+Python and TypeScript, arithmetic only — LLM output can never execute code)
+resolves them live, which is why AI-generated assets remain fully
+slider-parametric instead of being frozen meshes.
 
 ## Why Blender as the engine (SketchUp as the destination)
 

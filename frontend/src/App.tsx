@@ -4,7 +4,7 @@
  * never waits on the server (T4.6). */
 import { useMemo, useState } from "react";
 import defaultSpecJson from "../../examples/street_light.json";
-import type { AssetSpec, UnitSystem } from "./types";
+import type { AssetSpec, SpecMaterial, UnitSystem } from "./types";
 import { computePrimitives } from "./builders";
 import { checkSpec } from "./standards";
 import ControlsPanel from "./components/ControlsPanel";
@@ -33,11 +33,29 @@ export default function App() {
       toggles: (s.toggles ?? []).map((t) => (t.id === id ? { ...t, value } : t)),
     }));
 
-  const updateMaterial = (slot: string, preset: string) =>
+  const updateMaterial = (slot: string, patch: Partial<SpecMaterial>) =>
     setSpec((s) => ({
       ...s,
-      materials: (s.materials ?? []).map((m) => (m.slot === slot ? { ...m, preset } : m)),
+      materials: (s.materials ?? []).map((m) =>
+        m.slot === slot ? { ...m, ...patch } : m,
+      ),
     }));
+
+  /** Swap in an AI-generated spec — but only if it actually builds, so a
+   * bad spec can never blank the viewport. Returns an error string to show
+   * in the prompt panel, or null on success. */
+  const adoptSpec = (newSpec: AssetSpec): string | null => {
+    try {
+      computePrimitives(newSpec);
+    } catch (e) {
+      return `The generated spec has invalid geometry: ${
+        e instanceof Error ? e.message : String(e)
+      }`;
+    }
+    setSpec(newSpec);
+    setDisplayUnits(newSpec.units ?? "imperial");
+    return null;
+  };
 
   return (
     <div className="app">
@@ -46,6 +64,7 @@ export default function App() {
           spec={spec}
           violations={violations}
           onName={(name) => setSpec((s) => ({ ...s, name }))}
+          onSpec={adoptSpec}
         />
       </aside>
       <main className="viewport">

@@ -1,15 +1,59 @@
 /** Renders the shared primitive list as Three.js meshes. The asset is
  * authored Z-up (Blender convention); the parent group in Viewport rotates
- * the whole thing into Three's Y-up world. */
+ * the whole thing into Three's Y-up world.
+ *
+ * Materials come from resolveMaterial (preset + per-slot overrides). A
+ * procedural grayscale noise texture provides visible surface detail whose
+ * tiling follows the material's uv_scale slider; metalness/roughness/
+ * emission map straight onto meshStandardMaterial. */
 import { useMemo } from "react";
+import * as THREE from "three";
 import type { AssetSpec, Primitive } from "../types";
-import { MATERIAL_PRESETS } from "../builders";
+import { resolveMaterial } from "../builders";
 
-function materialFor(spec: AssetSpec, slot: string) {
-  const bySlot: Record<string, string> = {};
-  for (const m of spec.materials ?? []) bySlot[m.slot] = m.preset;
-  const preset = bySlot[slot] ?? (slot === "lens" ? "lamp_lens" : "galvanized_steel");
-  return MATERIAL_PRESETS[preset] ?? MATERIAL_PRESETS.galvanized_steel;
+/** Shared 256px near-white noise, generated once (deterministic seed). */
+let noiseImage: HTMLCanvasElement | null = null;
+function getNoiseImage(): HTMLCanvasElement {
+  if (noiseImage) return noiseImage;
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  let s = 42; // mulberry32 — stable across sessions
+  const rand = () => {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 235 + Math.floor(rand() * 20); // subtle: 235-255
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  noiseImage = canvas;
+  return canvas;
+}
+
+function useSlotMaterial(spec: AssetSpec, slot: string): THREE.MeshStandardMaterial {
+  const resolved = resolveMaterial(spec, slot);
+  return useMemo(() => {
+    const tex = new THREE.CanvasTexture(getNoiseImage());
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(resolved.uvScale, resolved.uvScale);
+    const color = new THREE.Color(resolved.color);
+    return new THREE.MeshStandardMaterial({
+      color,
+      metalness: resolved.metalness,
+      roughness: resolved.roughness,
+      map: tex,
+      emissive: color,
+      emissiveIntensity: resolved.emission,
+    });
+  }, [resolved.color, resolved.metalness, resolved.roughness, resolved.uvScale, resolved.emission]);
 }
 
 /** Rotates Three's Y-axis cylinders/cones onto the local Z axis so the
@@ -17,10 +61,7 @@ function materialFor(spec: AssetSpec, slot: string) {
 const AXIS_FIX: [number, number, number] = [Math.PI / 2, 0, 0];
 
 function PrimitiveMesh({ prim, spec }: { prim: Primitive; spec: AssetSpec }) {
-  const mat = materialFor(spec, prim.materialSlot);
-  const material = (
-    <meshStandardMaterial color={mat.color} metalness={mat.metalness} roughness={mat.roughness} />
-  );
+  const material = useSlotMaterial(spec, prim.materialSlot);
 
   let geometry: JSX.Element;
   let fix: [number, number, number] = [0, 0, 0];
@@ -49,9 +90,8 @@ function PrimitiveMesh({ prim, spec }: { prim: Primitive; spec: AssetSpec }) {
 
   return (
     <group position={prim.location} rotation={prim.rotation}>
-      <mesh rotation={fix} castShadow receiveShadow>
+      <mesh rotation={fix} castShadow receiveShadow material={material}>
         {geometry}
-        {material}
       </mesh>
     </group>
   );
