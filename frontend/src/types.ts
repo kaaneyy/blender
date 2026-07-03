@@ -53,6 +53,7 @@ export interface SpecPrimitive {
     radius_bottom?: number | string;
     radius_top?: number | string;
     size?: Array<number | string>;
+    segments?: number | string;
   };
 }
 
@@ -67,6 +68,8 @@ export interface AssetSpec {
   components?: string[];
   /** Custom parametric geometry — the "generate anything" path. */
   primitives?: SpecPrimitive[];
+  /** Per-component/part position nudges in meters ('pole' or 'pole/shaft'). */
+  offsets?: Record<string, [number, number, number]>;
   seed?: number;
 }
 
@@ -86,5 +89,7 @@ export interface Primitive {
     radius_bottom?: number;
     radius_top?: number;
     size?: Vec3;
+    /** Radial segments for cylinders/cones (6 = hex bolt heads/nuts). */
+    segments?: number;
   };
 }

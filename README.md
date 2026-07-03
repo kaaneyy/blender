@@ -22,9 +22,42 @@ The full roadmap lives in [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md). Shipped so
   per-part color, reflection (metalness), roughness, UV tiling, and glow —
   by slider *or* by prompt.
 
+- **Milestone 3.5 — the editor**: click any part in the 3D view to edit just
+  that part (position nudges, dimensions, group stats), a one-click
+  bolts-and-nuts connection view, an AI installation guide, an AI-powered
+  standards-DB updater that can commit straight to GitHub, and dark mode.
+
 **Not built yet**: one-click `.dae`/`.blend` download from the browser (needs
 the Blender worker, milestone 4). Until then the export is one copy-paste
 command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sketchup).
+
+## The editor
+
+- **Click any part** in the 3D view to select its group (click again to drill
+  down to the individual part). The right panel then shows *only that
+  selection*: part count, measured width/depth/height, and X/Y/Z position
+  nudges for the whole group or the single part. Nudges are saved into the
+  spec (`offsets`), so they carry through to the Blender/SketchUp export.
+  For AI-generated custom assets, plain-number dimensions are directly
+  editable; expression-driven ones stay bound to their sliders.
+- **🔩 Show real bolts & connections** adds representative bolt/nut
+  assemblies (hex heads and all) wherever two component groups meet — in the
+  preview *and* in every export, since it's stored as a spec toggle.
+- **📋 Installation guide** has the AI write step-by-step installation
+  instructions for the current asset — site prep, anchoring, assembly order
+  using the actual component names and dimensions, torque notes, and a code
+  compliance checklist citing the relevant standards. View it in-app or
+  download it as Markdown.
+- **🏛 Refresh US standards DB** asks the AI to review `standards/us_codes.json`
+  against the latest published editions (MUTCD, ADA, IBC, AASHTO) and add
+  missing asset types. The proposal is structurally validated, then either
+  **committed straight to GitHub** (add a `GITHUB_TOKEN` environment variable
+  on Vercel — a fine-grained token with *Contents: read & write* on this
+  repo) or offered as a download to review and paste in manually. Honesty
+  note: the proposal comes from the AI's knowledge of published standards,
+  not a live web crawl — always review the cited sections.
+- **🌙 Dark mode** — the moon/sun button next to the logo; your choice is
+  remembered.
 
 ---
 

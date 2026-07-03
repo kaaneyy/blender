@@ -6,7 +6,7 @@ import type { AssetSpec } from "./types";
 const API_BASE: string =
   (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "/api";
 
-async function post(path: string, body: unknown): Promise<AssetSpec> {
+async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
   let resp: Response;
   try {
     resp = await fetch(`${API_BASE}${path}`, {
@@ -31,15 +31,38 @@ async function post(path: string, body: unknown): Promise<AssetSpec> {
     }
     throw new Error(detail);
   }
-  const data = await resp.json();
+  return (await resp.json()) as Record<string, unknown>;
+}
+
+async function postForSpec(path: string, body: unknown): Promise<AssetSpec> {
+  const data = await post(path, body);
   if (!data?.spec) throw new Error("Backend returned no spec");
   return data.spec as AssetSpec;
 }
 
 export function generateSpec(prompt: string): Promise<AssetSpec> {
-  return post("/generate-spec", { prompt, code_mode: "strict" });
+  return postForSpec("/generate-spec", { prompt, code_mode: "strict" });
 }
 
 export function refineSpec(spec: AssetSpec, message: string): Promise<AssetSpec> {
-  return post("/refine-spec", { spec, message, code_mode: spec.code_mode ?? "strict" });
+  return postForSpec("/refine-spec", { spec, message, code_mode: spec.code_mode ?? "strict" });
+}
+
+export async function installGuide(spec: AssetSpec): Promise<string> {
+  const data = await post("/install-guide", { spec });
+  if (typeof data?.guide !== "string") throw new Error("Backend returned no guide");
+  return data.guide;
+}
+
+export interface StandardsUpdateResult {
+  proposal: Record<string, unknown>;
+  changes: string[];
+  note: string;
+  committed: boolean;
+  detail: string;
+  url: string | null;
+}
+
+export async function updateStandards(): Promise<StandardsUpdateResult> {
+  return (await post("/update-standards", {})) as unknown as StandardsUpdateResult;
 }

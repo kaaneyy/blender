@@ -169,3 +169,26 @@ class TestEdgeCases:
                 assert default >= rule["min"]
                 if rule.get("max") is not None:
                     assert default <= rule["max"]
+
+
+class TestStandardsDbValidator:
+    def test_real_db_is_sound(self):
+        from standards.validator import validate_standards_db
+
+        assert validate_standards_db(load_standards()) == []
+
+    def test_catches_structural_problems(self):
+        from standards.validator import validate_standards_db
+
+        bad = {
+            "widget": {
+                "parameters": {
+                    "height": {"min": 40, "max": 30, "default": 99, "unit": "furlong"},
+                },
+            },
+        }
+        errors = " ".join(validate_standards_db(bad))
+        assert "max 30 < min 40" in errors
+        assert "bad unit" in errors
+        assert "code_ref" in errors
+        assert "source" in errors

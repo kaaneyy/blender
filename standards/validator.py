@@ -83,6 +83,50 @@ class ValidationResult:
         }
 
 
+def validate_standards_db(db: dict) -> list:
+    """Structural check for a (possibly AI-proposed) standards DB. Returns a
+    list of human-readable problems; empty list means structurally sound."""
+    errors = []
+    if not isinstance(db, dict) or not any(k for k in db if not k.startswith("_")):
+        return ["Standards DB must be an object with at least one asset type"]
+    for asset_type, entry in db.items():
+        if asset_type.startswith("_"):
+            continue
+        where = f"{asset_type}"
+        if not isinstance(entry, dict) or not isinstance(entry.get("parameters"), dict) \
+                or not entry["parameters"]:
+            errors.append(f"{where}: needs a non-empty 'parameters' object")
+            continue
+        if not entry.get("source"):
+            errors.append(f"{where}: missing 'source' citation")
+        for pid, rule in entry["parameters"].items():
+            w = f"{where}.{pid}"
+            if not isinstance(rule, dict):
+                errors.append(f"{w}: rule must be an object")
+                continue
+            if rule.get("unit") not in UNIT_TO_METERS:
+                errors.append(f"{w}: bad unit {rule.get('unit')!r}")
+            if not isinstance(rule.get("min"), (int, float)):
+                errors.append(f"{w}: 'min' must be a number")
+            maximum = rule.get("max")
+            if maximum is not None:
+                if not isinstance(maximum, (int, float)):
+                    errors.append(f"{w}: 'max' must be a number or null")
+                elif isinstance(rule.get("min"), (int, float)) and maximum < rule["min"]:
+                    errors.append(f"{w}: max {maximum} < min {rule['min']}")
+            default = rule.get("default")
+            if not isinstance(default, (int, float)):
+                errors.append(f"{w}: 'default' must be a number")
+            elif isinstance(rule.get("min"), (int, float)):
+                if default < rule["min"] or (
+                    isinstance(maximum, (int, float)) and default > maximum
+                ):
+                    errors.append(f"{w}: default {default} outside [min, max]")
+            if not rule.get("code_ref"):
+                errors.append(f"{w}: missing 'code_ref'")
+    return errors
+
+
 def _default_unit(spec: dict) -> str:
     return "ft" if spec.get("units", "imperial") == "imperial" else "m"
 

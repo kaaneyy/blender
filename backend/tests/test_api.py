@@ -84,3 +84,23 @@ class TestPostprocess:
     def test_rejects_non_json(self):
         with pytest.raises(SpecGenerationError, match="not valid JSON"):
             _postprocess("I cannot help with that.", "strict")
+
+
+def test_install_guide_mock():
+    spec = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
+    r = client.post("/api/install-guide", json={"spec": spec})
+    assert r.status_code == 200
+    guide = r.json()["guide"]
+    assert "## Assembly sequence" in guide and "licensed engineer" in guide
+
+
+def test_update_standards_mock_without_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    r = client.post("/api/update-standards")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["committed"] is False
+    assert "GITHUB_TOKEN" in data["detail"]
+    assert any("bike_rack" in c for c in data["changes"])
+    from standards.validator import validate_standards_db
+    assert validate_standards_db(data["proposal"]) == []

@@ -104,23 +104,57 @@ def spec_selects(spec: dict) -> Dict[str, str]:
     }
 
 
+def apply_offsets(prims: List[Primitive], offsets: dict) -> List[Primitive]:
+    """Apply user position nudges: 'Component' and 'Component/Part' keys
+    stack, values are (dx, dy, dz) in meters."""
+    out = []
+    for p in prims:
+        dc = offsets.get(p.component, (0.0, 0.0, 0.0))
+        dp = offsets.get(f"{p.component}/{p.name}", (0.0, 0.0, 0.0))
+        if dc == (0.0, 0.0, 0.0) and dp == (0.0, 0.0, 0.0):
+            out.append(p)
+            continue
+        x, y, z = p.location
+        out.append(
+            Primitive(
+                kind=p.kind, name=p.name, component=p.component,
+                location=(x + dc[0] + dp[0], y + dc[1] + dp[1], z + dc[2] + dp[2]),
+                rotation=p.rotation, material_slot=p.material_slot,
+                params=dict(p.params),
+            )
+        )
+    return out
+
+
 def compute_primitives(spec: dict) -> List[Primitive]:
     """Dispatch to the registered builder for spec['asset_type'], falling
     back to the generic primitives-in-the-spec builder (the LLM's
-    'generate anything' path) when no curated builder exists."""
+    'generate anything' path) when no curated builder exists. Then apply the
+    cross-cutting passes: connection hardware and user position offsets."""
     asset_type = spec.get("asset_type", "")
     builder = BUILDERS.get(asset_type)
     if builder is not None:
-        return builder(spec)
-    if spec.get("primitives"):
+        prims = builder(spec)
+    elif spec.get("primitives"):
         from .generic import build_custom
 
-        return build_custom(spec)
-    known = ", ".join(sorted(BUILDERS)) or "<none registered>"
-    raise ValueError(
-        f"No builder for asset_type {asset_type!r} and the spec has no "
-        f"'primitives' array; curated builders: {known}"
-    )
+        prims = build_custom(spec)
+    else:
+        known = ", ".join(sorted(BUILDERS)) or "<none registered>"
+        raise ValueError(
+            f"No builder for asset_type {asset_type!r} and the spec has no "
+            f"'primitives' array; curated builders: {known}"
+        )
+
+    if spec_toggles(spec).get("connection_hardware"):
+        from .hardware import compute_hardware
+
+        prims = prims + compute_hardware(prims)
+
+    offsets = spec.get("offsets") or {}
+    if offsets:
+        prims = apply_offsets(prims, {k: tuple(v) for k, v in offsets.items()})
+    return prims
 
 
 def mirror_x(primitives: List[Primitive], suffix: str = "_mirrored") -> List[Primitive]:
@@ -153,9 +187,8 @@ def resolve_material(spec: dict, slot: str) -> dict:
     metalness, roughness, uv_scale, emission). Pure — the same logic is
     mirrored in the frontend so preview and export shade alike."""
     entry = next((m for m in spec.get("materials", []) if m.get("slot") == slot), None)
-    preset_name = (entry or {}).get("preset") or (
-        "lamp_lens" if slot == "lens" else "galvanized_steel"
-    )
+    fallbacks = {"lens": "lamp_lens", "hardware": "brushed_aluminum"}
+    preset_name = (entry or {}).get("preset") or fallbacks.get(slot, "galvanized_steel")
     preset = MATERIAL_PRESETS.get(preset_name, MATERIAL_PRESETS["galvanized_steel"])
     props = {
         "base_color": preset["base_color"],
@@ -224,13 +257,15 @@ def _realize(prim: Primitive):
     if prim.kind == "cylinder":
         bpy.ops.mesh.primitive_cylinder_add(
             radius=prim.params["radius"], depth=prim.params["depth"],
-            location=prim.location, rotation=prim.rotation, vertices=24,
+            location=prim.location, rotation=prim.rotation,
+            vertices=int(prim.params.get("segments", 24)),
         )
     elif prim.kind == "cone":
         bpy.ops.mesh.primitive_cone_add(
             radius1=prim.params["radius_bottom"], radius2=prim.params["radius_top"],
             depth=prim.params["depth"],
-            location=prim.location, rotation=prim.rotation, vertices=24,
+            location=prim.location, rotation=prim.rotation,
+            vertices=int(prim.params.get("segments", 24)),
         )
     elif prim.kind == "box":
         bpy.ops.mesh.primitive_cube_add(size=1.0, location=prim.location, rotation=prim.rotation)

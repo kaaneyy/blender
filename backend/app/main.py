@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from standards.validator import load_standards, validate_spec  # noqa: E402
 
 from .llm import LLMError  # noqa: E402
-from . import spec_ai  # noqa: E402
+from . import github_sync, spec_ai  # noqa: E402
 
 app = FastAPI(title="AssetForge API", version="0.3.0")
 app.add_middleware(
@@ -48,6 +48,10 @@ class RefineRequest(BaseModel):
     spec: dict
     message: str = Field(min_length=1, max_length=2000)
     code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+
+
+class InstallGuideRequest(BaseModel):
+    spec: dict
 
 
 @router.get("/health")
@@ -107,6 +111,38 @@ def refine(body: RefineRequest) -> dict:
             status_code=502,
             detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
         )
+
+
+@router.post("/install-guide")
+def install_guide(body: InstallGuideRequest) -> dict:
+    """AI-written installation instructions grounded in the current spec."""
+    try:
+        return {"guide": spec_ai.generate_install_guide(body.spec)}
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/update-standards")
+def update_standards() -> dict:
+    """AI-proposed refresh of standards/us_codes.json (structurally
+    validated). Committed straight to GitHub when GITHUB_TOKEN is
+    configured; otherwise returned for manual download."""
+    try:
+        result = spec_ai.propose_standards_update()
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI's proposal failed validation twice: {exc}",
+        )
+
+    commit = github_sync.commit_file(
+        "standards/us_codes.json",
+        json.dumps(result["proposal"], indent=2) + "\n",
+        "Update US-code standards DB (AI-proposed via AssetForge)",
+    )
+    return {**result, **commit}
 
 
 app.include_router(router)

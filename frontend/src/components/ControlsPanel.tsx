@@ -15,6 +15,7 @@ interface Props {
   onToggle: (id: string, value: boolean) => void;
   onMaterial: (slot: string, patch: Partial<SpecMaterial>) => void;
   onDisplayUnits: (u: UnitSystem) => void;
+  onHardware: () => void;
   onReset: () => void;
 }
 
@@ -166,8 +167,14 @@ export default function ControlsPanel({
   onToggle,
   onMaterial,
   onDisplayUnits,
+  onHardware,
   onReset,
 }: Props) {
+  const hardwareOn =
+    spec.toggles?.find((t) => t.id === "connection_hardware")?.value ?? false;
+  const visibleToggles = (spec.toggles ?? []).filter(
+    (t) => t.id !== "connection_hardware",
+  );
   return (
     <div className="panel">
       <div className="panel__header">
@@ -189,8 +196,8 @@ export default function ControlsPanel({
         <ParamControl key={p.id} param={p} violation={violations[p.id]} onParam={onParam} />
       ))}
 
-      {(spec.toggles?.length ?? 0) > 0 && <h3>Options</h3>}
-      {spec.toggles?.map((t) => (
+      <h3>Options</h3>
+      {visibleToggles.map((t) => (
         <label key={t.id} className="toggle">
           <input
             type="checkbox"
@@ -200,6 +207,17 @@ export default function ControlsPanel({
           {t.label}
         </label>
       ))}
+      <button
+        className={`hardware-btn${hardwareOn ? " hardware-btn--on" : ""}`}
+        onClick={onHardware}
+        title="Adds representative bolt/nut assemblies wherever components meet — included in exports too"
+      >
+        🔩 {hardwareOn ? "Hide" : "Show"} real bolts &amp; connections
+      </button>
+      <p className="hint">
+        Tip: click any part in the 3D view to edit just that part — position,
+        size, and group settings.
+      </p>
 
       {(spec.materials?.length ?? 0) > 0 && <h3>Materials</h3>}
       {spec.materials?.map((m) => (

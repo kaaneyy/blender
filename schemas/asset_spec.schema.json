@@ -152,10 +152,24 @@
                 "minItems": 3,
                 "maxItems": 3,
                 "items": { "type": ["number", "string"] }
+              },
+              "segments": {
+                "type": ["number", "string"],
+                "description": "Radial segments for cylinders/cones (default 24; use 6 for hex bolt heads and nuts)."
               }
             }
           }
         }
+      }
+    },
+    "offsets": {
+      "type": "object",
+      "description": "Per-component ('pole') or per-part ('pole/shaft') position nudges in meters, applied after building. Component and part offsets stack. Lets users reposition individual parts in the editor; honored identically by the Blender export.",
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": { "type": "number" }
       }
     },
     "components": {

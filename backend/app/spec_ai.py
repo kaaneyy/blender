@@ -21,7 +21,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from standards.validator import load_standards, validate_spec  # noqa: E402
+from standards.validator import (  # noqa: E402
+    load_standards,
+    validate_spec,
+    validate_standards_db,
+)
 from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: E402
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
@@ -153,3 +157,109 @@ def refine_spec(spec: dict, message: str, code_mode: str = "strict") -> dict:
         f"(keep everything else identical, including ids):\n{message}"
     )
     return _run(_system_prompt(code_mode), user, code_mode)
+
+
+# ---------------------------------------------------------------------------
+# Installation guide
+# ---------------------------------------------------------------------------
+
+def generate_install_guide(spec: dict) -> str:
+    """Plain-language installation instructions for the current asset,
+    grounded in its actual dimensions, components, and code citations."""
+    standards = load_standards()
+    relevant = standards.get(spec.get("asset_type", ""), {})
+    system = (
+        "You are a licensed site-furnishing installation specialist writing for a "
+        "homeowner/contractor audience. Produce a clear, numbered installation guide "
+        "in Markdown for the asset described by the AssetSpec JSON you are given. "
+        "Structure: ## Overview (what it is, overall dimensions in ft/in AND meters), "
+        "## Tools & materials, ## Site preparation (foundation/footing sizing guidance), "
+        "## Assembly sequence (reference the spec's component names in order, with "
+        "hardware: anchor bolts, nuts, washers, torque ranges), ## Code compliance "
+        "checklist (cite the code_refs from the spec/standards, with the actual limits), "
+        "## Inspection & maintenance. Use ONLY dimensions derivable from the spec; do "
+        "not invent sizes. Include a short safety disclaimer that a licensed engineer "
+        "must approve structural anchoring for public installations."
+    )
+    user = (
+        f"INSTALL GUIDE request.\nAssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}"
+    )
+    return complete(system, user, temperature=0.3).strip()
+
+
+# ---------------------------------------------------------------------------
+# Standards refresh
+# ---------------------------------------------------------------------------
+
+def _diff_standards(old: dict, new: dict) -> list:
+    changes = []
+    for asset_type, entry in new.items():
+        if asset_type.startswith("_"):
+            continue
+        if asset_type not in old:
+            changes.append(f"added asset type '{asset_type}'")
+            continue
+        old_params = old[asset_type].get("parameters", {})
+        for pid, rule in entry.get("parameters", {}).items():
+            if pid not in old_params:
+                changes.append(f"{asset_type}: added parameter '{pid}'")
+            elif {k: rule.get(k) for k in ("min", "max", "default", "unit")} != {
+                k: old_params[pid].get(k) for k in ("min", "max", "default", "unit")
+            }:
+                changes.append(f"{asset_type}.{pid}: limits changed")
+    for asset_type in old:
+        if not asset_type.startswith("_") and asset_type not in new:
+            changes.append(f"removed asset type '{asset_type}'")
+    return changes
+
+
+def propose_standards_update() -> dict:
+    """Ask the LLM to review/extend the US-code standards DB. The proposal is
+    structurally validated; the caller decides whether to commit it to
+    GitHub or hand it back as a download.
+
+    Honesty note (surfaced to the user by the UI): the proposal comes from
+    the model's knowledge of published standards, not a live web crawl —
+    review the cited sections before relying on it.
+    """
+    current = load_standards()
+    system = (
+        "You maintain a JSON database of US dimensional code limits for site "
+        "furnishings and streetscape assets (MUTCD, ADA/PROWAG, IBC, AASHTO, AWWA). "
+        "Review the CURRENT database you are given: correct any limits that do not "
+        "match the latest published editions, and add 3-8 commonly requested asset "
+        "types that are missing (e.g. bike_rack, drinking_fountain, picnic_table, "
+        "flagpole, transit_shelter, guardrail). Keep the exact same JSON structure: "
+        "top-level keys are snake_case asset types plus '_meta'; each type has "
+        "'source' and 'parameters'; each parameter rule has min, max (number or "
+        "null), default, unit (ft|in|m|cm|mm), code_ref, and optionally note. "
+        "Cite real, specific sections in code_ref/source. Bump _meta.version by 1 "
+        "and keep the _meta.disclaimer. Return ONLY the complete updated JSON."
+    )
+    user = f"STANDARDS UPDATE request.\nCurrent database:\n{json.dumps(current, indent=1)}"
+
+    def attempt(user_msg: str) -> dict:
+        raw = complete(system, user_msg, temperature=0.2, max_tokens=8000)
+        try:
+            proposal = json.loads(_strip_fences(raw))
+        except json.JSONDecodeError as exc:
+            raise SpecGenerationError(f"Proposal was not valid JSON: {exc}") from None
+        problems = validate_standards_db(proposal)
+        if problems:
+            raise SpecGenerationError("Structural problems: " + "; ".join(problems[:8]))
+        return proposal
+
+    try:
+        proposal = attempt(user)
+    except SpecGenerationError as err:  # T2.6-style single retry
+        proposal = attempt(f"{user}\n\nYour previous answer failed: {err}\nReturn corrected JSON only.")
+
+    return {
+        "proposal": proposal,
+        "changes": _diff_standards(current, proposal),
+        "note": (
+            "Proposed from the AI's knowledge of published standards (no live web "
+            "access) — review the cited sections before relying on them."
+        ),
+    }

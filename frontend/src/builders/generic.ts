@@ -34,6 +34,7 @@ export function buildCustom(spec: AssetSpec): Primitive[] {
     if (rp.radius_bottom !== undefined) params.radius_bottom = evalExpr(rp.radius_bottom, env);
     if (rp.radius_top !== undefined) params.radius_top = evalExpr(rp.radius_top, env);
     if (rp.size !== undefined) params.size = vec3(rp.size, env, [1, 1, 1]);
+    if (rp.segments !== undefined) params.segments = evalExpr(rp.segments, env);
 
     let name = raw.name || `part_${i + 1}`;
     while (used.has(name)) name += "_";

@@ -8,9 +8,14 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import type { AssetSpec, Primitive, UnitSystem } from "../types";
 import { specParams } from "../builders";
 import { formatLength } from "../units";
-import AssetMesh from "./AssetMesh";
+import AssetMesh, { type Selection } from "./AssetMesh";
 
 const HUMAN_HEIGHT = 1.8288; // 6 ft
+
+const THEME_COLORS = {
+  light: { bg: "#eef1f5", cell: "#c3cad4", section: "#8d99a8", silhouette: "#3f4a5a" },
+  dark: { bg: "#15181d", cell: "#2b323c", section: "#48525f", silhouette: "#8b98ab" },
+};
 
 /** Generated-in-memory studio environment (no network fetch) so metallic
  * materials have something real to reflect. */
@@ -30,16 +35,16 @@ function StudioEnvironment() {
   return null;
 }
 
-function HumanSilhouette({ x }: { x: number }) {
+function HumanSilhouette({ x, color }: { x: number; color: string }) {
   return (
     <group position={[x, 0, 0]}>
       <mesh position={[0, 0.765, 0]} castShadow>
         <capsuleGeometry args={[0.2, 1.13, 6, 16]} />
-        <meshStandardMaterial color="#3f4a5a" roughness={0.9} />
+        <meshStandardMaterial color={color} roughness={0.9} />
       </mesh>
       <mesh position={[0, 1.68, 0]} castShadow>
         <sphereGeometry args={[0.12, 16, 12]} />
-        <meshStandardMaterial color="#3f4a5a" roughness={0.9} />
+        <meshStandardMaterial color={color} roughness={0.9} />
       </mesh>
       <Html position={[0, HUMAN_HEIGHT + 0.25, 0]} center>
         <div className="dim-label dim-label--muted">6 ft</div>
@@ -94,11 +99,18 @@ export default function Viewport({
   spec,
   primitives,
   displayUnits,
+  theme,
+  selected,
+  onSelect,
 }: {
   spec: AssetSpec;
   primitives: Primitive[];
   displayUnits: UnitSystem;
+  theme: "light" | "dark";
+  selected: Selection | null;
+  onSelect: (sel: Selection | null) => void;
 }) {
+  const colors = THEME_COLORS[theme];
   const p = specParams(spec);
   // overall height: trust an explicit height-ish parameter, else measure the
   // primitive list (exact for unrotated primitives, close enough otherwise)
@@ -120,8 +132,9 @@ export default function Viewport({
     <Canvas
       shadows
       camera={{ position: [heightM * 1.2, heightM * 0.9, heightM * 1.6], fov: 45 }}
+      onPointerMissed={() => onSelect(null)}
     >
-      <color attach="background" args={["#eef1f5"]} />
+      <color attach="background" args={[colors.bg]} />
       <StudioEnvironment />
       <ambientLight intensity={0.35} />
       <directionalLight position={[15, 25, 12]} intensity={1.2} castShadow />
@@ -131,22 +144,22 @@ export default function Viewport({
         infiniteGrid
         cellSize={imperial ? 0.3048 : 0.5}
         sectionSize={imperial ? 1.524 : 5}
-        cellColor="#c3cad4"
-        sectionColor="#8d99a8"
+        cellColor={colors.cell}
+        sectionColor={colors.section}
         fadeDistance={60}
         fadeStrength={1.5}
       />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
         <planeGeometry args={[200, 200]} />
-        <shadowMaterial opacity={0.25} />
+        <shadowMaterial opacity={theme === "dark" ? 0.45 : 0.25} />
       </mesh>
 
       {/* asset is authored Z-up; rotate into Three's Y-up world */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
-        <AssetMesh primitives={primitives} spec={spec} />
+        <AssetMesh primitives={primitives} spec={spec} selected={selected} onSelect={onSelect} />
       </group>
 
-      <HumanSilhouette x={-Math.max(2, armM * 0.4)} />
+      <HumanSilhouette x={-Math.max(2, armM * 0.4)} color={colors.silhouette} />
       <VerticalDim
         x={-Math.max(1.2, armM * 0.2)}
         height={heightM}

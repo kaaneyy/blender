@@ -1,10 +1,12 @@
 /** Importing this module registers every preview builder (mirrors
- * blender/builders/__init__.py) and wires the generate-anything fallback. */
+ * blender/builders/__init__.py) and wires the cross-cutting passes. */
 import "./streetLight";
 import { buildCustom } from "./generic";
-import { setCustomBuilder } from "./base";
+import { computeHardware } from "./hardware";
+import { setCustomBuilder, setHardwareBuilder } from "./base";
 
 setCustomBuilder(buildCustom);
+setHardwareBuilder(computeHardware);
 
 export {
   computePrimitives,
@@ -13,3 +15,4 @@ export {
   specParams,
 } from "./base";
 export type { ResolvedMaterial } from "./base";
+export { halfExtents } from "./hardware";

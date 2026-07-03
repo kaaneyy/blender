@@ -73,6 +73,15 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [ ] T3.4 LOD generator: decimate modifier at 100% / 50% / 20% poly budget, user-selectable.
 - [x] T3.5 CLI harness: `blender -b -P build_cli.py -- spec.json out.glb` for testing without the web app. *Also runs Blender-free (`python3 blender/build_cli.py spec.json out.json` validates + dumps primitives) and exports native `.blend` files.*
 
+## PHASE 3.5 — Editor & tooling extensions (added beyond the original plan)
+
+- [x] E1 Click-to-select in the viewport: first click selects the component group, second the individual part; selected geometry glows blue.
+- [x] E2 Focused selection panel: shows only the clicked part/group's settings — part count, measured W/D/H, per-axis position nudges (persisted as `spec.offsets`, honored by the Blender export), directly editable dimensions for custom assets.
+- [x] E3 Connection-hardware pass: `connection_hardware` spec toggle materializes bolt/nut assemblies (6-segment hex cylinders) at every inter-component joint, in preview and exports alike (`blender/builders/hardware.py` + TS mirror).
+- [x] E4 AI installation guide: `POST /install-guide` → Markdown instructions grounded in the spec's components, dimensions, and code citations; modal view + .md download.
+- [x] E5 AI standards refresh: `POST /update-standards` → structurally validated proposal for `us_codes.json`; commits to GitHub via the contents API when `GITHUB_TOKEN` is set, else offered as a download.
+- [x] E6 Dark mode: CSS-variable theming + viewport palette swap, persisted per user.
+
 ## PHASE 4 — Live Preview (frontend)
 
 - [x] T4.1 React app shell: prompt box + chat refine panel (left), 3D viewport (center), auto-generated controls panel (right). *Prompt box present but disabled until Phase 2 ships.*

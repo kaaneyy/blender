@@ -38,30 +38,61 @@ function getNoiseImage(): HTMLCanvasElement {
   return canvas;
 }
 
-function useSlotMaterial(spec: AssetSpec, slot: string): THREE.MeshStandardMaterial {
+function useSlotMaterial(
+  spec: AssetSpec,
+  slot: string,
+  highlight: "none" | "part" | "group",
+): THREE.MeshStandardMaterial {
   const resolved = resolveMaterial(spec, slot);
   return useMemo(() => {
     const tex = new THREE.CanvasTexture(getNoiseImage());
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(resolved.uvScale, resolved.uvScale);
     const color = new THREE.Color(resolved.color);
+    const emissive =
+      highlight === "none" ? color : new THREE.Color(highlight === "part" ? "#2f6fed" : "#1d4ed8");
+    const emissiveIntensity =
+      highlight === "none" ? resolved.emission : Math.max(highlight === "part" ? 0.55 : 0.25, resolved.emission);
     return new THREE.MeshStandardMaterial({
       color,
       metalness: resolved.metalness,
       roughness: resolved.roughness,
       map: tex,
-      emissive: color,
-      emissiveIntensity: resolved.emission,
+      emissive,
+      emissiveIntensity,
     });
-  }, [resolved.color, resolved.metalness, resolved.roughness, resolved.uvScale, resolved.emission]);
+  }, [resolved.color, resolved.metalness, resolved.roughness, resolved.uvScale, resolved.emission, highlight]);
 }
 
 /** Rotates Three's Y-axis cylinders/cones onto the local Z axis so the
  * primitive params mean the same thing they do in Blender. */
 const AXIS_FIX: [number, number, number] = [Math.PI / 2, 0, 0];
 
-function PrimitiveMesh({ prim, spec }: { prim: Primitive; spec: AssetSpec }) {
-  const material = useSlotMaterial(spec, prim.materialSlot);
+export interface Selection {
+  component: string;
+  part?: string;
+}
+
+function PrimitiveMesh({
+  prim,
+  spec,
+  selected,
+  onSelect,
+}: {
+  prim: Primitive;
+  spec: AssetSpec;
+  selected: Selection | null;
+  onSelect: (sel: Selection) => void;
+}) {
+  const highlight: "none" | "part" | "group" =
+    selected?.component !== prim.component
+      ? "none"
+      : selected.part === prim.name
+        ? "part"
+        : selected.part
+          ? "none"
+          : "group";
+  const material = useSlotMaterial(spec, prim.materialSlot, highlight);
 
   let geometry: JSX.Element;
   let fix: [number, number, number] = [0, 0, 0];
@@ -90,7 +121,22 @@ function PrimitiveMesh({ prim, spec }: { prim: Primitive; spec: AssetSpec }) {
 
   return (
     <group position={prim.location} rotation={prim.rotation}>
-      <mesh rotation={fix} castShadow receiveShadow material={material}>
+      <mesh
+        rotation={fix}
+        castShadow
+        receiveShadow
+        material={material}
+        onClick={(e) => {
+          e.stopPropagation();
+          // first click selects the group; clicking inside the selected
+          // group drills down to the individual part
+          onSelect(
+            selected?.component === prim.component
+              ? { component: prim.component, part: prim.name }
+              : { component: prim.component },
+          );
+        }}
+      >
         {geometry}
       </mesh>
     </group>
@@ -100,15 +146,22 @@ function PrimitiveMesh({ prim, spec }: { prim: Primitive; spec: AssetSpec }) {
 export default function AssetMesh({
   primitives,
   spec,
+  selected,
+  onSelect,
 }: {
   primitives: Primitive[];
   spec: AssetSpec;
+  selected: Selection | null;
+  onSelect: (sel: Selection) => void;
 }) {
   // Rebuilds are a synchronous useMemo upstream; this component only maps
   // primitives to meshes, comfortably within the 16 ms budget (T4.3).
   const items = useMemo(
-    () => primitives.map((p) => <PrimitiveMesh key={p.name} prim={p} spec={spec} />),
-    [primitives, spec],
+    () =>
+      primitives.map((p) => (
+        <PrimitiveMesh key={p.name} prim={p} spec={spec} selected={selected} onSelect={onSelect} />
+      )),
+    [primitives, spec, selected, onSelect],
   );
   return <>{items}</>;
 }

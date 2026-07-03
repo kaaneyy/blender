@@ -26,18 +26,55 @@ export function register(assetType: string, fn: BuilderFn): void {
   BUILDERS[assetType] = fn;
 }
 
+export function applyOffsets(
+  prims: Primitive[],
+  offsets: Record<string, [number, number, number]>,
+): Primitive[] {
+  return prims.map((p) => {
+    const dc = offsets[p.component] ?? [0, 0, 0];
+    const dp = offsets[`${p.component}/${p.name}`] ?? [0, 0, 0];
+    if (dc.every((v) => v === 0) && dp.every((v) => v === 0)) return p;
+    return {
+      ...p,
+      location: [
+        p.location[0] + dc[0] + dp[0],
+        p.location[1] + dc[1] + dp[1],
+        p.location[2] + dc[2] + dp[2],
+      ],
+    };
+  });
+}
+
 export function computePrimitives(spec: AssetSpec): Primitive[] {
   const fn = BUILDERS[spec.asset_type];
-  if (fn) return fn(spec);
-  if (spec.primitives?.length) {
+  let prims: Primitive[];
+  if (fn) {
+    prims = fn(spec);
+  } else if (spec.primitives?.length) {
     // lazy import avoided: generic.ts imports helpers from this module, so
     // the dependency is wired in builders/index.ts instead
-    return customBuilder!(spec);
+    prims = customBuilder!(spec);
+  } else {
+    throw new Error(
+      `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
+        `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
+    );
   }
-  throw new Error(
-    `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
-      `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
-  );
+
+  if (specToggles(spec).connection_hardware && hardwareFn) {
+    prims = prims.concat(hardwareFn(prims));
+  }
+  const offsets = spec.offsets;
+  if (offsets && Object.keys(offsets).length) {
+    prims = applyOffsets(prims, offsets as Record<string, [number, number, number]>);
+  }
+  return prims;
+}
+
+/** Wired by builders/index.ts (keeps this module dependency-free). */
+let hardwareFn: ((prims: Primitive[]) => Primitive[]) | null = null;
+export function setHardwareBuilder(fn: (prims: Primitive[]) => Primitive[]): void {
+  hardwareFn = fn;
 }
 
 /** Set by builders/index.ts to avoid a circular import with generic.ts. */
@@ -57,7 +94,8 @@ export interface ResolvedMaterial {
 /** Preset merged with per-slot overrides — mirror of base.py resolve_material. */
 export function resolveMaterial(spec: AssetSpec, slot: string): ResolvedMaterial {
   const entry = (spec.materials ?? []).find((m) => m.slot === slot);
-  const presetName = entry?.preset ?? (slot === "lens" ? "lamp_lens" : "galvanized_steel");
+  const fallbacks: Record<string, string> = { lens: "lamp_lens", hardware: "brushed_aluminum" };
+  const presetName = entry?.preset ?? fallbacks[slot] ?? "galvanized_steel";
   const preset = MATERIAL_PRESETS[presetName] ?? MATERIAL_PRESETS.galvanized_steel;
   return {
     color: entry?.color ?? preset.color,
