@@ -1,0 +1,31 @@
+{
+  "asset_type": "street_light",
+  "name": "CobraHead30",
+  "units": "imperial",
+  "code_mode": "strict",
+  "parameters": [
+    { "id": "pole_height", "label": "Pole Height", "type": "slider",
+      "min": 20, "max": 40, "step": 0.5, "value": 30, "unit": "ft",
+      "code_ref": "AASHTO-RDG-lighting" },
+    { "id": "arm_length", "label": "Arm Length", "type": "slider",
+      "min": 4, "max": 15, "step": 0.5, "value": 8, "unit": "ft",
+      "code_ref": "AASHTO-RDG-lighting" },
+    { "id": "pole_base_diameter", "label": "Pole Base Diameter", "type": "slider",
+      "min": 6, "max": 12, "step": 0.5, "value": 8, "unit": "in" },
+    { "id": "pole_top_diameter", "label": "Pole Top Diameter", "type": "slider",
+      "min": 3, "max": 6, "step": 0.5, "value": 4, "unit": "in" }
+  ],
+  "toggles": [
+    { "id": "double_arm", "label": "Double Arm", "value": false },
+    { "id": "banner_bracket", "label": "Banner Bracket", "value": false },
+    { "id": "anchor_bolts", "label": "Anchor Bolts", "value": true }
+  ],
+  "materials": [
+    { "slot": "pole", "preset": "galvanized_steel" },
+    { "slot": "base", "preset": "galvanized_steel" },
+    { "slot": "luminaire", "preset": "powder_coat_black" },
+    { "slot": "lens", "preset": "lamp_lens" }
+  ],
+  "components": ["base_plate", "pole", "arm", "luminaire"],
+  "seed": 42
+}

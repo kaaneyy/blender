@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Build outputs
+out/
+exports/
+*.blend1
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assetforge.dev/schemas/asset_spec.schema.json",
+  "title": "AssetSpec",
+  "description": "Single shared spec that drives the Three.js preview, the Blender builder, and the auto-generated UI controls.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["asset_type", "name", "units", "parameters"],
+  "properties": {
+    "asset_type": {
+      "type": "string",
+      "description": "Builder key, e.g. street_light, pedestrian_lamp, bench, bollard, traffic_sign, trash_bin, planter, hydrant.",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "units": {
+      "enum": ["imperial", "metric"],
+      "description": "Display units for the UI. Individual parameters carry their own unit."
+    },
+    "code_mode": {
+      "enum": ["strict", "advisory"],
+      "default": "strict",
+      "description": "strict = clamp values to US-code ranges; advisory = warn only (movie/animation props)."
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "type", "value"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "label": { "type": "string" },
+          "type": { "enum": ["slider", "number", "select"] },
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "step": { "type": "number", "exclusiveMinimum": 0 },
+          "value": { "type": ["number", "string"] },
+          "unit": { "enum": ["ft", "in", "m", "cm", "mm"] },
+          "options": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Only for type=select (e.g. lantern style: acorn, teardrop, modern)."
+          },
+          "code_ref": {
+            "type": "string",
+            "description": "Key or citation into /standards/us_codes.json, e.g. AASHTO-RDG-lighting, MUTCD-2A.18."
+          }
+        }
+      }
+    },
+    "toggles": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "value"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "label": { "type": "string" },
+          "value": { "type": "boolean" }
+        }
+      }
+    },
+    "materials": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot", "preset"],
+        "properties": {
+          "slot": { "type": "string" },
+          "preset": {
+            "enum": [
+              "galvanized_steel",
+              "powder_coat_black",
+              "powder_coat_green",
+              "cast_iron",
+              "concrete",
+              "brushed_aluminum",
+              "wood_slat",
+              "lamp_lens"
+            ]
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Named component hierarchy; exported as nested DAE nodes so SketchUp imports editable sub-components."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 42,
+      "description": "Deterministic seed for organic detail (weathering, UV offsets)."
+    }
+  }
+}

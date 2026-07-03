@@ -1,0 +1,105 @@
+{
+  "_meta": {
+    "description": "US-code dimensional limits per asset_type. Hard min/max plus defaults, each with a source citation. Values are authored in the unit given per rule; the validator converts as needed.",
+    "disclaimer": "Design-reference values compiled from public standards (AASHTO, MUTCD, ADA, IBC) and typical DOT drawings. Verify against the governing local code before construction use.",
+    "version": 1
+  },
+  "street_light": {
+    "source": "AASHTO Roadway Lighting Design Guide; local DOT typical drawings",
+    "parameters": {
+      "pole_height": {
+        "min": 20, "max": 40, "default": 30, "typical": [25, 35], "unit": "ft",
+        "code_ref": "AASHTO-RDG-lighting",
+        "note": "Roadway lighting pole height; 25-35 ft typical for arterials."
+      },
+      "arm_length": {
+        "min": 4, "max": 15, "default": 8, "unit": "ft",
+        "code_ref": "AASHTO-RDG-lighting",
+        "note": "Mast arm length from pole face to luminaire."
+      },
+      "luminaire_mount_height": {
+        "min": 8, "max": null, "default": 30, "unit": "ft",
+        "code_ref": "AASHTO-RDG-lighting",
+        "note": "Luminaire must clear a walkway by at least 8 ft."
+      }
+    }
+  },
+  "pedestrian_lamp": {
+    "source": "AASHTO Roadway Lighting Design Guide; municipal streetscape standards",
+    "parameters": {
+      "pole_height": {
+        "min": 10, "max": 15, "default": 12, "unit": "ft",
+        "code_ref": "AASHTO-RDG-pedestrian",
+        "note": "Pedestrian-scale post-top lantern height."
+      }
+    }
+  },
+  "traffic_sign": {
+    "source": "MUTCD 11th Edition, Section 2A.18",
+    "parameters": {
+      "mount_height": {
+        "min": 7, "max": null, "default": 7, "unit": "ft",
+        "code_ref": "MUTCD-2A.18",
+        "note": "Bottom of sign at least 7 ft above the sidewalk in pedestrian areas."
+      }
+    }
+  },
+  "bollard": {
+    "source": "ADA/PROWAG detectability guidance; typical site-furnishing specs",
+    "parameters": {
+      "height": {
+        "min": 30, "max": 36, "default": 33, "unit": "in",
+        "code_ref": "ADA-PROWAG-bollard",
+        "note": "30-36 in tall so it is cane-detectable and visible."
+      },
+      "diameter": {
+        "min": 4, "max": 8, "default": 6, "unit": "in",
+        "code_ref": "ADA-PROWAG-bollard"
+      }
+    }
+  },
+  "bench": {
+    "source": "ADA Accessibility Standards 903.5; typical site-furnishing specs",
+    "parameters": {
+      "seat_height": {
+        "min": 17, "max": 19, "default": 18, "unit": "in",
+        "code_ref": "ADA-903.5",
+        "note": "Accessible bench seat height 17-19 in above ground."
+      },
+      "seat_depth": {
+        "min": 20, "max": 24, "default": 22, "unit": "in",
+        "code_ref": "ADA-903.5"
+      }
+    }
+  },
+  "handrail": {
+    "source": "IBC Section 1014.2",
+    "parameters": {
+      "height": {
+        "min": 34, "max": 38, "default": 36, "unit": "in",
+        "code_ref": "IBC-1014.2",
+        "note": "Handrail height measured above stair nosing / walking surface."
+      }
+    }
+  },
+  "door": {
+    "source": "ADA 404.2.3; IBC 1010.1.1",
+    "parameters": {
+      "clear_height": {
+        "min": 80, "max": null, "default": 80, "unit": "in",
+        "code_ref": "ADA-404-IBC-1010",
+        "note": "Minimum clear opening height for door props."
+      }
+    }
+  },
+  "fire_hydrant": {
+    "source": "AWWA M17; typical municipal water standards",
+    "parameters": {
+      "outlet_height": {
+        "min": 18, "max": null, "default": 18, "unit": "in",
+        "code_ref": "AWWA-M17-outlet",
+        "note": "Lowest outlet at least 18 in above finished grade."
+      }
+    }
+  }
+}
