@@ -81,6 +81,9 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [x] E4 AI installation guide: `POST /install-guide` → Markdown instructions grounded in the spec's components, dimensions, and code citations; modal view + .md download.
 - [x] E5 AI standards refresh: `POST /update-standards` → structurally validated proposal for `us_codes.json`; commits to GitHub via the contents API when `GITHUB_TOKEN` is set, else offered as a download.
 - [x] E6 Dark mode: CSS-variable theming + viewport palette swap, persisted per user.
+- [x] E7 Streaming AI: all four AI endpoints have `-stream` twins (SSE from DeepSeek/OpenAI/Anthropic, sentinel + JSON payload protocol); the UI shows the raw generation live in a small pulsing card.
+- [x] E8 Camera UX: click-to-select glides the camera to center the part; turning on connection hardware tours every bolt in order then zooms back out; WASD/QE fly-through; adopting a new AI asset re-frames the view; guide results are cached per spec (Regenerate to force).
+- [x] E9 Maps-style nav overlay: round zoom/home/top-view buttons, a live compass (click → face north), and a sun-direction dial (click → rotate the sun 45°, shadows follow).
 
 ## PHASE 4 — Live Preview (frontend)
 

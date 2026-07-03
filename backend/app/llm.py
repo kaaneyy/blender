@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
+from typing import Iterator
 
 import httpx
 
@@ -130,6 +132,112 @@ def complete(system: str, user: str, *, temperature: float = 0.4,
             _require_key("ANTHROPIC_API_KEY"), model or "claude-sonnet-5",
             system, user, temperature, max_tokens,
         )
+    raise LLMError(
+        f"Unknown LLM_PROVIDER {provider!r} (expected deepseek, openai, anthropic, or mock)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Streaming variants — yield text chunks as the provider produces them.
+# ---------------------------------------------------------------------------
+
+def _openai_compatible_stream(url: str, api_key: str, model: str, system: str,
+                              user: str, temperature: float, max_tokens: int) -> Iterator[str]:
+    with httpx.stream(
+        "POST", url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        },
+        timeout=TIMEOUT,
+    ) as resp:
+        if resp.status_code != 200:
+            resp.read()
+            raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
+        for line in resp.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                delta = json.loads(data)["choices"][0]["delta"].get("content")
+            except (KeyError, IndexError, json.JSONDecodeError):
+                continue
+            if delta:
+                yield delta
+
+
+def _anthropic_stream(api_key: str, model: str, system: str, user: str,
+                      temperature: float, max_tokens: int) -> Iterator[str]:
+    with httpx.stream(
+        "POST", "https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        json={
+            "model": model,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        },
+        timeout=TIMEOUT,
+    ) as resp:
+        if resp.status_code != 200:
+            resp.read()
+            raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
+        for line in resp.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            try:
+                event = json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "content_block_delta":
+                text = event.get("delta", {}).get("text")
+                if text:
+                    yield text
+
+
+def complete_stream(system: str, user: str, *, temperature: float = 0.4,
+                    max_tokens: int = 6000) -> Iterator[str]:
+    """Streaming twin of :func:`complete`."""
+    provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+    model = os.environ.get("LLM_MODEL", "").strip()
+
+    if provider == "mock":
+        text = _mock(user)
+        for i in range(0, len(text), 64):  # simulate token flow for the UI
+            yield text[i : i + 64]
+            time.sleep(0.004)
+        return
+    if provider == "deepseek":
+        yield from _openai_compatible_stream(
+            "https://api.deepseek.com/v1/chat/completions",
+            _require_key("DEEPSEEK_API_KEY"), model or "deepseek-chat",
+            system, user, temperature, max_tokens,
+        )
+        return
+    if provider == "openai":
+        yield from _openai_compatible_stream(
+            "https://api.openai.com/v1/chat/completions",
+            _require_key("OPENAI_API_KEY"), model or "gpt-4o-mini",
+            system, user, temperature, max_tokens,
+        )
+        return
+    if provider == "anthropic":
+        yield from _anthropic_stream(
+            _require_key("ANTHROPIC_API_KEY"), model or "claude-sonnet-5",
+            system, user, temperature, max_tokens,
+        )
+        return
     raise LLMError(
         f"Unknown LLM_PROVIDER {provider!r} (expected deepseek, openai, anthropic, or mock)"
     )

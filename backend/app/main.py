@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +144,41 @@ def update_standards() -> dict:
         "Update US-code standards DB (AI-proposed via AssetForge)",
     )
     return {**result, **commit}
+
+
+# Streaming twins: raw LLM text as it generates, then STREAM_SENTINEL + a
+# JSON payload {ok, result|error}. The UI shows the live text in a small
+# "generating" card and acts on the final payload.
+
+def _stream(gen) -> StreamingResponse:
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8")
+
+
+@router.post("/generate-spec-stream")
+def generate_stream(body: GenerateRequest) -> StreamingResponse:
+    return _stream(spec_ai.stream_generate_spec(body.prompt, body.code_mode))
+
+
+@router.post("/refine-spec-stream")
+def refine_stream(body: RefineRequest) -> StreamingResponse:
+    return _stream(spec_ai.stream_refine_spec(body.spec, body.message, body.code_mode))
+
+
+@router.post("/install-guide-stream")
+def install_guide_stream(body: InstallGuideRequest) -> StreamingResponse:
+    return _stream(spec_ai.stream_install_guide(body.spec))
+
+
+@router.post("/update-standards-stream")
+def update_standards_stream() -> StreamingResponse:
+    def commit_fn(proposal: dict) -> dict:
+        return github_sync.commit_file(
+            "standards/us_codes.json",
+            json.dumps(proposal, indent=2) + "\n",
+            "Update US-code standards DB (AI-proposed via AssetForge)",
+        )
+
+    return _stream(spec_ai.stream_update_standards(commit_fn))
 
 
 app.include_router(router)

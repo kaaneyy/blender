@@ -1,13 +1,15 @@
-/** Left panel (T4.1 + Phase 2 client): describe any asset → AI generates a
- * spec; then keep refining it conversationally. */
-import { useState } from "react";
+/** Left panel: describe any asset → AI generates a spec (streamed live);
+ * keep refining conversationally. Also hosts the installation-guide and
+ * standards-refresh tools, both streamed. The guide is cached per spec so
+ * reopening it costs nothing when the asset hasn't changed. */
+import { useEffect, useRef, useState } from "react";
 import type { AssetSpec } from "../types";
 import type { CodeViolation } from "../standards";
 import {
-  generateSpec,
-  installGuide,
-  refineSpec,
-  updateStandards,
+  generateSpecStream,
+  installGuideStream,
+  refineSpecStream,
+  updateStandardsStream,
   type StandardsUpdateResult,
 } from "../api";
 import Modal from "./Modal";
@@ -15,6 +17,34 @@ import Modal from "./Modal";
 interface ChatEntry {
   role: "you" | "assetforge";
   text: string;
+}
+
+type Busy = false | "generate" | "refine" | "guide" | "standards";
+
+const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
+  generate: "Generating your asset…",
+  refine: "Applying your change…",
+  guide: "Writing the installation guide…",
+  standards: "Researching standards…",
+};
+
+/** Live "the AI is generating" card: shows the streaming tail so the user
+ * can see progress without needing to read it. */
+function StreamCard({ title, text }: { title: string; text: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
+  }, [text]);
+  return (
+    <div className="stream-card" aria-live="off">
+      <div className="stream-card__title">
+        <span className="stream-card__dot" /> {title}
+      </div>
+      <div className="stream-card__text" ref={boxRef}>
+        {text.slice(-800) || "…"}
+      </div>
+    </div>
+  );
 }
 
 /** Minimal markdown rendering for the install guide (headings + lines). */
@@ -57,66 +87,49 @@ export default function PromptPanel({
 }) {
   const [prompt, setPrompt] = useState("");
   const [refineMsg, setRefineMsg] = useState("");
-  const [busy, setBusy] = useState<false | "generate" | "refine" | "guide" | "standards">(false);
+  const [busy, setBusy] = useState<Busy>(false);
+  const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [guide, setGuide] = useState<string | null>(null);
   const [standardsResult, setStandardsResult] = useState<StandardsUpdateResult | null>(null);
+  const guideCache = useRef<{ key: string; text: string } | null>(null);
   const violationCount = Object.keys(violations).length;
 
-  const runGuide = async () => {
+  const run = async (kind: Exclude<Busy, false>, task: () => Promise<void>) => {
     if (busy) return;
-    setBusy("guide");
+    setBusy(kind);
     setError(null);
+    setStreamText("");
     try {
-      setGuide(await installGuide(spec));
+      await task();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStreamText("");
     }
   };
 
-  const runStandardsUpdate = async () => {
-    if (busy) return;
-    setBusy("standards");
-    setError(null);
-    try {
-      setStandardsResult(await updateStandards());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runGenerate = async () => {
-    if (!prompt.trim() || busy) return;
-    setBusy("generate");
-    setError(null);
-    try {
-      const newSpec = await generateSpec(prompt.trim());
+  const runGenerate = () =>
+    run("generate", async () => {
+      const text = prompt.trim();
+      if (!text) return;
+      const newSpec = await generateSpecStream(text, setStreamText);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat([
-        { role: "you", text: prompt.trim() },
+        { role: "you", text },
         { role: "assetforge", text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.` },
       ]);
       setPrompt("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
-  const runRefine = async () => {
-    if (!refineMsg.trim() || busy) return;
-    setBusy("refine");
-    setError(null);
-    const msg = refineMsg.trim();
-    try {
-      const newSpec = await refineSpec(spec, msg);
+  const runRefine = () =>
+    run("refine", async () => {
+      const msg = refineMsg.trim();
+      if (!msg) return;
+      const newSpec = await refineSpecStream(spec, msg, setStreamText);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
@@ -125,20 +138,31 @@ export default function PromptPanel({
         { role: "assetforge", text: `Updated "${newSpec.name}".` },
       ]);
       setRefineMsg("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+    });
+
+  /** Cached per spec: reopening the guide without changing the asset is
+   * instant; "Regenerate" in the modal forces a fresh one. */
+  const runGuide = (force = false) => {
+    const key = JSON.stringify(spec);
+    if (!force && guideCache.current?.key === key) {
+      setGuide(guideCache.current.text);
+      return;
     }
+    void run("guide", async () => {
+      setGuide(null);
+      const text = await installGuideStream(spec, setStreamText);
+      guideCache.current = { key, text };
+      setGuide(text);
+    });
   };
 
+  const runStandardsUpdate = () =>
+    run("standards", async () => {
+      setStandardsResult(await updateStandardsStream(setStreamText));
+    });
+
   const downloadSpec = () => {
-    const blob = new Blob([JSON.stringify(spec, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${spec.name || spec.asset_type}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    download(`${spec.name || spec.asset_type}.json`, JSON.stringify(spec, null, 2), "application/json");
   };
 
   return (
@@ -163,7 +187,7 @@ export default function PromptPanel({
         disabled={busy !== false}
       />
       <button onClick={runGenerate} disabled={busy !== false || !prompt.trim()}>
-        {busy === "generate" ? "Generating… (10–30 s)" : "Generate"}
+        {busy === "generate" ? "Generating…" : "Generate"}
       </button>
 
       {chat.length > 0 && (
@@ -191,6 +215,8 @@ export default function PromptPanel({
         </>
       )}
 
+      {busy !== false && <StreamCard title={BUSY_TITLES[busy]} text={streamText} />}
+
       {error && (
         <div className="violation" role="alert">
           <p>{error}</p>
@@ -212,7 +238,7 @@ export default function PromptPanel({
       </div>
 
       <button onClick={downloadSpec}>Download spec (.json)</button>
-      <button onClick={runGuide} disabled={busy !== false}>
+      <button onClick={() => runGuide()} disabled={busy !== false}>
         {busy === "guide" ? "Writing guide…" : "📋 Installation guide"}
       </button>
       <button onClick={runStandardsUpdate} disabled={busy !== false} className="secondary">
@@ -230,6 +256,13 @@ export default function PromptPanel({
           <div className="modal__actions">
             <button onClick={() => download(`${spec.name || "asset"}-install-guide.md`, guide, "text/markdown")}>
               Download guide (.md)
+            </button>
+            <button
+              className="secondary-btn"
+              onClick={() => runGuide(true)}
+              title="Write a fresh guide even though the asset hasn't changed"
+            >
+              Regenerate
             </button>
           </div>
         </Modal>

@@ -30,6 +30,8 @@ export default function App() {
   const [displayUnits, setDisplayUnits] = useState<UnitSystem>(defaultSpec.units);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [tourId, setTourId] = useState(0);
+  const [homeId, setHomeId] = useState(0);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -60,16 +62,21 @@ export default function App() {
     }));
 
   /** "Show real bolts & connections": ensure the connection_hardware toggle
-   * exists in the spec (so it exports too), then flip it. */
+   * exists in the spec (so it exports too), then flip it. Turning it ON
+   * kicks off the viewport's camera tour of every connection point. */
   const toggleHardware = () =>
     setSpec((s) => {
       const toggles = [...(s.toggles ?? [])];
       const i = toggles.findIndex((t) => t.id === "connection_hardware");
+      let turningOn: boolean;
       if (i === -1) {
         toggles.push({ id: "connection_hardware", label: "Connection Hardware", value: true });
+        turningOn = true;
       } else {
-        toggles[i] = { ...toggles[i], value: !toggles[i].value };
+        turningOn = !toggles[i].value;
+        toggles[i] = { ...toggles[i], value: turningOn };
       }
+      if (turningOn) setTourId((t) => t + 1);
       return { ...s, toggles };
     });
 
@@ -130,6 +137,7 @@ export default function App() {
     setSpec(newSpec);
     setSelected(null);
     setDisplayUnits(newSpec.units ?? "imperial");
+    setHomeId((h) => h + 1); // glide the camera to frame the new asset
     return null;
   };
 
@@ -155,6 +163,8 @@ export default function App() {
           theme={theme}
           selected={selected}
           onSelect={setSelected}
+          tourId={tourId}
+          homeId={homeId}
         />
       </main>
       <aside className="sidebar sidebar--right">

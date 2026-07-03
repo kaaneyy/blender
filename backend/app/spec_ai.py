@@ -29,7 +29,11 @@ from standards.validator import (  # noqa: E402
 from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: E402
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
-from .llm import complete  # noqa: E402
+from .llm import LLMError, complete, complete_stream  # noqa: E402
+
+#: Marks the end of the streamed raw text; the JSON payload after it carries
+#: the validated result (or the error). The frontend splits on this.
+STREAM_SENTINEL = "\n<<<ASSETFORGE_RESULT>>>\n"
 
 ASSET_SPEC_SCHEMA = json.loads(
     (REPO_ROOT / "schemas" / "asset_spec.schema.json").read_text(encoding="utf-8")
@@ -163,9 +167,7 @@ def refine_spec(spec: dict, message: str, code_mode: str = "strict") -> dict:
 # Installation guide
 # ---------------------------------------------------------------------------
 
-def generate_install_guide(spec: dict) -> str:
-    """Plain-language installation instructions for the current asset,
-    grounded in its actual dimensions, components, and code citations."""
+def _install_guide_prompts(spec: dict) -> tuple:
     standards = load_standards()
     relevant = standards.get(spec.get("asset_type", ""), {})
     system = (
@@ -185,6 +187,13 @@ def generate_install_guide(spec: dict) -> str:
         f"INSTALL GUIDE request.\nAssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
         f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}"
     )
+    return system, user
+
+
+def generate_install_guide(spec: dict) -> str:
+    """Plain-language installation instructions for the current asset,
+    grounded in its actual dimensions, components, and code citations."""
+    system, user = _install_guide_prompts(spec)
     return complete(system, user, temperature=0.3).strip()
 
 
@@ -214,15 +223,13 @@ def _diff_standards(old: dict, new: dict) -> list:
     return changes
 
 
-def propose_standards_update() -> dict:
-    """Ask the LLM to review/extend the US-code standards DB. The proposal is
-    structurally validated; the caller decides whether to commit it to
-    GitHub or hand it back as a download.
+STANDARDS_NOTE = (
+    "Proposed from the AI's knowledge of published standards (no live web "
+    "access) — review the cited sections before relying on them."
+)
 
-    Honesty note (surfaced to the user by the UI): the proposal comes from
-    the model's knowledge of published standards, not a live web crawl —
-    review the cited sections before relying on it.
-    """
+
+def _standards_prompts() -> tuple:
     current = load_standards()
     system = (
         "You maintain a JSON database of US dimensional code limits for site "
@@ -238,28 +245,109 @@ def propose_standards_update() -> dict:
         "and keep the _meta.disclaimer. Return ONLY the complete updated JSON."
     )
     user = f"STANDARDS UPDATE request.\nCurrent database:\n{json.dumps(current, indent=1)}"
+    return system, user
 
-    def attempt(user_msg: str) -> dict:
-        raw = complete(system, user_msg, temperature=0.2, max_tokens=8000)
-        try:
-            proposal = json.loads(_strip_fences(raw))
-        except json.JSONDecodeError as exc:
-            raise SpecGenerationError(f"Proposal was not valid JSON: {exc}") from None
-        problems = validate_standards_db(proposal)
-        if problems:
-            raise SpecGenerationError("Structural problems: " + "; ".join(problems[:8]))
-        return proposal
 
+def _standards_finalize(raw: str) -> dict:
     try:
-        proposal = attempt(user)
-    except SpecGenerationError as err:  # T2.6-style single retry
-        proposal = attempt(f"{user}\n\nYour previous answer failed: {err}\nReturn corrected JSON only.")
-
+        proposal = json.loads(_strip_fences(raw))
+    except json.JSONDecodeError as exc:
+        raise SpecGenerationError(f"Proposal was not valid JSON: {exc}") from None
+    problems = validate_standards_db(proposal)
+    if problems:
+        raise SpecGenerationError("Structural problems: " + "; ".join(problems[:8]))
     return {
         "proposal": proposal,
-        "changes": _diff_standards(current, proposal),
-        "note": (
-            "Proposed from the AI's knowledge of published standards (no live web "
-            "access) — review the cited sections before relying on them."
-        ),
+        "changes": _diff_standards(load_standards(), proposal),
+        "note": STANDARDS_NOTE,
     }
+
+
+def propose_standards_update() -> dict:
+    """Ask the LLM to review/extend the US-code standards DB. The proposal is
+    structurally validated; the caller decides whether to commit it to
+    GitHub or hand it back as a download.
+
+    Honesty note (surfaced to the user by the UI): the proposal comes from
+    the model's knowledge of published standards, not a live web crawl —
+    review the cited sections before relying on it.
+    """
+    system, user = _standards_prompts()
+    try:
+        return _standards_finalize(complete(system, user, temperature=0.2, max_tokens=8000))
+    except SpecGenerationError as err:  # T2.6-style single retry
+        return _standards_finalize(
+            complete(system, f"{user}\n\nYour previous answer failed: {err}\nReturn corrected JSON only.",
+                     temperature=0.2, max_tokens=8000)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Streaming pipelines — yield raw LLM text as it arrives so the UI can show
+# generation live, then a sentinel + JSON payload with the validated result.
+# ---------------------------------------------------------------------------
+
+def _stream_pipeline(system, user, finalize, retry: bool = True):
+    payload = None
+    try:
+        parts = []
+        for chunk in complete_stream(system, user):
+            parts.append(chunk)
+            yield chunk
+        try:
+            payload = {"ok": True, "result": finalize("".join(parts))}
+        except SpecGenerationError as err:
+            if not retry:
+                payload = {"ok": False, "error": str(err)}
+            else:
+                yield f"\n\n[validation failed — retrying: {err}]\n\n"
+                retry_user = (
+                    f"{user}\n\nYour previous answer failed validation with this "
+                    f"error:\n{err}\n\nReturn the corrected JSON only."
+                )
+                parts = []
+                for chunk in complete_stream(system, retry_user):
+                    parts.append(chunk)
+                    yield chunk
+                try:
+                    payload = {"ok": True, "result": finalize("".join(parts))}
+                except SpecGenerationError as err2:
+                    payload = {"ok": False, "error": str(err2)}
+    except LLMError as exc:
+        payload = {"ok": False, "error": str(exc)}
+    yield STREAM_SENTINEL + json.dumps(payload)
+
+
+def stream_generate_spec(prompt: str, code_mode: str = "strict"):
+    return _stream_pipeline(
+        _system_prompt(code_mode), f"Request: {prompt}",
+        lambda raw: _postprocess(raw, code_mode),
+    )
+
+
+def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict"):
+    user = (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Apply this change and return the FULL updated AssetSpec JSON "
+        f"(keep everything else identical, including ids):\n{message}"
+    )
+    return _stream_pipeline(
+        _system_prompt(code_mode), user, lambda raw: _postprocess(raw, code_mode)
+    )
+
+
+def stream_install_guide(spec: dict):
+    system, user = _install_guide_prompts(spec)
+    return _stream_pipeline(system, user, lambda raw: {"guide": raw.strip()}, retry=False)
+
+
+def stream_update_standards(commit_fn):
+    """``commit_fn(proposal_dict) -> dict`` merges commit status into the result."""
+    system, user = _standards_prompts()
+
+    def finalize(raw: str) -> dict:
+        result = _standards_finalize(raw)
+        result.update(commit_fn(result["proposal"]))
+        return result
+
+    return _stream_pipeline(system, user, finalize)

@@ -104,3 +104,38 @@ def test_update_standards_mock_without_token(monkeypatch):
     assert any("bike_rack" in c for c in data["changes"])
     from standards.validator import validate_standards_db
     assert validate_standards_db(data["proposal"]) == []
+
+
+SENTINEL = "<<<ASSETFORGE_RESULT>>>"
+
+
+def stream_payload(resp):
+    assert resp.status_code == 200
+    assert SENTINEL in resp.text
+    return json.loads(resp.text.split(SENTINEL)[-1])
+
+
+def test_generate_spec_stream():
+    r = client.post("/api/generate-spec-stream", json={"prompt": "a park bench"})
+    payload = stream_payload(r)
+    assert payload["ok"] is True
+    assert payload["result"]["spec"]["asset_type"] == "bench"
+    # raw text streamed before the sentinel
+    assert '"asset_type"' in r.text.split(SENTINEL)[0]
+
+
+def test_install_guide_stream():
+    spec = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
+    r = client.post("/api/install-guide-stream", json={"spec": spec})
+    payload = stream_payload(r)
+    assert payload["ok"] is True
+    assert "Assembly sequence" in payload["result"]["guide"]
+
+
+def test_update_standards_stream(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    r = client.post("/api/update-standards-stream")
+    payload = stream_payload(r)
+    assert payload["ok"] is True
+    assert payload["result"]["committed"] is False
+    assert any("bike_rack" in c for c in payload["result"]["changes"])

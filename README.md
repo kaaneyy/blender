@@ -58,6 +58,16 @@ command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sket
   not a live web crawl — always review the cited sections.
 - **🌙 Dark mode** — the moon/sun button next to the logo; your choice is
   remembered.
+- **Navigation** — drag to orbit, **WASD** to move around (Q/E for down/up),
+  plus a maps-style button column in the viewport: zoom, reset view, top
+  view, a live compass (click it to face north), and a sun dial (click to
+  rotate the sun — shadows follow). Clicking a part glides the camera to
+  center it; turning on the bolts view tours every connection point in
+  order before zooming back out.
+- **Live AI feedback** — every AI action streams: a small pulsing card shows
+  the model's output as it generates, so you always know it's working. The
+  installation guide is cached per asset — reopening it is instant until the
+  asset changes (or hit Regenerate).
 
 ---
 
