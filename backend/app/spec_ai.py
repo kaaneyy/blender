@@ -99,6 +99,36 @@ EXAMPLE — custom primitives (the "anything" path):
 {FEW_SHOT_CUSTOM}"""
 
 
+# ---------------------------------------------------------------------------
+# Prompt refiner — turns a vague request into a precise design brief before
+# the spec generator sees it ("a lamp" → asset type, style, dimensions with
+# units, materials, options, connections).
+# ---------------------------------------------------------------------------
+
+ENHANCE_SYSTEM = (
+    "You are the design-brief writer for a parametric 3D asset generator for "
+    "street furniture, lighting, signage, and props. Rewrite the user's request "
+    "into one precise, buildable brief. Name the asset type; a coherent style; "
+    "overall dimensions WITH units, choosing sensible values within US code "
+    "limits where they apply (AASHTO/MUTCD/ADA/IBC); per-part materials and "
+    "finishes; 2-4 optional features worth exposing as toggles; and how the "
+    "parts connect and mount to the ground (base plate, rails, clamps). Keep "
+    "EVERY explicit detail the user gave — only add what is missing. Plain "
+    "prose, at most 120 words, no JSON, no lists, no preamble."
+)
+
+
+def _enhance_user(prompt: str) -> str:
+    return f"ENHANCE PROMPT.\nRequest: {prompt}"
+
+
+def enhance_prompt(prompt: str) -> str:
+    """One extra AI pass: vague request in, well-written design brief out."""
+    brief = complete(ENHANCE_SYSTEM, _enhance_user(prompt),
+                     temperature=0.5, max_tokens=400).strip()
+    return brief or prompt
+
+
 def _strip_fences(raw: str) -> str:
     text = raw.strip()
     match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
@@ -156,8 +186,13 @@ def _run(system: str, user: str, code_mode: str) -> dict:
 
 
 def generate_spec(prompt: str, code_mode: str = "strict") -> dict:
-    """T2.1: natural-language prompt → validated AssetSpec (+ violations)."""
-    return _run(_system_prompt(code_mode), f"Request: {prompt}", code_mode)
+    """T2.1: natural-language prompt → design brief (extra AI pass) →
+    validated AssetSpec (+ violations). The brief rides along in the result
+    so the UI can show how the request was interpreted."""
+    brief = enhance_prompt(prompt)
+    result = _run(_system_prompt(code_mode), f"Request: {brief}", code_mode)
+    result["brief"] = brief
+    return result
 
 
 def refine_spec(spec: dict, message: str, code_mode: str = "strict") -> dict:
@@ -329,10 +364,33 @@ def _stream_pipeline(system, user, finalize, retry: bool = True):
 
 
 def stream_generate_spec(prompt: str, code_mode: str = "strict"):
-    return _stream_pipeline(
-        _system_prompt(code_mode), f"Request: {prompt}",
-        lambda raw: _postprocess(raw, code_mode),
-    )
+    """Two visible stages in one stream: the brief being written, then the
+    spec being designed from it."""
+
+    def gen():
+        yield "[refining your request into a design brief]\n\n"
+        try:
+            parts = []
+            for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(prompt),
+                                         temperature=0.5, max_tokens=400):
+                parts.append(chunk)
+                yield chunk
+        except LLMError as exc:
+            yield STREAM_SENTINEL + json.dumps({"ok": False, "error": str(exc)})
+            return
+        brief = "".join(parts).strip() or prompt
+        yield "\n\n[designing the asset from the brief]\n\n"
+
+        def finalize(raw: str) -> dict:
+            result = _postprocess(raw, code_mode)
+            result["brief"] = brief
+            return result
+
+        yield from _stream_pipeline(
+            _system_prompt(code_mode), f"Request: {brief}", finalize
+        )
+
+    return gen()
 
 
 def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict"):

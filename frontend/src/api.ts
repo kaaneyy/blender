@@ -133,10 +133,13 @@ async function streamPost(
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
-): Promise<AssetSpec> {
+): Promise<{ spec: AssetSpec; brief?: string }> {
   const result = await streamPost("/generate-spec-stream", { prompt, code_mode: "strict" }, onChunk);
   if (!result?.spec) throw new Error("Backend returned no spec");
-  return result.spec as AssetSpec;
+  return {
+    spec: result.spec as AssetSpec,
+    brief: typeof result.brief === "string" ? result.brief : undefined,
+  };
 }
 
 export async function refineSpecStream(

@@ -139,3 +139,29 @@ def test_update_standards_stream(monkeypatch):
     assert payload["ok"] is True
     assert payload["result"]["committed"] is False
     assert any("bike_rack" in c for c in payload["result"]["changes"])
+
+
+def test_prompt_enhancer_layer():
+    """The extra AI pass: vague request -> design brief -> spec, with the
+    brief returned so the UI can show the interpretation."""
+    from backend.app.spec_ai import enhance_prompt
+
+    brief = enhance_prompt("a lamp")
+    assert "a lamp" in brief and len(brief) > len("a lamp")
+
+    r = client.post("/api/generate-spec", json={"prompt": "a park bench"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["brief"].startswith("Design brief: a park bench")
+    assert data["spec"]["asset_type"] == "bench"
+
+
+def test_generate_stream_has_brief_stages():
+    r = client.post("/api/generate-spec-stream", json={"prompt": "a park bench"})
+    payload = stream_payload(r)
+    raw = r.text.split(SENTINEL)[0]
+    assert "[refining your request into a design brief]" in raw
+    assert "[designing the asset from the brief]" in raw
+    assert payload["ok"] is True
+    assert payload["result"]["brief"].startswith("Design brief:")
+    assert payload["result"]["spec"]["asset_type"] == "bench"

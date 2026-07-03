@@ -2,10 +2,26 @@
  * switches from toggles[], material dropdowns from materials[].
  * Zero per-asset UI code. Violations render red with the code citation and
  * a "snap to code" action (T4.5). */
-import type { AssetSpec, SpecMaterial, SpecParameter, UnitSystem } from "../types";
+import type { AssetSpec, SpecMaterial, SpecParameter, Unit, UnitSystem } from "../types";
 import type { CodeViolation } from "../standards";
 import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
-import { counterpart } from "../units";
+import { convert, counterpart } from "../units";
+
+/** Which unit a parameter is DISPLAYED in for the chosen system: ft↔m,
+ * in↔cm. The spec always keeps the parameter's native unit — this is pure
+ * display conversion, so the validator and builders are untouched. */
+function displayUnitFor(unit: Unit, system: UnitSystem): Unit {
+  if (system === "metric") {
+    if (unit === "ft") return "m";
+    if (unit === "in") return "cm";
+    return unit;
+  }
+  if (unit === "m") return "ft";
+  if (unit === "cm" || unit === "mm") return "in";
+  return unit;
+}
+
+const round3 = (v: number) => Number(v.toFixed(3));
 
 interface Props {
   spec: AssetSpec;
@@ -94,10 +110,12 @@ function MaterialControl({
 function ParamControl({
   param,
   violation,
+  displayUnits,
   onParam,
 }: {
   param: SpecParameter;
   violation?: CodeViolation;
+  displayUnits: UnitSystem;
   onParam: Props["onParam"];
 }) {
   if (param.type === "select" || typeof param.value === "string") {
@@ -119,6 +137,15 @@ function ParamControl({
   }
 
   const value = param.value;
+  const unit: Unit = param.unit ?? "ft";
+  const dispUnit = displayUnitFor(unit, displayUnits);
+  const toDisplay = (v: number) => convert(v, unit, dispUnit);
+  const fromDisplay = (v: number) => Number(convert(v, dispUnit, unit).toFixed(6));
+  const shownValue = round3(toDisplay(value));
+  const shownMin = round3(toDisplay(param.min ?? value / 2));
+  const shownMax = round3(toDisplay(param.max ?? value * 2));
+  const shownStep = dispUnit === unit ? (param.step ?? 1) : toDisplay(param.step ?? 1);
+
   return (
     <div className={`control${violation ? " control--violation" : ""}`}>
       <div className="control__row">
@@ -128,23 +155,27 @@ function ParamControl({
         <span className="control__value">
           <input
             type="number"
-            value={value}
-            step={param.step ?? 1}
-            onChange={(e) => onParam(param.id, Number(e.target.value))}
+            value={shownValue}
+            step={shownStep}
+            onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
           />
-          <span className="control__unit">{param.unit ?? ""}</span>
+          <span className="control__unit">{dispUnit}</span>
         </span>
       </div>
       <input
         type="range"
-        min={param.min ?? value / 2}
-        max={param.max ?? value * 2}
-        step={param.step ?? 1}
-        value={value}
-        onChange={(e) => onParam(param.id, Number(e.target.value))}
+        min={shownMin}
+        max={shownMax}
+        step={shownStep}
+        value={shownValue}
+        onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
       />
       <div className="control__meta">
-        <span>{counterpart(value, param.unit ?? "ft")}</span>
+        <span>
+          {dispUnit === unit
+            ? counterpart(value, unit)
+            : `${round3(value)} ${unit}`}
+        </span>
         {param.code_ref && <span className="control__coderef">{param.code_ref}</span>}
       </div>
       {violation && (
@@ -193,7 +224,13 @@ export default function ControlsPanel({
       </div>
 
       {spec.parameters.map((p) => (
-        <ParamControl key={p.id} param={p} violation={violations[p.id]} onParam={onParam} />
+        <ParamControl
+          key={p.id}
+          param={p}
+          violation={violations[p.id]}
+          displayUnits={displayUnits}
+          onParam={onParam}
+        />
       ))}
 
       <h3>Options</h3>

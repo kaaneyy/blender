@@ -115,13 +115,19 @@ export default function PromptPanel({
     run("generate", async () => {
       const text = prompt.trim();
       if (!text) return;
-      const newSpec = await generateSpecStream(text, setStreamText);
+      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
-      setChat([
-        { role: "you", text },
-        { role: "assetforge", text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.` },
-      ]);
+      const entries: ChatEntry[] = [{ role: "you", text }];
+      if (brief && brief.toLowerCase() !== text.toLowerCase()) {
+        const shown = brief.length > 220 ? `${brief.slice(0, 220)}…` : brief;
+        entries.push({ role: "assetforge", text: `Interpreted as: ${shown}` });
+      }
+      entries.push({
+        role: "assetforge",
+        text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.`,
+      });
+      setChat(entries);
       setPrompt("");
     });
 
