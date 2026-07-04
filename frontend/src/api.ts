@@ -6,6 +6,15 @@ import type { AssetSpec } from "./types";
 const API_BASE: string =
   (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "/api";
 
+/** DeepSeek models the model dropdown offers. Empty string = server default. */
+export type DeepseekModel = "deepseek-chat" | "deepseek-v4-flash" | "deepseek-v4-pro";
+
+export const MODEL_OPTIONS: Array<{ id: DeepseekModel; label: string; hint: string }> = [
+  { id: "deepseek-chat", label: "DeepSeek Chat", hint: "balanced · cheapest" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "faster, lighter" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "most capable" },
+];
+
 async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
   let resp: Response;
   try {
@@ -133,8 +142,13 @@ async function streamPost(
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
+  model: DeepseekModel | "" = "",
 ): Promise<{ spec: AssetSpec; brief?: string }> {
-  const result = await streamPost("/generate-spec-stream", { prompt, code_mode: "strict" }, onChunk);
+  const result = await streamPost(
+    "/generate-spec-stream",
+    { prompt, code_mode: "strict", model },
+    onChunk,
+  );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return {
     spec: result.spec as AssetSpec,
@@ -146,10 +160,27 @@ export async function refineSpecStream(
   spec: AssetSpec,
   message: string,
   onChunk: (text: string) => void,
+  model: DeepseekModel | "" = "",
 ): Promise<AssetSpec> {
   const result = await streamPost(
     "/refine-spec-stream",
-    { spec, message, code_mode: spec.code_mode ?? "strict" },
+    { spec, message, code_mode: spec.code_mode ?? "strict", model },
+    onChunk,
+  );
+  if (!result?.spec) throw new Error("Backend returned no spec");
+  return result.spec as AssetSpec;
+}
+
+/** Deep-detail one named area of the current spec, keeping the rest intact. */
+export async function focusSpecStream(
+  spec: AssetSpec,
+  area: string,
+  onChunk: (text: string) => void,
+  model: DeepseekModel | "" = "",
+): Promise<AssetSpec> {
+  const result = await streamPost(
+    "/focus-spec-stream",
+    { spec, area, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");

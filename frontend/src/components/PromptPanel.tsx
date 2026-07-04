@@ -6,10 +6,13 @@ import { useEffect, useRef, useState } from "react";
 import type { AssetSpec } from "../types";
 import type { CodeViolation } from "../standards";
 import {
+  focusSpecStream,
   generateSpecStream,
   installGuideStream,
   refineSpecStream,
   updateStandardsStream,
+  MODEL_OPTIONS,
+  type DeepseekModel,
   type StandardsUpdateResult,
 } from "../api";
 import Modal from "./Modal";
@@ -19,14 +22,17 @@ interface ChatEntry {
   text: string;
 }
 
-type Busy = false | "generate" | "refine" | "guide" | "standards";
+type Busy = false | "generate" | "refine" | "focus" | "guide" | "standards";
 
 const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
   generate: "Generating your asset…",
   refine: "Applying your change…",
+  focus: "Detailing that area…",
   guide: "Writing the installation guide…",
   standards: "Researching standards…",
 };
+
+const MODEL_KEY = "af-model";
 
 /** Live "the AI is generating" card: shows the streaming tail so the user
  * can see progress without needing to read it. */
@@ -87,14 +93,22 @@ export default function PromptPanel({
 }) {
   const [prompt, setPrompt] = useState("");
   const [refineMsg, setRefineMsg] = useState("");
+  const [focusArea, setFocusArea] = useState("");
   const [busy, setBusy] = useState<Busy>(false);
   const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [guide, setGuide] = useState<string | null>(null);
   const [standardsResult, setStandardsResult] = useState<StandardsUpdateResult | null>(null);
+  const [model, setModel] = useState<DeepseekModel>(
+    () => (localStorage.getItem(MODEL_KEY) as DeepseekModel) || "deepseek-chat",
+  );
   const guideCache = useRef<{ key: string; text: string } | null>(null);
   const violationCount = Object.keys(violations).length;
+
+  useEffect(() => {
+    localStorage.setItem(MODEL_KEY, model);
+  }, [model]);
 
   const run = async (kind: Exclude<Busy, false>, task: () => Promise<void>) => {
     if (busy) return;
@@ -115,7 +129,7 @@ export default function PromptPanel({
     run("generate", async () => {
       const text = prompt.trim();
       if (!text) return;
-      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText);
+      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       const entries: ChatEntry[] = [{ role: "you", text }];
@@ -135,7 +149,7 @@ export default function PromptPanel({
     run("refine", async () => {
       const msg = refineMsg.trim();
       if (!msg) return;
-      const newSpec = await refineSpecStream(spec, msg, setStreamText);
+      const newSpec = await refineSpecStream(spec, msg, setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
@@ -144,6 +158,22 @@ export default function PromptPanel({
         { role: "assetforge", text: `Updated "${newSpec.name}".` },
       ]);
       setRefineMsg("");
+    });
+
+  /** Deep-detail ONE area, leaving everything else untouched. */
+  const runFocus = () =>
+    run("focus", async () => {
+      const area = focusArea.trim();
+      if (!area) return;
+      const newSpec = await focusSpecStream(spec, area, setStreamText, model);
+      const problem = onSpec(newSpec);
+      if (problem) throw new Error(problem);
+      setChat((c) => [
+        ...c,
+        { role: "you", text: `🔍 focus: ${area}` },
+        { role: "assetforge", text: `Detailed "${area}" — rest of the asset kept as-is.` },
+      ]);
+      setFocusArea("");
     });
 
   /** Cached per spec: reopening the guide without changing the asset is
@@ -185,6 +215,20 @@ export default function PromptPanel({
       </div>
 
       <h3>Describe any asset</h3>
+      <label className="model-row" title="Which DeepSeek model the AI uses for generate, refine, and focus">
+        <span>AI model</span>
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value as DeepseekModel)}
+          disabled={busy !== false}
+        >
+          {MODEL_OPTIONS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label} — {m.hint}
+            </option>
+          ))}
+        </select>
+      </label>
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
@@ -216,6 +260,20 @@ export default function PromptPanel({
             />
             <button onClick={runRefine} disabled={busy !== false || !refineMsg.trim()}>
               {busy === "refine" ? "…" : "Send"}
+            </button>
+          </div>
+
+          <div className="focus-box">
+            <span className="focus-box__label">🔍 Focus one area (deep detail, rest untouched)</span>
+            <textarea
+              value={focusArea}
+              onChange={(e) => setFocusArea(e.target.value)}
+              placeholder='e.g. "the luminaire head — add a hinged door, gasket, and internal reflector"'
+              rows={2}
+              disabled={busy !== false}
+            />
+            <button onClick={runFocus} disabled={busy !== false || !focusArea.trim()}>
+              {busy === "focus" ? "Detailing…" : "Focus this area"}
             </button>
           </div>
         </>

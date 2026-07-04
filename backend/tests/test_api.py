@@ -165,3 +165,47 @@ def test_generate_stream_has_brief_stages():
     assert payload["ok"] is True
     assert payload["result"]["brief"].startswith("Design brief:")
     assert payload["result"]["spec"]["asset_type"] == "bench"
+
+
+def test_model_dropdown_allowlist():
+    """resolve_model: only the three DeepSeek ids pass through; junk is
+    ignored (falls back to the env/default), so a client can't inject one."""
+    from backend.app.llm import resolve_model, DEFAULT_DEEPSEEK_MODEL
+
+    assert resolve_model("deepseek", "deepseek-v4-pro") == "deepseek-v4-pro"
+    assert resolve_model("deepseek", "deepseek-v4-flash") == "deepseek-v4-flash"
+    assert resolve_model("deepseek", "evil-model") == DEFAULT_DEEPSEEK_MODEL
+    assert resolve_model("deepseek", "") == DEFAULT_DEEPSEEK_MODEL
+    assert resolve_model("deepseek", None) == DEFAULT_DEEPSEEK_MODEL
+
+
+def test_generate_accepts_model_field():
+    r = client.post("/api/generate-spec",
+                    json={"prompt": "a park bench", "model": "deepseek-v4-pro"})
+    assert r.status_code == 200
+    assert r.json()["spec"]["asset_type"] == "bench"
+
+
+def test_generate_rejects_unknown_model():
+    r = client.post("/api/generate-spec",
+                    json={"prompt": "a park bench", "model": "gpt-4o"})
+    assert r.status_code == 422  # pattern rejects non-DeepSeek ids
+
+
+def test_focus_spec_returns_valid_spec():
+    spec = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
+    r = client.post("/api/focus-spec",
+                    json={"spec": spec, "area": "the luminaire head"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["spec"]["asset_type"] == "street_light"
+    assert data["checked"] is True
+
+
+def test_focus_spec_stream():
+    spec = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
+    r = client.post("/api/focus-spec-stream",
+                    json={"spec": spec, "area": "the base flange", "model": "deepseek-v4-flash"})
+    payload = stream_payload(r)
+    assert payload["ok"] is True
+    assert payload["result"]["spec"]["asset_type"] == "street_light"

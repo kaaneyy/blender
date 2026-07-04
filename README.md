@@ -68,6 +68,17 @@ command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sket
   the model's output as it generates, so you always know it's working. The
   installation guide is cached per asset — reopening it is instant until the
   asset changes (or hit Regenerate).
+- **Model picker** — an **AI model** dropdown in the describe area chooses the
+  DeepSeek model used for generate/refine/focus: `deepseek-chat` (balanced,
+  cheapest), `deepseek-v4-flash` (faster, lighter), or `deepseek-v4-pro`
+  (most capable). Your choice is remembered. It only takes effect with the
+  DeepSeek provider; other providers use their own model. The picked id is
+  allowlisted server-side, so only those three can ever be sent.
+- **Focus one area** — below the refine box, a second field that deep-details
+  a single component ("the luminaire head — add a hinged door and reflector")
+  while keeping every other part byte-identical. Use refine for broad changes,
+  focus to zoom in on one area and make it much more detailed without
+  disturbing the rest.
 
 ---
 

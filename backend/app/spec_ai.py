@@ -133,10 +133,10 @@ def _enhance_user(prompt: str) -> str:
     return f"ENHANCE PROMPT.\nRequest: {prompt}"
 
 
-def enhance_prompt(prompt: str) -> str:
+def enhance_prompt(prompt: str, model: str | None = None) -> str:
     """One extra AI pass: vague request in, well-written design brief out."""
     brief = complete(ENHANCE_SYSTEM, _enhance_user(prompt),
-                     temperature=0.5, max_tokens=400).strip()
+                     temperature=0.5, max_tokens=400, model=model).strip()
     return brief or prompt
 
 
@@ -181,8 +181,8 @@ def _postprocess(raw: str, code_mode: str) -> dict:
     return result.to_dict()
 
 
-def _run(system: str, user: str, code_mode: str) -> dict:
-    raw = complete(system, user)
+def _run(system: str, user: str, code_mode: str, model: str | None = None) -> dict:
+    raw = complete(system, user, model=model)
     try:
         return _postprocess(raw, code_mode)
     except SpecGenerationError as first_error:
@@ -192,28 +192,53 @@ def _run(system: str, user: str, code_mode: str) -> dict:
             f"{first_error}\n\nPrevious answer:\n{raw[:4000]}\n\n"
             f"Return the corrected AssetSpec JSON only."
         )
-        raw = complete(system, retry_user)
+        raw = complete(system, retry_user, model=model)
         return _postprocess(raw, code_mode)
 
 
-def generate_spec(prompt: str, code_mode: str = "strict") -> dict:
+def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None) -> dict:
     """T2.1: natural-language prompt → design brief (extra AI pass) →
     validated AssetSpec (+ violations). The brief rides along in the result
     so the UI can show how the request was interpreted."""
-    brief = enhance_prompt(prompt)
-    result = _run(_system_prompt(code_mode), f"Request: {brief}", code_mode)
+    brief = enhance_prompt(prompt, model=model)
+    result = _run(_system_prompt(code_mode), f"Request: {brief}", code_mode, model=model)
     result["brief"] = brief
     return result
 
 
-def refine_spec(spec: dict, message: str, code_mode: str = "strict") -> dict:
+def refine_spec(spec: dict, message: str, code_mode: str = "strict",
+                model: str | None = None) -> dict:
     """T2.5: current spec + chat message → modified, re-validated spec."""
     user = (
         f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
         f"Apply this change and return the FULL updated AssetSpec JSON "
         f"(keep everything else identical, including ids):\n{message}"
     )
-    return _run(_system_prompt(code_mode), user, code_mode)
+    return _run(_system_prompt(code_mode), user, code_mode, model=model)
+
+
+#: Focus refinement: deep-detail ONE named area, leave the rest byte-identical.
+def _focus_user(spec: dict, area: str) -> str:
+    return (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"FOCUS AREA: {area}\n\n"
+        "Work ONLY on the component(s)/part(s) the focus area names. Make that "
+        "area substantially more detailed and realistic: split it into finer "
+        "sub-parts, add appropriate primitives, and add parameters/toggles that "
+        "control JUST that area (new ids only — do not rename or renumber "
+        "existing ones). You may add new material slots for the new parts. "
+        "CRITICAL: every other component, primitive, parameter, toggle, and "
+        "material must stay byte-identical — same ids, same values, same order, "
+        "nothing added, removed, or reordered outside the focus area. Keep the "
+        "asset_type, name, and units unchanged. Return the FULL updated "
+        "AssetSpec JSON."
+    )
+
+
+def focus_spec(spec: dict, area: str, code_mode: str = "strict",
+               model: str | None = None) -> dict:
+    """Deep-detail one area of the current spec, leaving the rest untouched."""
+    return _run(_system_prompt(code_mode), _focus_user(spec, area), code_mode, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -343,11 +368,11 @@ def propose_standards_update() -> dict:
 # generation live, then a sentinel + JSON payload with the validated result.
 # ---------------------------------------------------------------------------
 
-def _stream_pipeline(system, user, finalize, retry: bool = True):
+def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
     payload = None
     try:
         parts = []
-        for chunk in complete_stream(system, user):
+        for chunk in complete_stream(system, user, model=model):
             parts.append(chunk)
             yield chunk
         try:
@@ -362,7 +387,7 @@ def _stream_pipeline(system, user, finalize, retry: bool = True):
                     f"error:\n{err}\n\nReturn the corrected JSON only."
                 )
                 parts = []
-                for chunk in complete_stream(system, retry_user):
+                for chunk in complete_stream(system, retry_user, model=model):
                     parts.append(chunk)
                     yield chunk
                 try:
@@ -374,7 +399,7 @@ def _stream_pipeline(system, user, finalize, retry: bool = True):
     yield STREAM_SENTINEL + json.dumps(payload)
 
 
-def stream_generate_spec(prompt: str, code_mode: str = "strict"):
+def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None):
     """Two visible stages in one stream: the brief being written, then the
     spec being designed from it."""
 
@@ -383,7 +408,7 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict"):
         try:
             parts = []
             for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(prompt),
-                                         temperature=0.5, max_tokens=400):
+                                         temperature=0.5, max_tokens=400, model=model):
                 parts.append(chunk)
                 yield chunk
         except LLMError as exc:
@@ -398,20 +423,30 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict"):
             return result
 
         yield from _stream_pipeline(
-            _system_prompt(code_mode), f"Request: {brief}", finalize
+            _system_prompt(code_mode), f"Request: {brief}", finalize, model=model
         )
 
     return gen()
 
 
-def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict"):
+def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict",
+                       model: str | None = None):
     user = (
         f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
         f"Apply this change and return the FULL updated AssetSpec JSON "
         f"(keep everything else identical, including ids):\n{message}"
     )
     return _stream_pipeline(
-        _system_prompt(code_mode), user, lambda raw: _postprocess(raw, code_mode)
+        _system_prompt(code_mode), user, lambda raw: _postprocess(raw, code_mode),
+        model=model,
+    )
+
+
+def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
+                      model: str | None = None):
+    return _stream_pipeline(
+        _system_prompt(code_mode), _focus_user(spec, area),
+        lambda raw: _postprocess(raw, code_mode), model=model,
     )
 
 

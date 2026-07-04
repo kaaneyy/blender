@@ -40,15 +40,28 @@ ASSET_SPEC_SCHEMA = json.loads(
 )
 
 
+#: DeepSeek model ids the dropdown may request (empty = server default).
+_MODEL_PATTERN = "^(deepseek-chat|deepseek-v4-flash|deepseek-v4-pro)?$"
+
+
 class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=3, max_length=2000)
     code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
 class RefineRequest(BaseModel):
     spec: dict
     message: str = Field(min_length=1, max_length=2000)
     code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+
+
+class FocusRequest(BaseModel):
+    spec: dict
+    area: str = Field(min_length=1, max_length=2000)
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
 class InstallGuideRequest(BaseModel):
@@ -90,7 +103,7 @@ def validate(spec: dict) -> dict:
 def generate(body: GenerateRequest) -> dict:
     """T2.1: prompt → validated AssetSpec + code violations."""
     try:
-        return spec_ai.generate_spec(body.prompt, body.code_mode)
+        return spec_ai.generate_spec(body.prompt, body.code_mode, model=body.model)
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except spec_ai.SpecGenerationError as exc:
@@ -104,7 +117,21 @@ def generate(body: GenerateRequest) -> dict:
 def refine(body: RefineRequest) -> dict:
     """T2.5: current spec + chat message → modified, re-validated spec."""
     try:
-        return spec_ai.refine_spec(body.spec, body.message, body.code_mode)
+        return spec_ai.refine_spec(body.spec, body.message, body.code_mode, model=body.model)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
+@router.post("/focus-spec")
+def focus(body: FocusRequest) -> dict:
+    """Deep-detail ONE area of the current spec, leaving the rest untouched."""
+    try:
+        return spec_ai.focus_spec(body.spec, body.area, body.code_mode, model=body.model)
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except spec_ai.SpecGenerationError as exc:
@@ -156,12 +183,21 @@ def _stream(gen) -> StreamingResponse:
 
 @router.post("/generate-spec-stream")
 def generate_stream(body: GenerateRequest) -> StreamingResponse:
-    return _stream(spec_ai.stream_generate_spec(body.prompt, body.code_mode))
+    return _stream(spec_ai.stream_generate_spec(body.prompt, body.code_mode, model=body.model))
 
 
 @router.post("/refine-spec-stream")
 def refine_stream(body: RefineRequest) -> StreamingResponse:
-    return _stream(spec_ai.stream_refine_spec(body.spec, body.message, body.code_mode))
+    return _stream(
+        spec_ai.stream_refine_spec(body.spec, body.message, body.code_mode, model=body.model)
+    )
+
+
+@router.post("/focus-spec-stream")
+def focus_stream(body: FocusRequest) -> StreamingResponse:
+    return _stream(
+        spec_ai.stream_focus_spec(body.spec, body.area, body.code_mode, model=body.model)
+    )
 
 
 @router.post("/install-guide-stream")

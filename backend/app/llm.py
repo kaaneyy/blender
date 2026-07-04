@@ -24,6 +24,24 @@ import httpx
 TIMEOUT = 90.0
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: DeepSeek models the UI dropdown may request. Anything outside this set is
+#: ignored (falls back to the env default) so a client can never inject an
+#: arbitrary model string.
+DEEPSEEK_MODELS = ("deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro")
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+
+
+def resolve_model(provider: str, requested: str | None) -> str:
+    """Pick the model id for a provider: an allowlisted per-request override
+    (DeepSeek only) beats the LLM_MODEL env default, which beats the built-in
+    default. Returns "" for providers whose caller supplies its own default."""
+    env_model = os.environ.get("LLM_MODEL", "").strip()
+    if provider == "deepseek":
+        if requested and requested.strip() in DEEPSEEK_MODELS:
+            return requested.strip()
+        return env_model or DEFAULT_DEEPSEEK_MODEL
+    return env_model
+
 
 class LLMError(RuntimeError):
     """Configuration or transport failure talking to the LLM provider."""
@@ -117,27 +135,27 @@ def _mock(user: str) -> str:
 
 
 def complete(system: str, user: str, *, temperature: float = 0.4,
-             max_tokens: int = 6000) -> str:
+             max_tokens: int = 6000, model: str | None = None) -> str:
     provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
-    model = os.environ.get("LLM_MODEL", "").strip()
+    picked = resolve_model(provider, model)
 
     if provider == "mock":
         return _mock(user)
     if provider == "deepseek":
         return _openai_compatible(
             "https://api.deepseek.com/v1/chat/completions",
-            _require_key("DEEPSEEK_API_KEY"), model or "deepseek-chat",
+            _require_key("DEEPSEEK_API_KEY"), picked or DEFAULT_DEEPSEEK_MODEL,
             system, user, temperature, max_tokens,
         )
     if provider == "openai":
         return _openai_compatible(
             "https://api.openai.com/v1/chat/completions",
-            _require_key("OPENAI_API_KEY"), model or "gpt-4o-mini",
+            _require_key("OPENAI_API_KEY"), picked or "gpt-4o-mini",
             system, user, temperature, max_tokens,
         )
     if provider == "anthropic":
         return _anthropic(
-            _require_key("ANTHROPIC_API_KEY"), model or "claude-sonnet-5",
+            _require_key("ANTHROPIC_API_KEY"), picked or "claude-sonnet-5",
             system, user, temperature, max_tokens,
         )
     raise LLMError(
@@ -215,10 +233,10 @@ def _anthropic_stream(api_key: str, model: str, system: str, user: str,
 
 
 def complete_stream(system: str, user: str, *, temperature: float = 0.4,
-                    max_tokens: int = 6000) -> Iterator[str]:
+                    max_tokens: int = 6000, model: str | None = None) -> Iterator[str]:
     """Streaming twin of :func:`complete`."""
     provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
-    model = os.environ.get("LLM_MODEL", "").strip()
+    picked = resolve_model(provider, model)
 
     if provider == "mock":
         text = _mock(user)
@@ -229,20 +247,20 @@ def complete_stream(system: str, user: str, *, temperature: float = 0.4,
     if provider == "deepseek":
         yield from _openai_compatible_stream(
             "https://api.deepseek.com/v1/chat/completions",
-            _require_key("DEEPSEEK_API_KEY"), model or "deepseek-chat",
+            _require_key("DEEPSEEK_API_KEY"), picked or DEFAULT_DEEPSEEK_MODEL,
             system, user, temperature, max_tokens,
         )
         return
     if provider == "openai":
         yield from _openai_compatible_stream(
             "https://api.openai.com/v1/chat/completions",
-            _require_key("OPENAI_API_KEY"), model or "gpt-4o-mini",
+            _require_key("OPENAI_API_KEY"), picked or "gpt-4o-mini",
             system, user, temperature, max_tokens,
         )
         return
     if provider == "anthropic":
         yield from _anthropic_stream(
-            _require_key("ANTHROPIC_API_KEY"), model or "claude-sonnet-5",
+            _require_key("ANTHROPIC_API_KEY"), picked or "claude-sonnet-5",
             system, user, temperature, max_tokens,
         )
         return
