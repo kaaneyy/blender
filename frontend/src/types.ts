@@ -97,7 +97,23 @@ export interface AssetSpec {
   primitives?: SpecPrimitive[];
   /** Per-component/part position nudges in meters ('pole' or 'pole/shaft'). */
   offsets?: Record<string, [number, number, number]>;
+  /** Direct-manipulation edits from the viewport toolbar (rotate / stretch /
+   * delete / duplicate). Moves live in `offsets`; these are baked in
+   * computePrimitives and honored identically by the Blender export. */
+  edits?: SpecEdits;
   seed?: number;
+}
+
+/** SketchUp-style edit overlay keyed by component name. */
+export interface SpecEdits {
+  /** Added Euler XYZ rotation (radians) per component group, about its center. */
+  rotations?: Record<string, [number, number, number]>;
+  /** Multiplicative per-axis scale per component group, about its center. */
+  scales?: Record<string, [number, number, number]>;
+  /** Deleted keys: a whole component ('pole') or one part ('pole/shaft'). */
+  hidden?: string[];
+  /** Duplicated component groups: clone `source` as a new component `name`. */
+  duplicates?: Array<{ source: string; name: string }>;
 }
 
 export type Vec3 = [number, number, number];

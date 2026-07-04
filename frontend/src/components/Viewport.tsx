@@ -1,17 +1,29 @@
 /** 3D viewport: orbit/pan/zoom + WASD fly-through, ground grid, 6 ft human
  * silhouette, dimension annotations, click-to-select with camera focus, a
- * guided camera tour of connection hardware, and a maps-style nav column
- * (zoom, home, top view, compass, sun direction). */
-import { useEffect, useRef, useState } from "react";
+ * guided camera tour of connection hardware, a maps-style nav column (zoom,
+ * home, top view, compass, sun direction), and a SketchUp-style edit column
+ * (move / rotate / stretch / duplicate / delete) that drives a transform
+ * gizmo and bakes the result back into the spec. */
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
+import { Grid, Html, Line, OrbitControls, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { AssetSpec, Primitive, UnitSystem } from "../types";
-import { aabb, resolveMaterial, specParams } from "../builders";
+import type { AssetSpec, Primitive, UnitSystem, Vec3 } from "../types";
+import { aabb, resolveMaterial, specParams, preEditPrimitives, componentPivot } from "../builders";
 import { formatLength } from "../units";
 import { lightProfile } from "../lighting";
-import AssetMesh, { type Selection } from "./AssetMesh";
+import AssetMesh, { type Selection, PrimitiveMesh } from "./AssetMesh";
+
+/** Which manipulation the transform gizmo performs. */
+export type EditMode = "translate" | "rotate" | "scale";
+
+/** A gizmo transform read back for baking into the spec. */
+export interface CommittedTransform {
+  offset: Vec3;
+  rotation: Vec3;
+  scale: Vec3;
+}
 
 const HUMAN_HEIGHT = 1.8288; // 6 ft
 
@@ -347,6 +359,11 @@ export default function Viewport({
   onSelect,
   tourId,
   homeId,
+  onDuplicate,
+  onDelete,
+  onCommitTransform,
+  onResetEdits,
+  hasEdits,
 }: {
   spec: AssetSpec;
   primitives: Primitive[];
@@ -358,6 +375,16 @@ export default function Viewport({
   tourId: number;
   /** increments when a new asset is adopted → glide back to the overview */
   homeId: number;
+  /** Duplicate the selected component group. */
+  onDuplicate: (component: string) => void;
+  /** Delete the current selection (a whole component or a single part). */
+  onDelete: (sel: Selection) => void;
+  /** Bake a gizmo transform back into the spec for a component. */
+  onCommitTransform: (component: string, t: CommittedTransform) => void;
+  /** Clear every manual move/rotate/scale/delete/duplicate edit. */
+  onResetEdits: () => void;
+  /** Whether any manual edits exist (enables the reset button). */
+  hasEdits: boolean;
 }) {
   const colors = THEME_COLORS[theme];
   const p = specParams(spec);
@@ -394,6 +421,39 @@ export default function Viewport({
   const [lightsOn, setLightsOn] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [exploded, setExploded] = useState(false);
+  const [tool, setTool] = useState<EditMode | null>(null);
+  // the proxy group the transform gizmo drives (lives in the Z-up group, so
+  // its local transform is authored coords); the gizmo widget itself renders
+  // at scene root so the Z-up rotation isn't applied to it twice
+  const [gizmoTarget, setGizmoTarget] = useState<THREE.Group | null>(null);
+
+  // component the transform gizmo is attached to (only when a tool is active)
+  const editComponent = tool && selected ? selected.component : null;
+  // pre-edit geometry + pivot for that component; the gizmo renders these and
+  // applies the live transform, then bakes it back into the spec
+  const editData = useMemo(() => {
+    if (!editComponent) return null;
+    const pre = preEditPrimitives(spec).filter((p) => p.component === editComponent);
+    return pre.length ? { prims: pre, pivot: componentPivot(pre) } : null;
+  }, [editComponent, spec]);
+  const editKey = editComponent ?? "";
+  const curOffset = (spec.offsets?.[editKey] ?? [0, 0, 0]) as Vec3;
+  const curRotation = (spec.edits?.rotations?.[editKey] ?? [0, 0, 0]) as Vec3;
+  const curScale = (spec.edits?.scales?.[editKey] ?? [1, 1, 1]) as Vec3;
+
+  // read the dragged proxy transform back into the spec (moves → offsets,
+  // rotate/scale → edits). The proxy is a child of the Z-up group, so its
+  // local position/rotation/scale are already in authored coordinates.
+  const commitGizmo = () => {
+    const g = gizmoTarget;
+    if (!g || !editComponent || !editData) return;
+    const p = editData.pivot;
+    onCommitTransform(editComponent, {
+      offset: [g.position.x - p[0], g.position.y - p[1], g.position.z - p[2]],
+      rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
+      scale: [g.scale.x, g.scale.y, g.scale.z],
+    });
+  };
 
   // fixtures that emit light (lens parts / anything with material emission)
   const emitters = lightsOn ? findEmitters(primitives, spec) : [];
@@ -522,8 +582,47 @@ export default function Viewport({
             wireframe={wireframe}
             explode={exploded}
             lightsOn={lightsOn}
+            editingComponent={editData ? editComponent : null}
           />
+          {editData && editComponent && (
+            <group
+              key={`${editComponent}-${tool}`}
+              ref={setGizmoTarget}
+              position={[
+                editData.pivot[0] + curOffset[0],
+                editData.pivot[1] + curOffset[1],
+                editData.pivot[2] + curOffset[2],
+              ]}
+              rotation={curRotation}
+              scale={curScale}
+            >
+              {editData.prims.map((prim) => (
+                <PrimitiveMesh
+                  key={`${prim.component}/${prim.name}`}
+                  prim={prim}
+                  spec={spec}
+                  selected={{ component: prim.component }}
+                  onSelect={() => {}}
+                  tourJoint={null}
+                  wireframe={wireframe}
+                  lightsOn={lightsOn}
+                  explodeOffset={[-editData.pivot[0], -editData.pivot[1], -editData.pivot[2]]}
+                />
+              ))}
+            </group>
+          )}
         </group>
+
+        {/* gizmo widget at scene root (outside the Z-up group) so its axes
+            aren't rotated twice; it still tracks the proxy's world transform */}
+        {editData && editComponent && gizmoTarget && (
+          <TransformControls
+            object={gizmoTarget}
+            mode={tool!}
+            size={0.9}
+            onMouseUp={commitGizmo}
+          />
+        )}
 
         <HumanSilhouette x={-Math.max(2, armM * 0.4)} color={colors.silhouette} />
         <VerticalDim
@@ -617,7 +716,74 @@ export default function Viewport({
         </button>
       </div>
 
-      <div className="nav-hint">drag orbit · WASD move · Q/E down/up</div>
+      {/* SketchUp-style edit tools: right side, top-down column */}
+      <div className="edit-col">
+        <span className="edit-col__label">Edit</span>
+        <button
+          className={`nav-btn${tool === "translate" ? " nav-btn--active" : ""}`}
+          disabled={!selected}
+          onClick={() => setTool((t) => (t === "translate" ? null : "translate"))}
+          title="Move — drag the selected object around in 3D"
+        >
+          ✥
+        </button>
+        <button
+          className={`nav-btn${tool === "rotate" ? " nav-btn--active" : ""}`}
+          disabled={!selected}
+          onClick={() => setTool((t) => (t === "rotate" ? null : "rotate"))}
+          title="Rotate — spin the selected object"
+        >
+          ⟳
+        </button>
+        <button
+          className={`nav-btn${tool === "scale" ? " nav-btn--active" : ""}`}
+          disabled={!selected}
+          onClick={() => setTool((t) => (t === "scale" ? null : "scale"))}
+          title="Stretch / scale — resize the selected object"
+        >
+          ⤢
+        </button>
+        <button
+          className="nav-btn"
+          disabled={!selected}
+          onClick={() => selected && onDuplicate(selected.component)}
+          title="Duplicate the selected object"
+        >
+          ⧉
+        </button>
+        <button
+          className="nav-btn nav-btn--danger"
+          disabled={!selected}
+          onClick={() => {
+            if (selected) {
+              onDelete(selected);
+              setTool(null);
+            }
+          }}
+          title="Delete the selected object"
+        >
+          🗑
+        </button>
+        <button
+          className="nav-btn"
+          disabled={!hasEdits}
+          onClick={() => {
+            onResetEdits();
+            setTool(null);
+          }}
+          title="Reset all manual move / rotate / stretch / delete / duplicate edits"
+        >
+          ↺
+        </button>
+      </div>
+
+      <div className="nav-hint">
+        {tool && selected
+          ? `${tool === "translate" ? "Move" : tool === "rotate" ? "Rotate" : "Stretch"} — drag the gizmo · click empty space to finish`
+          : selected
+            ? "Edit tools ▸ move · rotate · stretch · duplicate · delete"
+            : "click a part to select · drag orbit · WASD move · Q/E down/up"}
+      </div>
       {touring && <div className="tour-hint">🔩 Touring connection points…</div>}
       {lightsOn && emitters.length > 0 && (
         <div className="tour-hint tour-hint--night">

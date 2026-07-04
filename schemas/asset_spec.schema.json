@@ -255,6 +255,51 @@
         "items": { "type": "number" }
       }
     },
+    "edits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SketchUp-style direct-manipulation overlay from the viewport toolbar (rotate/stretch/delete/duplicate). Moves live in 'offsets'. Baked in compute_primitives and honored identically by the Blender export.",
+      "properties": {
+        "rotations": {
+          "type": "object",
+          "description": "Added Euler-XYZ rotation (radians) per component group, about its center.",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": "number" }
+          }
+        },
+        "scales": {
+          "type": "object",
+          "description": "Multiplicative per-axis scale per component group, about its center.",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": "number" }
+          }
+        },
+        "hidden": {
+          "type": "array",
+          "description": "Deleted keys: a whole component ('pole') or one part ('pole/shaft').",
+          "items": { "type": "string" }
+        },
+        "duplicates": {
+          "type": "array",
+          "description": "Duplicated component groups: clone 'source' as a new component 'name'.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "name"],
+            "properties": {
+              "source": { "type": "string" },
+              "name": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
     "components": {
       "type": "array",
       "items": { "type": "string" },

@@ -767,6 +767,27 @@ hr {
   z-index: 5;
 }
 
+/* SketchUp-style edit tools: vertical column, top-right of the viewport */
+.edit-col {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 5;
+}
+
+.edit-col__label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 1px;
+}
+
 .nav-btn {
   width: 38px;
   height: 38px;
@@ -784,6 +805,18 @@ hr {
 
 .nav-btn:hover {
   border-color: var(--accent);
+}
+
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-color: var(--border-2);
+}
+
+.nav-btn--danger:not(:disabled):hover {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
 }
 
 .nav-btn--active {

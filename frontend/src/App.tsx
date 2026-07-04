@@ -5,13 +5,13 @@
  * on every change — the preview never waits on the server (T4.6). */
 import { useEffect, useMemo, useState } from "react";
 import defaultSpecJson from "../../examples/street_light.json";
-import type { AssetSpec, SpecMaterial, SpecPrimitive, UnitSystem } from "./types";
+import type { AssetSpec, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
 import { computePrimitives } from "./builders";
 import { checkSpec } from "./standards";
 import ControlsPanel from "./components/ControlsPanel";
 import PromptPanel from "./components/PromptPanel";
 import SelectionPanel from "./components/SelectionPanel";
-import Viewport from "./components/Viewport";
+import Viewport, { type CommittedTransform } from "./components/Viewport";
 import type { Selection } from "./components/AssetMesh";
 import "./styles.css";
 
@@ -151,6 +151,81 @@ export default function App() {
       }),
     }));
 
+  // ── SketchUp-style direct edits (move/rotate/stretch/duplicate/delete) ──
+  // All baked in computePrimitives and honored by the Blender export.
+
+  const componentNames = (s: AssetSpec): Set<string> => {
+    try {
+      return new Set(computePrimitives(s).map((p) => p.component));
+    } catch {
+      return new Set();
+    }
+  };
+
+  /** Clone the selected component group; the copy is nudged aside and selected. */
+  const duplicateComponent = (component: string) => {
+    const taken = componentNames(spec);
+    const base = `${component} copy`;
+    let name = base;
+    let i = 2;
+    while (taken.has(name)) name = `${base} ${i++}`;
+    setSpec((s) => {
+      const edits = { ...(s.edits ?? {}) };
+      edits.duplicates = [...(edits.duplicates ?? []), { source: component, name }];
+      const offsets = { ...(s.offsets ?? {}), [name]: [0.3, 0, 0] as Vec3 };
+      return { ...s, edits, offsets };
+    });
+    setSelected({ component: name });
+  };
+
+  /** Delete the selection: a whole component ('pole') or one part ('pole/shaft'). */
+  const deleteSelection = (sel: Selection) => {
+    const key = sel.part ? `${sel.component}/${sel.part}` : sel.component;
+    setSpec((s) => {
+      const edits = { ...(s.edits ?? {}) };
+      edits.hidden = [...new Set([...(edits.hidden ?? []), key])];
+      return { ...s, edits };
+    });
+    setSelected(null);
+  };
+
+  /** Bake a gizmo transform: moves → offsets, rotate/scale → edits. Values at
+   * the identity are cleared so the overlay stays minimal. */
+  const commitTransform = (component: string, t: CommittedTransform) =>
+    setSpec((s) => {
+      const eps = 1e-6;
+      const rotations = { ...(s.edits?.rotations ?? {}) };
+      const scales = { ...(s.edits?.scales ?? {}) };
+      const offsets = { ...(s.offsets ?? {}) };
+      if (t.rotation.some((v) => Math.abs(v) > eps)) rotations[component] = t.rotation;
+      else delete rotations[component];
+      if (t.scale.some((v) => Math.abs(v - 1) > eps)) scales[component] = t.scale;
+      else delete scales[component];
+      if (t.offset.some((v) => Math.abs(v) > eps)) offsets[component] = t.offset;
+      else delete offsets[component];
+      return { ...s, edits: { ...(s.edits ?? {}), rotations, scales }, offsets };
+    });
+
+  /** Drop every manual edit (also un-deletes and un-duplicates). */
+  const resetEdits = () => {
+    setSpec((s) => {
+      const next = { ...s };
+      delete next.edits;
+      delete next.offsets;
+      return next;
+    });
+    setSelected(null);
+  };
+
+  const hasEdits = Boolean(
+    (spec.offsets && Object.keys(spec.offsets).length) ||
+      (spec.edits &&
+        ((spec.edits.rotations && Object.keys(spec.edits.rotations).length) ||
+          (spec.edits.scales && Object.keys(spec.edits.scales).length) ||
+          spec.edits.hidden?.length ||
+          spec.edits.duplicates?.length)),
+  );
+
   /** Swap in an AI-generated spec — but only if it actually builds, so a
    * bad spec can never blank the viewport. Returns an error string to show
    * in the prompt panel, or null on success. */
@@ -193,6 +268,11 @@ export default function App() {
           onSelect={setSelected}
           tourId={tourId}
           homeId={homeId}
+          onDuplicate={duplicateComponent}
+          onDelete={deleteSelection}
+          onCommitTransform={commitTransform}
+          onResetEdits={resetEdits}
+          hasEdits={hasEdits}
         />
       </main>
       <aside className="sidebar sidebar--right">

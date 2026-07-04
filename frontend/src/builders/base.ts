@@ -2,6 +2,7 @@
  * Only the pure primitive layer is mirrored; realization is Three.js. */
 import type { AssetSpec, Primitive, Unit } from "../types";
 import { convert } from "../units";
+import { applyStructure, applyTransforms } from "./edits";
 
 export const MATERIAL_PRESETS: Record<
   string,
@@ -26,26 +27,9 @@ export function register(assetType: string, fn: BuilderFn): void {
   BUILDERS[assetType] = fn;
 }
 
-export function applyOffsets(
-  prims: Primitive[],
-  offsets: Record<string, [number, number, number]>,
-): Primitive[] {
-  return prims.map((p) => {
-    const dc = offsets[p.component] ?? [0, 0, 0];
-    const dp = offsets[`${p.component}/${p.name}`] ?? [0, 0, 0];
-    if (dc.every((v) => v === 0) && dp.every((v) => v === 0)) return p;
-    return {
-      ...p,
-      location: [
-        p.location[0] + dc[0] + dp[0],
-        p.location[1] + dc[1] + dp[1],
-        p.location[2] + dc[2] + dp[2],
-      ],
-    };
-  });
-}
-
-export function computePrimitives(spec: AssetSpec): Primitive[] {
+/** Build the curated/custom primitives plus connection hardware, before any
+ * user edit overlay. */
+function buildBase(spec: AssetSpec): Primitive[] {
   const fn = BUILDERS[spec.asset_type];
   let prims: Primitive[];
   if (fn) {
@@ -64,11 +48,20 @@ export function computePrimitives(spec: AssetSpec): Primitive[] {
   if (specToggles(spec).connection_hardware && hardwareFn) {
     prims = prims.concat(hardwareFn(prims, spec));
   }
-  const offsets = spec.offsets;
-  if (offsets && Object.keys(offsets).length) {
-    prims = applyOffsets(prims, offsets as Record<string, [number, number, number]>);
-  }
   return prims;
+}
+
+/** Primitives with the structural overlay (duplicate/delete) applied but NOT
+ * the move/rotate/scale transform — the viewport gizmo renders these and
+ * applies the transform live, then bakes it back into the spec. */
+export function preEditPrimitives(spec: AssetSpec): Primitive[] {
+  return applyStructure(buildBase(spec), spec);
+}
+
+export function computePrimitives(spec: AssetSpec): Primitive[] {
+  // structural overlay (duplicate/delete) then user transforms (move/rotate/
+  // scale), baked so bounds, hardware, and the Blender export all agree
+  return applyTransforms(preEditPrimitives(spec), spec);
 }
 
 /** Wired by builders/index.ts (keeps this module dependency-free). */
