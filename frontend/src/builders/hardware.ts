@@ -3,11 +3,23 @@
  * hex head/nut, member-scaled diameters, multi-bolt patterns) and band
  * clamps where horizontal round members meet upright poles. Keep in exact
  * lockstep with the Python implementation. */
-import type { Primitive, Vec3 } from "../types";
+import type { AssetSpec, Primitive, Vec3 } from "../types";
 import { profileBounds, resolveProfile } from "../shapes";
+import { materialPresetName } from "./base";
 
 /** kinds treated as round members for band-clamp detection */
 const ROUND_KINDS = new Set(["cylinder", "cone", "sweep", "tube"]);
+
+/** preset names treated as structural metal (mirror of hardware.py). */
+const METAL_PRESETS = new Set([
+  "galvanized_steel", "cast_iron", "brushed_aluminum",
+  "powder_coat_black", "powder_coat_green",
+]);
+
+function isSoft(slot: string, spec?: AssetSpec): boolean {
+  if (!spec) return false; // no spec → treat as metal (parity with Python)
+  return !METAL_PRESETS.has(materialPresetName(spec, slot));
+}
 
 const MAX_JOINTS = 24;
 const EMBED = 0.025;
@@ -240,7 +252,7 @@ function boltPattern(d1: number, d2: number, headR: number): Array<[number, numb
   return [[0, 0]];
 }
 
-export function computeHardware(prims: Primitive[]): Primitive[] {
+export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive[] {
   const boxes = prims
     .filter((p) => p.component !== "hardware" && !p.cut)
     .map((p) => {
@@ -269,6 +281,9 @@ export function computeHardware(prims: Primitive[]): Primitive[] {
         }
       }
       if (!overlaps) continue;
+
+      // non-structural joint (wood↔wood etc.) → concealed joinery, no bolts
+      if (isSoft(a.p.materialSlot, spec) && isSoft(b.p.materialSlot, spec)) continue;
 
       const center: Vec3 = [
         (lo[0] + hi[0]) / 2,

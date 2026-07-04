@@ -34,6 +34,38 @@ const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
 
 const MODEL_KEY = "af-model";
 
+/** One-click quick-fix presets. Each `message` is a canned refine
+ * instruction (kept well under the 2000-char API cap). */
+const QUICK_FIXES: Array<{ label: string; title: string; message: string }> = [
+  {
+    label: "🔗 Check & fix connections",
+    title: "Audit every joint: real load path, parts actually touch, fasteners appropriate to the material",
+    message:
+      "Audit and fix EVERY connection in this asset, then return the FULL updated AssetSpec JSON (keep ids/values stable where unchanged). " +
+      "1) Load path: every part must be supported down to the ground (z=0); add base plates, rails, aprons, stretchers, brackets or collars where a part has nothing to attach to. " +
+      "2) Contact: joined parts must interpenetrate 10-20 mm — fix any parts that float or merely touch at a zero-thickness face so the app can place hardware where they truly overlap. " +
+      "3) Appropriateness: match the fastening to the asset and its materials. Light-duty or non-structural items (a basic table, wooden furniture, decorative props) must NOT show industrial anchor bolts — set the connection_hardware toggle OFF for them and rely on integral/joinery connections. Reserve visible bolted hardware for structural metal assets (poles, signs, heavy frames), and keep members sized so hardware is not oversized. Nothing below z=0.",
+  },
+  {
+    label: "⚖️ Fix proportions",
+    title: "Give members real taper/slenderness ratios instead of uniform sticks",
+    message:
+      "Improve the structural proportions of this asset and return the FULL updated AssetSpec JSON. Replace uniform, chunky, equal-thickness members with properly proportioned ones expressed as ratios in the parameter expressions: a vertical pole's base diameter about 1.8x its top (taper), a cantilevered arm tapering to about 60% radius at the tip, a post-top globe about 1.2-1.6x the post diameter, slats/rails thin relative to their span. Keep the asset_type, overall dimensions, component names, and all ids identical; only adjust proportions/expressions.",
+  },
+  {
+    label: "🎨 Improve materials & finish",
+    title: "Sensible preset + finish per part, matched to the style",
+    message:
+      "Improve ONLY the materials of this asset (do not change any geometry, parameters, or ids) and return the FULL updated AssetSpec JSON. Give every material slot a preset and a finish (cast | machined | sheet | rough) that suits its part: cast for cast-iron bases/finials, machined for turned fittings, sheet for housings/panels, rough for galvanized poles and raw concrete. Match colors to the asset's implied style. Only add weathering (0-1) if the setting implies age; otherwise leave it 0.",
+  },
+  {
+    label: "✨ Add realistic detail",
+    title: "Believable secondary detail without changing the overall form",
+    message:
+      "Add believable secondary detail to this asset and return the FULL updated AssetSpec JSON. Add caps, seams, trim rings, fillets, and visible fasteners only where a real one would appear, using the fabrication kinds where apt (lathe for finials/domes, sweep for curved members, loft for tapered housings, tube for hollow posts). Do NOT change the overall silhouette or violate the code ranges; keep existing component names and ids, and keep the part count reasonable (favor readable massing over micro-detail).",
+  },
+];
+
 /** Live "the AI is generating" card: shows the streaming tail so the user
  * can see progress without needing to read it. */
 function StreamCard({ title, text }: { title: string; text: string }) {
@@ -176,6 +208,20 @@ export default function PromptPanel({
       setFocusArea("");
     });
 
+  /** One-click "quick fix" presets: canned refine instructions run through
+   * the existing refine stream (reuse the "refine" busy tag). */
+  const runPreset = (preset: { label: string; message: string }) =>
+    run("refine", async () => {
+      const newSpec = await refineSpecStream(spec, preset.message, setStreamText, model);
+      const problem = onSpec(newSpec);
+      if (problem) throw new Error(problem);
+      setChat((c) => [
+        ...c,
+        { role: "you", text: `🔧 ${preset.label}` },
+        { role: "assetforge", text: `Ran "${preset.label}".` },
+      ]);
+    });
+
   /** Cached per spec: reopening the guide without changing the asset is
    * instant; "Regenerate" in the modal forces a fresh one. */
   const runGuide = (force = false) => {
@@ -239,6 +285,23 @@ export default function PromptPanel({
       <button onClick={runGenerate} disabled={busy !== false || !prompt.trim()}>
         {busy === "generate" ? "Generating…" : "Generate"}
       </button>
+
+      <div className="quick-fixes">
+        <span className="quick-fixes__label">Quick fixes (AI, on the current asset)</span>
+        <div className="quick-fixes__row">
+          {QUICK_FIXES.map((qf) => (
+            <button
+              key={qf.label}
+              className="quick-fix-btn"
+              title={qf.title}
+              onClick={() => runPreset(qf)}
+              disabled={busy !== false}
+            >
+              {qf.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {chat.length > 0 && (
         <>

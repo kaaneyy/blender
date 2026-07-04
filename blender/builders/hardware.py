@@ -248,7 +248,31 @@ def _bolt_pattern(d1: float, d2: float, head_r: float) -> List[Tuple[float, floa
     return [(0.0, 0.0)]
 
 
-def compute_hardware(prims: List[Primitive]) -> List[Primitive]:
+#: preset names treated as structural metal for fastener appropriateness.
+METAL_PRESETS = {
+    "galvanized_steel", "cast_iron", "brushed_aluminum",
+    "powder_coat_black", "powder_coat_green",
+}
+
+
+def _is_soft(slot: str, spec) -> bool:
+    """True when a member's material is non-metal (wood/concrete/lens). With
+    no spec (direct test calls) everything is treated as metal, preserving
+    the pre-material-awareness behavior."""
+    if spec is None:
+        return False
+    from .base import material_preset_name
+
+    return material_preset_name(spec, slot) not in METAL_PRESETS
+
+
+def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
+    """Emit visible connection hardware at inter-component joints. Joints
+    between two non-metal members (wood↔wood, wood↔concrete) get no bolts —
+    real furniture uses concealed joinery, so a wooden table never sprouts
+    the industrial anchor bolts a steel pole needs. Metal↔metal and
+    metal↔wood joints (e.g. a bench's wood slat bolted to its steel frame)
+    keep their fasteners."""
     boxes = [
         (p, *_aabb(p))
         for p in prims
@@ -269,6 +293,9 @@ def compute_hardware(prims: List[Primitive]) -> List[Primitive]:
             hi = [min(ca[k] + ha[k], cb[k] + hb[k]) for k in range(3)]
             if any(hi[k] <= lo[k] for k in range(3)):
                 continue  # parts don't actually touch
+
+            if _is_soft(pa.material_slot, spec) and _is_soft(pb.material_slot, spec):
+                continue  # non-structural joint — concealed joinery, no bolts
 
             center = [(lo[k] + hi[k]) / 2 for k in range(3)]
             key = tuple(round(c / GRID) for c in center)

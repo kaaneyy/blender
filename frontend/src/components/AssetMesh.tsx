@@ -9,7 +9,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 import type { AssetSpec, LoftProfile, Primitive, Vec3 } from "../types";
-import { resolveMaterial, weatheredShading } from "../builders";
+import { aabb, resolveMaterial, weatheredShading } from "../builders";
 import { resolveProfile, ringPoints } from "../shapes";
 
 /** Loft: bridge two cross-section rings along local Z (mirror of
@@ -113,9 +113,12 @@ function useSlotMaterial(
   spec: AssetSpec,
   slot: string,
   highlight: "none" | "part" | "group",
+  wireframe: boolean,
+  lightsOn: boolean,
 ): THREE.MeshStandardMaterial {
   const resolved = resolveMaterial(spec, slot);
   const shade = weatheredShading(resolved); // D2: aged color/roughness/metalness
+  const isEmitter = slot === "lens" || resolved.emission > 0;
   return useMemo(() => {
     const tex = new THREE.CanvasTexture(getNoiseImage());
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -123,10 +126,12 @@ function useSlotMaterial(
     const tiles = resolved.uvScale * (1 + 1.5 * resolved.weathering);
     tex.repeat.set(tiles, tiles);
     const color = new THREE.Color(shade.color);
+    // at night, emitter lenses glow noticeably (in their own color)
+    const nightGlow = lightsOn && isEmitter ? Math.max(shade.emission, 2.5) : shade.emission;
     const emissive =
       highlight === "none" ? color : new THREE.Color(highlight === "part" ? "#2f6fed" : "#1d4ed8");
     const emissiveIntensity =
-      highlight === "none" ? shade.emission : Math.max(highlight === "part" ? 0.55 : 0.25, shade.emission);
+      highlight === "none" ? nightGlow : Math.max(highlight === "part" ? 0.55 : 0.25, nightGlow);
     return new THREE.MeshStandardMaterial({
       color,
       metalness: shade.metalness,
@@ -134,8 +139,9 @@ function useSlotMaterial(
       map: tex,
       emissive,
       emissiveIntensity,
+      wireframe,
     });
-  }, [shade.color, shade.metalness, shade.roughness, resolved.uvScale, resolved.weathering, shade.emission, highlight]);
+  }, [shade.color, shade.metalness, shade.roughness, resolved.uvScale, resolved.weathering, shade.emission, highlight, wireframe, lightsOn, isEmitter]);
 }
 
 /** Rotates Three's Y-axis cylinders/cones onto the local Z axis so the
@@ -153,12 +159,18 @@ function PrimitiveMesh({
   selected,
   onSelect,
   tourJoint,
+  wireframe,
+  lightsOn,
+  explodeOffset,
 }: {
   prim: Primitive;
   spec: AssetSpec;
   selected: Selection | null;
   onSelect: (sel: Selection) => void;
   tourJoint: number | null;
+  wireframe: boolean;
+  lightsOn: boolean;
+  explodeOffset: readonly [number, number, number];
 }) {
   const onTour =
     tourJoint !== null &&
@@ -173,7 +185,12 @@ function PrimitiveMesh({
         : selected.part
           ? "none"
           : "group";
-  const material = useSlotMaterial(spec, prim.materialSlot, highlight);
+  const material = useSlotMaterial(spec, prim.materialSlot, highlight, wireframe, lightsOn);
+  const pos: [number, number, number] = [
+    prim.location[0] + explodeOffset[0],
+    prim.location[1] + explodeOffset[1],
+    prim.location[2] + explodeOffset[2],
+  ];
 
   // custom geometry objects for the fabrication kinds
   const builtGeometry = useMemo(() => {
@@ -209,7 +226,7 @@ function PrimitiveMesh({
 
   if (prim.kind === "sweep") {
     return (
-      <group position={prim.location} rotation={prim.rotation} onClick={handleClick}>
+      <group position={pos} rotation={prim.rotation} onClick={handleClick}>
         <SweepMesh prim={prim} material={material} />
       </group>
     );
@@ -252,7 +269,7 @@ function PrimitiveMesh({
   }
 
   return (
-    <group position={prim.location} rotation={prim.rotation}>
+    <group position={pos} rotation={prim.rotation}>
       <mesh
         rotation={fix}
         castShadow
@@ -267,19 +284,57 @@ function PrimitiveMesh({
   );
 }
 
+const NO_OFFSET: [number, number, number] = [0, 0, 0];
+
+/** Exploded view: push each component away from the asset center along the
+ * direction it already sits, so parts separate for inspection. Pure preview
+ * transform — does not touch the spec or the Blender export. */
+function explodeOffsets(primitives: Primitive[]): Record<string, [number, number, number]> {
+  const byComp = new Map<string, { sum: [number, number, number]; n: number }>();
+  const overall: [number, number, number] = [0, 0, 0];
+  let count = 0;
+  for (const p of primitives) {
+    if (p.cut) continue;
+    const c = aabb(p).center;
+    const e = byComp.get(p.component) ?? { sum: [0, 0, 0], n: 0 };
+    e.sum[0] += c[0]; e.sum[1] += c[1]; e.sum[2] += c[2]; e.n += 1;
+    byComp.set(p.component, e);
+    overall[0] += c[0]; overall[1] += c[1]; overall[2] += c[2]; count += 1;
+  }
+  if (!count) return {};
+  const center: [number, number, number] = [overall[0] / count, overall[1] / count, overall[2] / count];
+  const K = 0.8;
+  const out: Record<string, [number, number, number]> = {};
+  for (const [comp, e] of byComp) {
+    const cc = [e.sum[0] / e.n, e.sum[1] / e.n, e.sum[2] / e.n];
+    out[comp] = [(cc[0] - center[0]) * K, (cc[1] - center[1]) * K, (cc[2] - center[2]) * K];
+  }
+  return out;
+}
+
 export default function AssetMesh({
   primitives,
   spec,
   selected,
   onSelect,
   tourJoint = null,
+  wireframe = false,
+  explode = false,
+  lightsOn = false,
 }: {
   primitives: Primitive[];
   spec: AssetSpec;
   selected: Selection | null;
   onSelect: (sel: Selection) => void;
   tourJoint?: number | null;
+  wireframe?: boolean;
+  explode?: boolean;
+  lightsOn?: boolean;
 }) {
+  const offsets = useMemo(
+    () => (explode ? explodeOffsets(primitives) : {}),
+    [explode, primitives],
+  );
   // Rebuilds are a synchronous useMemo upstream; this component only maps
   // primitives to meshes, comfortably within the 16 ms budget (T4.3).
   const items = useMemo(
@@ -292,9 +347,12 @@ export default function AssetMesh({
           selected={selected}
           onSelect={onSelect}
           tourJoint={tourJoint}
+          wireframe={wireframe}
+          lightsOn={lightsOn}
+          explodeOffset={offsets[p.component] ?? NO_OFFSET}
         />
       )),
-    [primitives, spec, selected, onSelect, tourJoint],
+    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets],
   );
   return <>{items}</>;
 }

@@ -162,7 +162,7 @@ def compute_primitives(spec: dict) -> List[Primitive]:
     if spec_toggles(spec).get("connection_hardware"):
         from .hardware import compute_hardware
 
-        prims = prims + compute_hardware(prims)
+        prims = prims + compute_hardware(prims, spec)
 
     offsets = spec.get("offsets") or {}
     if offsets:
@@ -206,6 +206,15 @@ GRIME_COLOR = (0.16, 0.14, 0.12)
 FINISH_ROUGHNESS = {"cast": 0.72, "machined": 0.35, "sheet": 0.28, "rough": 0.85}
 
 
+def material_preset_name(spec: dict, slot: str) -> str:
+    """Resolved preset name for a slot, applying the same fallbacks
+    resolve_material uses (lens→lamp_lens, hardware→brushed_aluminum, else
+    galvanized_steel). Shared by the hardware material-appropriateness check."""
+    entry = next((m for m in spec.get("materials", []) if m.get("slot") == slot), None)
+    fallbacks = {"lens": "lamp_lens", "hardware": "brushed_aluminum"}
+    return (entry or {}).get("preset") or fallbacks.get(slot, "galvanized_steel")
+
+
 def resolve_material(spec: dict, slot: str) -> dict:
     """Preset values merged with the spec's per-slot overrides (color,
     metalness, roughness, uv_scale, emission, weathering, finish). Pure — the
@@ -213,8 +222,7 @@ def resolve_material(spec: dict, slot: str) -> dict:
     The returned values are the AUTHORED appearance; call weathered() for the
     aged shading actually sent to the BSDF/preview material."""
     entry = next((m for m in spec.get("materials", []) if m.get("slot") == slot), None)
-    fallbacks = {"lens": "lamp_lens", "hardware": "brushed_aluminum"}
-    preset_name = (entry or {}).get("preset") or fallbacks.get(slot, "galvanized_steel")
+    preset_name = material_preset_name(spec, slot)
     preset = MATERIAL_PRESETS.get(preset_name, MATERIAL_PRESETS["galvanized_steel"])
     props = {
         "base_color": preset["base_color"],

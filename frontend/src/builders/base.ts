@@ -62,7 +62,7 @@ export function computePrimitives(spec: AssetSpec): Primitive[] {
   }
 
   if (specToggles(spec).connection_hardware && hardwareFn) {
-    prims = prims.concat(hardwareFn(prims));
+    prims = prims.concat(hardwareFn(prims, spec));
   }
   const offsets = spec.offsets;
   if (offsets && Object.keys(offsets).length) {
@@ -72,8 +72,9 @@ export function computePrimitives(spec: AssetSpec): Primitive[] {
 }
 
 /** Wired by builders/index.ts (keeps this module dependency-free). */
-let hardwareFn: ((prims: Primitive[]) => Primitive[]) | null = null;
-export function setHardwareBuilder(fn: (prims: Primitive[]) => Primitive[]): void {
+type HardwareFn = (prims: Primitive[], spec: AssetSpec) => Primitive[];
+let hardwareFn: HardwareFn | null = null;
+export function setHardwareBuilder(fn: HardwareFn): void {
   hardwareFn = fn;
 }
 
@@ -98,12 +99,19 @@ const FINISH_ROUGHNESS: Record<string, number> = {
   cast: 0.72, machined: 0.35, sheet: 0.28, rough: 0.85,
 };
 
+/** Resolved preset name for a slot (mirror of base.py material_preset_name).
+ * Shared by resolveMaterial and the hardware appropriateness check. */
+export function materialPresetName(spec: AssetSpec, slot: string): string {
+  const entry = (spec.materials ?? []).find((m) => m.slot === slot);
+  const fallbacks: Record<string, string> = { lens: "lamp_lens", hardware: "brushed_aluminum" };
+  return entry?.preset ?? fallbacks[slot] ?? "galvanized_steel";
+}
+
 /** Preset merged with per-slot overrides — mirror of base.py resolve_material.
  * Returns AUTHORED values; call weatheredShading() for the aged appearance. */
 export function resolveMaterial(spec: AssetSpec, slot: string): ResolvedMaterial {
   const entry = (spec.materials ?? []).find((m) => m.slot === slot);
-  const fallbacks: Record<string, string> = { lens: "lamp_lens", hardware: "brushed_aluminum" };
-  const presetName = entry?.preset ?? fallbacks[slot] ?? "galvanized_steel";
+  const presetName = materialPresetName(spec, slot);
   const preset = MATERIAL_PRESETS[presetName] ?? MATERIAL_PRESETS.galvanized_steel;
   const finishRough =
     entry?.finish && entry.finish in FINISH_ROUGHNESS ? FINISH_ROUGHNESS[entry.finish] : undefined;

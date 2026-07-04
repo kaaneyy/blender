@@ -180,3 +180,56 @@ class TestLoadClassFasteners:
         r_heavy = next(p for p in heavy if p.name.endswith("_shaft")).params["radius"]
         assert r_heavy > r_light
         assert r_heavy <= 0.014
+
+
+class TestMaterialAwareHardware:
+    """Fasteners must suit the asset: no industrial bolts on wood joinery."""
+
+    def _two_part(self, mat_a, mat_b):
+        # two overlapping boxes in different components, each a declared material
+        return {
+            "asset_type": "table", "name": "T", "units": "metric",
+            "parameters": [], "primitives": [
+                {"kind": "box", "name": "leg", "component": "legs",
+                 "material_slot": "wood_a", "location": [0, 0, 0.35],
+                 "params": {"size": [0.06, 0.06, 0.7]}},
+                {"kind": "box", "name": "apron", "component": "apron",
+                 "material_slot": "wood_b", "location": [0, 0, 0.66],
+                 "params": {"size": [0.5, 0.06, 0.08]}},
+            ],
+            "materials": [
+                {"slot": "wood_a", "preset": mat_a},
+                {"slot": "wood_b", "preset": mat_b},
+            ],
+            "toggles": [
+                {"id": "connection_hardware", "label": "Connection Hardware", "value": True},
+            ],
+        }
+
+    def test_all_wood_joint_gets_no_bolts(self):
+        prims = compute_primitives(self._two_part("wood_slat", "wood_slat"))
+        assert not any(p.component == "hardware" for p in prims), \
+            "a wood-to-wood joint should use concealed joinery, not metal bolts"
+
+    def test_wood_to_metal_joint_keeps_bolts(self):
+        prims = compute_primitives(self._two_part("wood_slat", "cast_iron"))
+        assert any(p.component == "hardware" for p in prims), \
+            "a wood slat bolted to a metal frame is a real carriage-bolt joint"
+
+    def test_metal_to_metal_joint_keeps_bolts(self):
+        prims = compute_primitives(self._two_part("galvanized_steel", "cast_iron"))
+        assert any(p.component == "hardware" for p in prims)
+
+    def test_street_light_flange_hardware_unaffected(self):
+        prims = compute_primitives(with_hardware(load("street_light.json")))
+        assert any(p.component == "hardware" for p in prims)
+
+    def test_direct_call_without_spec_treats_all_as_metal(self):
+        # existing direct compute_hardware(prims) callers keep their behavior
+        from blender.builders.hardware import compute_hardware
+        from blender.builders.base import Primitive
+        a = Primitive(kind="box", name="a", component="ca",
+                      location=(0, 0, 0.5), params={"size": (0.3, 0.3, 1.0)})
+        b = Primitive(kind="box", name="b", component="cb",
+                      location=(0, 0, 1.0), params={"size": (0.3, 0.3, 0.1)})
+        assert compute_hardware([a, b])  # metal by default → hardware present

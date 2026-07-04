@@ -8,8 +8,9 @@ import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { AssetSpec, Primitive, UnitSystem } from "../types";
-import { aabb, specParams } from "../builders";
+import { aabb, resolveMaterial, specParams } from "../builders";
 import { formatLength } from "../units";
+import { lightProfile } from "../lighting";
 import AssetMesh, { type Selection } from "./AssetMesh";
 
 const HUMAN_HEIGHT = 1.8288; // 6 ft
@@ -36,12 +37,24 @@ interface ViewportApi {
   zoom(factor: number): void;
   home(): void;
   topView(): void;
+  frontView(): void;
+  sideView(): void;
   faceNorth(): void;
+  screenshot(): void;
 }
 
 /** Blender Z-up point -> Three Y-up world (matches the asset group's -90° X). */
 function zUpToYUp(v: readonly number[]): THREE.Vector3 {
   return new THREE.Vector3(v[0], v[2], -v[1]);
+}
+
+/** Light-emitter primitives: lens parts or anything with material emission. */
+function findEmitters(primitives: Primitive[], spec: AssetSpec): Primitive[] {
+  return primitives.filter(
+    (p) =>
+      !p.cut &&
+      (p.materialSlot === "lens" || resolveMaterial(spec, p.materialSlot).emission > 0),
+  );
 }
 
 function boundsOf(prims: Primitive[]) {
@@ -60,8 +73,9 @@ function boundsOf(prims: Primitive[]) {
 }
 
 /** Generated-in-memory studio environment (no network fetch) so metallic
- * materials have something real to reflect. */
-function StudioEnvironment() {
+ * materials have something real to reflect. Dimmed at night so metals stop
+ * reflecting a bright room. */
+function StudioEnvironment({ dim = false }: { dim?: boolean }) {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   useEffect(() => {
@@ -74,6 +88,10 @@ function StudioEnvironment() {
       pmrem.dispose();
     };
   }, [gl, scene]);
+  useEffect(() => {
+    // three r155+ scales IBL contribution; harmless no-op on older builds
+    (scene as { environmentIntensity?: number }).environmentIntensity = dim ? 0.12 : 1.0;
+  }, [scene, dim]);
   return null;
 }
 
@@ -99,6 +117,7 @@ function ViewportBridge({
 }) {
   const lastHeadRef = useRef<FocusPoint | null>(null);
   const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
   const controls = useThree((s) => s.controls) as unknown as {
     target: THREE.Vector3;
     update(): void;
@@ -164,6 +183,18 @@ function ViewportBridge({
         camera.position.set(controls.target.x, controls.target.y + d, controls.target.z + 0.01);
         controls.update();
       },
+      frontView() {
+        focusRef.current = null;
+        const d = camera.position.distanceTo(controls.target);
+        camera.position.set(controls.target.x, controls.target.y, controls.target.z + d);
+        controls.update();
+      },
+      sideView() {
+        focusRef.current = null;
+        const d = camera.position.distanceTo(controls.target);
+        camera.position.set(controls.target.x + d, controls.target.y, controls.target.z);
+        controls.update();
+      },
       faceNorth() {
         focusRef.current = null;
         const off = camera.position.clone().sub(controls.target);
@@ -171,13 +202,21 @@ function ViewportBridge({
         camera.position.set(controls.target.x, camera.position.y, controls.target.z + horiz);
         controls.update();
       },
+      screenshot() {
+        // preserveDrawingBuffer on the Canvas keeps the buffer readable
+        const url = gl.domElement.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "assetforge.png";
+        a.click();
+      },
     };
     apiRef.current = api;
     if (!homedRef.current) {
       homedRef.current = true;
       api.home();
     }
-  }, [controls, camera, apiRef, focusRef, homeHeightRef]);
+  }, [controls, camera, gl, apiRef, focusRef, homeHeightRef]);
 
   useFrame((state, dt) => {
     if (!controls) return;
@@ -352,6 +391,12 @@ export default function Viewport({
 
   const [touring, setTouring] = useState(false);
   const [tourJoint, setTourJoint] = useState<number | null>(null);
+  const [lightsOn, setLightsOn] = useState(false);
+  const [wireframe, setWireframe] = useState(false);
+  const [exploded, setExploded] = useState(false);
+
+  // fixtures that emit light (lens parts / anything with material emission)
+  const emitters = lightsOn ? findEmitters(primitives, spec) : [];
 
   // a newly adopted asset (AI generate/refine) may be a completely different
   // size — glide the camera back to a framing overview
@@ -425,13 +470,31 @@ export default function Viewport({
     <div className="viewport-wrap">
       <Canvas
         shadows
+        gl={{ preserveDrawingBuffer: true }}
         camera={{ position: [heightM * 1.2, heightM * 0.9, heightM * 1.6], fov: 45 }}
         onPointerMissed={() => onSelect(null)}
       >
-        <color attach="background" args={[colors.bg]} />
-        <StudioEnvironment />
-        <ambientLight intensity={0.35} />
-        <directionalLight position={sunPos} intensity={1.2} castShadow />
+        <color attach="background" args={[lightsOn ? "#0a0d14" : colors.bg]} />
+        <StudioEnvironment dim={lightsOn} />
+        {/* night: dim ambient + faint moonlight; day: sun */}
+        <ambientLight intensity={lightsOn ? 0.06 : 0.35} />
+        <directionalLight position={sunPos} intensity={lightsOn ? 0.08 : 1.2} castShadow />
+
+        {/* the asset's own fixtures, lit at night */}
+        {emitters.map((prim) => {
+          const prof = lightProfile(spec.asset_type, resolveMaterial(spec, prim.materialSlot).emission);
+          return (
+            <pointLight
+              key={`light-${prim.name}`}
+              position={zUpToYUp(prim.location)}
+              color={prof.color}
+              intensity={prof.intensity}
+              distance={prof.distance}
+              decay={2}
+              castShadow
+            />
+          );
+        })}
 
         {/* ground grid: 1 ft / 5 ft cells in imperial, 0.5 m / 5 m in metric */}
         <Grid
@@ -456,6 +519,9 @@ export default function Viewport({
             selected={selected}
             onSelect={onSelect}
             tourJoint={tourJoint}
+            wireframe={wireframe}
+            explode={exploded}
+            lightsOn={lightsOn}
           />
         </group>
 
@@ -495,6 +561,12 @@ export default function Viewport({
         <button className="nav-btn" onClick={() => apiRef.current?.topView()} title="Top view">
           ⬒
         </button>
+        <button className="nav-btn" onClick={() => apiRef.current?.frontView()} title="Front view">
+          ▥
+        </button>
+        <button className="nav-btn" onClick={() => apiRef.current?.sideView()} title="Side view">
+          ◫
+        </button>
         <button
           className="nav-btn nav-btn--dial"
           onClick={() => apiRef.current?.faceNorth()}
@@ -515,10 +587,48 @@ export default function Viewport({
             <div className="dial__sundot" />
           </div>
         </button>
+        <button
+          className={`nav-btn${lightsOn ? " nav-btn--active" : ""}`}
+          onClick={() => setLightsOn((v) => !v)}
+          title={lightsOn ? "Night / lights on — click for day" : "Night — turn the sun off and the lights on"}
+        >
+          {lightsOn ? "🌙" : "☀"}
+        </button>
+        <button
+          className={`nav-btn${wireframe ? " nav-btn--active" : ""}`}
+          onClick={() => setWireframe((v) => !v)}
+          title="Wireframe — see through to the structure"
+        >
+          ◧
+        </button>
+        <button
+          className={`nav-btn${exploded ? " nav-btn--active" : ""}`}
+          onClick={() => setExploded((v) => !v)}
+          title="Exploded view — separate the components"
+        >
+          ✱
+        </button>
+        <button
+          className="nav-btn"
+          onClick={() => apiRef.current?.screenshot()}
+          title="Screenshot (download PNG)"
+        >
+          📷
+        </button>
       </div>
 
       <div className="nav-hint">drag orbit · WASD move · Q/E down/up</div>
       {touring && <div className="tour-hint">🔩 Touring connection points…</div>}
+      {lightsOn && emitters.length > 0 && (
+        <div className="tour-hint tour-hint--night">
+          🌙 {emitters.length} fixture{emitters.length > 1 ? "s" : ""} lit ·{" "}
+          {lightProfile(spec.asset_type, 4).usage} ~{lightProfile(spec.asset_type, 4).targetLux} lux
+          <span className="night-note"> (approx. design target)</span>
+        </div>
+      )}
+      {lightsOn && emitters.length === 0 && (
+        <div className="tour-hint tour-hint--night">🌙 Night — this asset has no light fixtures</div>
+      )}
     </div>
   );
 }
