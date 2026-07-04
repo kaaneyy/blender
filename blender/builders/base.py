@@ -199,10 +199,19 @@ def hex_to_rgba(color: str) -> tuple:
     return tuple(int(c[i : i + 2], 16) / 255 for i in (0, 2, 4)) + (1.0,)
 
 
+#: Grime color weathering lerps toward (dark warm grey).
+GRIME_COLOR = (0.16, 0.14, 0.12)
+
+#: Finish presets nudge roughness toward a fabrication surface (D/E5).
+FINISH_ROUGHNESS = {"cast": 0.72, "machined": 0.35, "sheet": 0.28, "rough": 0.85}
+
+
 def resolve_material(spec: dict, slot: str) -> dict:
     """Preset values merged with the spec's per-slot overrides (color,
-    metalness, roughness, uv_scale, emission). Pure — the same logic is
-    mirrored in the frontend so preview and export shade alike."""
+    metalness, roughness, uv_scale, emission, weathering, finish). Pure — the
+    same logic is mirrored in the frontend so preview and export shade alike.
+    The returned values are the AUTHORED appearance; call weathered() for the
+    aged shading actually sent to the BSDF/preview material."""
     entry = next((m for m in spec.get("materials", []) if m.get("slot") == slot), None)
     fallbacks = {"lens": "lamp_lens", "hardware": "brushed_aluminum"}
     preset_name = (entry or {}).get("preset") or fallbacks.get(slot, "galvanized_steel")
@@ -213,19 +222,47 @@ def resolve_material(spec: dict, slot: str) -> dict:
         "roughness": preset["roughness"],
         "uv_scale": 1.0,
         "emission": 0.0,
+        "weathering": 0.0,
     }
     if entry:
         if entry.get("color"):
             props["base_color"] = hex_to_rgba(entry["color"])
+        # a named finish sets the roughness baseline before any explicit override
+        if entry.get("finish") in FINISH_ROUGHNESS:
+            props["roughness"] = FINISH_ROUGHNESS[entry["finish"]]
         for spec_key, prop_key in (
             ("metalness", "metallic"),
             ("roughness", "roughness"),
             ("uv_scale", "uv_scale"),
             ("emission", "emission"),
+            ("weathering", "weathering"),
         ):
             if isinstance(entry.get(spec_key), (int, float)):
                 props[prop_key] = float(entry[spec_key])
     return props
+
+
+def weathered(props: dict) -> dict:
+    """Apply the weathering aging model to authored props → shading values.
+    w=0 is a no-op; higher w lerps color toward grime, raises roughness, and
+    dulls metals. Identical formula in the frontend (D1/D2)."""
+    w = max(0.0, min(1.0, props.get("weathering", 0.0)))
+    if w <= 0.0:
+        return {
+            "base_color": props["base_color"],
+            "metallic": props["metallic"],
+            "roughness": props["roughness"],
+            "emission": props["emission"],
+        }
+    base = props["base_color"]
+    mix = 0.5 * w
+    color = tuple(base[i] * (1.0 - mix) + GRIME_COLOR[i] * mix for i in range(3)) + (1.0,)
+    return {
+        "base_color": color,
+        "metallic": props["metallic"] * (1.0 - 0.4 * w),
+        "roughness": min(1.0, props["roughness"] + 0.45 * w),
+        "emission": props["emission"],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -240,21 +277,23 @@ def _get_or_create_material(name: str, props: dict):
         return mat
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
+    shade = weathered(props)  # D2: aged base color / roughness / metalness
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf is not None:
-        bsdf.inputs["Base Color"].default_value = props["base_color"]
-        bsdf.inputs["Metallic"].default_value = props["metallic"]
-        bsdf.inputs["Roughness"].default_value = props["roughness"]
-        if props["emission"] > 0:
+        bsdf.inputs["Base Color"].default_value = shade["base_color"]
+        bsdf.inputs["Metallic"].default_value = shade["metallic"]
+        bsdf.inputs["Roughness"].default_value = shade["roughness"]
+        if shade["emission"] > 0:
             try:  # Blender 4.x names
-                bsdf.inputs["Emission Color"].default_value = props["base_color"]
-                bsdf.inputs["Emission Strength"].default_value = props["emission"]
+                bsdf.inputs["Emission Color"].default_value = shade["base_color"]
+                bsdf.inputs["Emission Strength"].default_value = shade["emission"]
             except KeyError:  # Blender 3.x fallback
-                bsdf.inputs["Emission"].default_value = props["base_color"]
+                bsdf.inputs["Emission"].default_value = shade["base_color"]
     # diffuse fallback that survives DAE/OBJ export (SketchUp path, T3.3)
-    mat.diffuse_color = props["base_color"]
+    mat.diffuse_color = shade["base_color"]
     # consumed by the texture-mapping pass when image textures land (T3.3)
     mat["af_uv_scale"] = props["uv_scale"]
+    mat["af_weathering"] = props.get("weathering", 0.0)
     return mat
 
 

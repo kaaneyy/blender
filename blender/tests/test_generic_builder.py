@@ -245,3 +245,49 @@ class TestFabricationKinds:
                 {"kind": "box", "name": "x", "component": "a", "cut": True,
                  "params": {"size": [1, 1, 1]}},
             ]))
+
+
+class TestWeatheringAndFinish:
+    """Part D: weathering aging model + finish roughness presets."""
+
+    def _spec(self, **mat):
+        m = {"slot": "body", "preset": "galvanized_steel"}
+        m.update(mat)
+        return {"asset_type": "prop", "name": "T", "units": "metric",
+                "parameters": [], "toggles": [], "materials": [m],
+                "primitives": [{"kind": "box", "name": "b", "component": "body",
+                                "material_slot": "body", "params": {"size": [1, 1, 1]}}]}
+
+    def test_new_material_is_unchanged(self):
+        from blender.builders.base import resolve_material, weathered
+        props = resolve_material(self._spec(), "body")
+        assert props["weathering"] == 0.0
+        shade = weathered(props)
+        assert shade["base_color"] == props["base_color"]
+        assert shade["roughness"] == props["roughness"]
+
+    def test_weathering_darkens_roughens_and_dulls(self):
+        from blender.builders.base import resolve_material, weathered, GRIME_COLOR
+        props = resolve_material(self._spec(weathering=1.0), "body")
+        assert props["weathering"] == 1.0
+        base = props["base_color"]
+        shade = weathered(props)
+        # roughness climbs, metalness drops, color moves toward grime
+        assert shade["roughness"] == pytest.approx(min(1.0, props["roughness"] + 0.45))
+        assert shade["metallic"] == pytest.approx(props["metallic"] * 0.6)
+        for i in range(3):
+            expect = base[i] * 0.5 + GRIME_COLOR[i] * 0.5
+            assert shade["base_color"][i] == pytest.approx(expect)
+
+    def test_weathering_clamped_and_partial(self):
+        from blender.builders.base import resolve_material, weathered
+        props = resolve_material(self._spec(weathering=0.5), "body")
+        shade = weathered(props)
+        assert shade["roughness"] == pytest.approx(min(1.0, props["roughness"] + 0.225))
+
+    def test_finish_sets_roughness_baseline(self):
+        from blender.builders.base import resolve_material
+        assert resolve_material(self._spec(finish="machined"), "body")["roughness"] == 0.35
+        assert resolve_material(self._spec(finish="rough"), "body")["roughness"] == 0.85
+        # an explicit roughness override still wins over the finish baseline
+        assert resolve_material(self._spec(finish="rough", roughness=0.1), "body")["roughness"] == 0.1

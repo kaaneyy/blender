@@ -89,20 +89,73 @@ export interface ResolvedMaterial {
   roughness: number;
   uvScale: number;
   emission: number;
+  weathering: number;
 }
 
-/** Preset merged with per-slot overrides — mirror of base.py resolve_material. */
+//: grime tint weathering lerps toward (mirror of base.py GRIME_COLOR).
+const GRIME = [0.16, 0.14, 0.12];
+const FINISH_ROUGHNESS: Record<string, number> = {
+  cast: 0.72, machined: 0.35, sheet: 0.28, rough: 0.85,
+};
+
+/** Preset merged with per-slot overrides — mirror of base.py resolve_material.
+ * Returns AUTHORED values; call weatheredShading() for the aged appearance. */
 export function resolveMaterial(spec: AssetSpec, slot: string): ResolvedMaterial {
   const entry = (spec.materials ?? []).find((m) => m.slot === slot);
   const fallbacks: Record<string, string> = { lens: "lamp_lens", hardware: "brushed_aluminum" };
   const presetName = entry?.preset ?? fallbacks[slot] ?? "galvanized_steel";
   const preset = MATERIAL_PRESETS[presetName] ?? MATERIAL_PRESETS.galvanized_steel;
+  const finishRough =
+    entry?.finish && entry.finish in FINISH_ROUGHNESS ? FINISH_ROUGHNESS[entry.finish] : undefined;
   return {
     color: entry?.color ?? preset.color,
     metalness: entry?.metalness ?? preset.metalness,
-    roughness: entry?.roughness ?? preset.roughness,
+    roughness: entry?.roughness ?? finishRough ?? preset.roughness,
     uvScale: entry?.uv_scale ?? 1,
     emission: entry?.emission ?? 0,
+    weathering: entry?.weathering ?? 0,
+  };
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const c = hex.replace("#", "");
+  return [
+    parseInt(c.slice(0, 2), 16) / 255,
+    parseInt(c.slice(2, 4), 16) / 255,
+    parseInt(c.slice(4, 6), 16) / 255,
+  ];
+}
+
+function rgbToHex(rgb: number[]): string {
+  return (
+    "#" +
+    rgb
+      .map((v) => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+export interface ShadedMaterial {
+  color: string;
+  metalness: number;
+  roughness: number;
+  emission: number;
+}
+
+/** Apply the weathering aging model — mirror of base.py weathered(). */
+export function weatheredShading(m: ResolvedMaterial): ShadedMaterial {
+  const w = Math.max(0, Math.min(1, m.weathering));
+  if (w <= 0) {
+    return { color: m.color, metalness: m.metalness, roughness: m.roughness, emission: m.emission };
+  }
+  const base = hexToRgb(m.color);
+  const mix = 0.5 * w;
+  const color = rgbToHex(base.map((c, i) => c * (1 - mix) + GRIME[i] * mix));
+  return {
+    color,
+    metalness: m.metalness * (1 - 0.4 * w),
+    roughness: Math.min(1, m.roughness + 0.45 * w),
+    emission: m.emission,
   };
 }
 

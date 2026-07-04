@@ -12,8 +12,9 @@ export {
   computePrimitives,
   MATERIAL_PRESETS,
   resolveMaterial,
+  weatheredShading,
   specParams,
 } from "./base";
-export type { ResolvedMaterial } from "./base";
+export type { ResolvedMaterial, ShadedMaterial } from "./base";
 export { aabb, halfExtents } from "./hardware";
 export type { Aabb } from "./hardware";

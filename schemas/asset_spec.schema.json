@@ -106,6 +106,16 @@
             "minimum": 0,
             "maximum": 20,
             "description": "Emission strength (e.g. lamp lenses glow)."
+          },
+          "weathering": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Aging: 0 = factory-new, 1 = heavily weathered. Darkens toward grime, raises roughness, and dulls metals in both preview and Blender. Great for movie/animation dressing."
+          },
+          "finish": {
+            "enum": ["cast", "machined", "sheet", "rough"],
+            "description": "Fabrication finish of this slot's parts, tuning the surface: cast (matte, soft), machined (crisp, semi-gloss), sheet (smooth panel), rough (raw/galvanized). Advisory for the Blender finishing pass; does not change dimensions."
           }
         }
       }

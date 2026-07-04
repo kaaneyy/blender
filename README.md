@@ -229,6 +229,12 @@ settable by prompt ("matte black, slightly rough, glowing lens"):
 - **uv scale** — texture tiling density (visible as surface detail in the
   preview; drives texture mapping in Blender)
 - **glow** (emission) — self-illumination, e.g. lamp lenses
+- **weathering** (0–1) — ages the surface from factory-new to grimy: darkens
+  toward dirt, roughens, and dulls metals in both the preview and the Blender
+  export. A **🌦 weather all** slider at the top of Materials ages the whole
+  asset at once — great for movie/animation dressing.
+- **finish** (`cast` / `machined` / `sheet` / `rough`) — the fabrication
+  surface of the part, settable by prompt (the AI picks one per slot)
 
 These live in the spec JSON, so they survive download/export: the Blender
 build assigns the same values to Principled BSDF materials.

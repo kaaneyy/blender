@@ -106,7 +106,8 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [x] G-C4 Cantilever gusset wedge (loft, tall at the pole) under the mast arm.
 - [x] G-C5 Member-sizing ratio rules in `us_codes.json` (`sizing.ratios`, e.g. pole base:top taper 1.6–2.2 per AASHTO LTS proportions) enforced by the validator — strict mode corrects the "of" parameter; mirrored in the client for live red-slider feedback. Heuristic proportions, NOT FEA.
 - [x] G-C6 Fastener sizing by load class: through-bolt diameter scales light/standard/heavy from the larger joined member's bounding volume (0.75×/1×/1.35×, cap raised to Ø28 mm).
-- [ ] G-D/G-E materials detail + prompt archetypes — next.
+- [~] G-D materials & finish: `weathering` (0–1) + `finish` (cast/machined/sheet/rough) added to the material schema, `resolve_material`, and a pure `weathered()` aging model (lerp toward grime, +roughness, dulled metal) applied to both the Blender Principled BSDF and the Three.js preview; UI gained per-slot weathering sliders + a global "🌦 weather all" lever. *(D1 procedural-detail / D3 AO-normal bakes / D4 smart-UVs are Blender-only and still pending.)*
+- [x] G-E prompt upgrades: system prompt now lists the fabrication kinds (lathe/sweep/loft/tube/cut/array), a FORM/PROPORTION/ARCHETYPES section (cobra-head, acorn post-top, bishop's-crook, bollard, urn, …) with taper-ratio guidance and per-component connection types (welded/bolted-flange/slip-fit/cast-integral), and finish/weathering material guidance. The upgraded street_light spec doubles as the E6 gold few-shot.
 
 ## PHASE 4 — Live Preview (frontend)
 

@@ -9,7 +9,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 import type { AssetSpec, LoftProfile, Primitive, Vec3 } from "../types";
-import { resolveMaterial } from "../builders";
+import { resolveMaterial, weatheredShading } from "../builders";
 import { resolveProfile, ringPoints } from "../shapes";
 
 /** Loft: bridge two cross-section rings along local Z (mirror of
@@ -115,24 +115,27 @@ function useSlotMaterial(
   highlight: "none" | "part" | "group",
 ): THREE.MeshStandardMaterial {
   const resolved = resolveMaterial(spec, slot);
+  const shade = weatheredShading(resolved); // D2: aged color/roughness/metalness
   return useMemo(() => {
     const tex = new THREE.CanvasTexture(getNoiseImage());
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(resolved.uvScale, resolved.uvScale);
-    const color = new THREE.Color(resolved.color);
+    // weathering tightens the grime pattern so dirt reads as finer speckle
+    const tiles = resolved.uvScale * (1 + 1.5 * resolved.weathering);
+    tex.repeat.set(tiles, tiles);
+    const color = new THREE.Color(shade.color);
     const emissive =
       highlight === "none" ? color : new THREE.Color(highlight === "part" ? "#2f6fed" : "#1d4ed8");
     const emissiveIntensity =
-      highlight === "none" ? resolved.emission : Math.max(highlight === "part" ? 0.55 : 0.25, resolved.emission);
+      highlight === "none" ? shade.emission : Math.max(highlight === "part" ? 0.55 : 0.25, shade.emission);
     return new THREE.MeshStandardMaterial({
       color,
-      metalness: resolved.metalness,
-      roughness: resolved.roughness,
+      metalness: shade.metalness,
+      roughness: shade.roughness,
       map: tex,
       emissive,
       emissiveIntensity,
     });
-  }, [resolved.color, resolved.metalness, resolved.roughness, resolved.uvScale, resolved.emission, highlight]);
+  }, [shade.color, shade.metalness, shade.roughness, resolved.uvScale, resolved.weathering, shade.emission, highlight]);
 }
 
 /** Rotates Three's Y-axis cylinders/cones onto the local Z axis so the

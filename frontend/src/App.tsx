@@ -61,6 +61,13 @@ export default function App() {
       ),
     }));
 
+  /** Global weathering: set the same aging value on every material slot. */
+  const weatherAll = (value: number) =>
+    setSpec((s) => ({
+      ...s,
+      materials: (s.materials ?? []).map((m) => ({ ...m, weathering: value })),
+    }));
+
   /** "Show/hide bolts & connections": ensure the connection_hardware toggle
    * exists in the spec (so it exports too), then flip it. */
   const toggleHardware = () =>
@@ -209,6 +216,7 @@ export default function App() {
             onParam={updateParam}
             onToggle={updateToggle}
             onMaterial={updateMaterial}
+            onWeatherAll={weatherAll}
             onDisplayUnits={setDisplayUnits}
             onHardware={toggleHardware}
             onTour={startTour}

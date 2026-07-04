@@ -445,6 +445,19 @@ textarea:disabled {
   flex-shrink: 0;
 }
 
+.matrow--global {
+  color: var(--text);
+  font-weight: 600;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.matrow--global .matrow__label {
+  width: auto;
+}
+
 .matrow input[type="range"] {
   flex: 1;
   accent-color: var(--text-muted);

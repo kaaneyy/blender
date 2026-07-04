@@ -33,6 +33,8 @@ export interface SpecMaterial {
   roughness?: number; // 0..1
   uv_scale?: number; // texture tiling density
   emission?: number; // glow strength
+  weathering?: number; // 0..1 (factory-new → aged)
+  finish?: "cast" | "machined" | "sheet" | "rough";
 }
 
 export type PrimitiveKind =

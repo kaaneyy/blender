@@ -30,6 +30,7 @@ interface Props {
   onParam: (id: string, value: number | string) => void;
   onToggle: (id: string, value: boolean) => void;
   onMaterial: (slot: string, patch: Partial<SpecMaterial>) => void;
+  onWeatherAll: (value: number) => void;
   onDisplayUnits: (u: UnitSystem) => void;
   onHardware: () => void;
   onTour: () => void;
@@ -54,7 +55,7 @@ function MaterialControl({
   const resolved = resolveMaterial(spec, material.slot);
   const slider = (
     label: string,
-    key: "metalness" | "roughness" | "uv_scale" | "emission",
+    key: "metalness" | "roughness" | "uv_scale" | "emission" | "weathering",
     min: number,
     max: number,
     step: number,
@@ -107,6 +108,7 @@ function MaterialControl({
       {slider("roughness", "roughness", 0, 1, 0.05, resolved.roughness)}
       {slider("uv scale", "uv_scale", 0.25, 8, 0.25, resolved.uvScale)}
       {slider("glow", "emission", 0, 6, 0.25, resolved.emission)}
+      {slider("weathering", "weathering", 0, 1, 0.05, resolved.weathering)}
     </div>
   );
 }
@@ -206,6 +208,7 @@ export default function ControlsPanel({
   onParam,
   onToggle,
   onMaterial,
+  onWeatherAll,
   onDisplayUnits,
   onHardware,
   onTour,
@@ -217,6 +220,11 @@ export default function ControlsPanel({
     spec.toggles?.find((t) => t.id === "connection_hardware")?.value ?? false;
   const visibleToggles = (spec.toggles ?? []).filter(
     (t) => t.id !== "connection_hardware",
+  );
+  // global weathering = max of the per-slot values (a single "age it" lever)
+  const globalWeather = Math.max(
+    0,
+    ...(spec.materials ?? []).map((m) => m.weathering ?? 0),
   );
   return (
     <div className="panel">
@@ -297,6 +305,20 @@ export default function ControlsPanel({
       </p>
 
       {(spec.materials?.length ?? 0) > 0 && <h3>Materials</h3>}
+      {(spec.materials?.length ?? 0) > 0 && (
+        <div className="matrow matrow--global" title="Age the whole asset: factory-new → weathered">
+          <span className="matrow__label">🌦 weather all</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={globalWeather}
+            onChange={(e) => onWeatherAll(Number(e.target.value))}
+          />
+          <span className="matrow__value">{globalWeather.toFixed(2)}</span>
+        </div>
+      )}
       {spec.materials?.map((m) => (
         <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
       ))}
