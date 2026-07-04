@@ -29,7 +29,7 @@ from standards.validator import (  # noqa: E402
 from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: E402
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
-from .llm import LLMError, complete, complete_stream  # noqa: E402
+from .llm import LLMError, complete, complete_stream, strip_reasoning  # noqa: E402
 
 #: Marks the end of the streamed raw text; the JSON payload after it carries
 #: the validated result (or the error). The frontend splits on this.
@@ -146,12 +146,54 @@ def enhance_prompt(prompt: str, model: str | None = None) -> str:
     return brief or prompt
 
 
+def _last_balanced_object(text: str) -> str | None:
+    """Return the last top-level ``{...}`` in ``text`` that parses as JSON, or
+    None. Unlike a first-``{``/last-``}`` slice, this is not fooled by stray
+    braces a reasoning model leaves in the prose around its real answer (e.g. a
+    worked example it typed while thinking)."""
+    result = None
+    depth = start = 0
+    in_str = esc = False
+    start = -1
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                chunk = text[start : i + 1]
+                try:
+                    json.loads(chunk)
+                    result = chunk  # keep the last one that actually parses
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+    return result
+
+
 def _strip_fences(raw: str) -> str:
-    text = raw.strip()
+    # A thinking model prepends a chain of thought (possibly full of braces)
+    # before the JSON — drop it first so it can't confuse extraction.
+    text = strip_reasoning(raw).strip()
     match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if match:
-        text = match.group(1).strip()
-    # tolerate stray prose around the object
+        return match.group(1).strip()
+    # prefer the last balanced object that parses; fall back to an outer slice
+    candidate = _last_balanced_object(text)
+    if candidate is not None:
+        return candidate
     start, end = text.find("{"), text.rfind("}")
     if start >= 0 and end > start:
         text = text[start : end + 1]
@@ -458,7 +500,9 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
 
 def stream_install_guide(spec: dict):
     system, user = _install_guide_prompts(spec)
-    return _stream_pipeline(system, user, lambda raw: {"guide": raw.strip()}, retry=False)
+    return _stream_pipeline(
+        system, user, lambda raw: {"guide": strip_reasoning(raw).strip()}, retry=False,
+    )
 
 
 def stream_update_standards(commit_fn):
