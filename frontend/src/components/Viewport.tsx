@@ -8,7 +8,7 @@ import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { AssetSpec, Primitive, UnitSystem } from "../types";
-import { halfExtents, specParams } from "../builders";
+import { aabb, specParams } from "../builders";
 import { formatLength } from "../units";
 import AssetMesh, { type Selection } from "./AssetMesh";
 
@@ -48,10 +48,10 @@ function boundsOf(prims: Primitive[]) {
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
   for (const p of prims) {
-    const h = halfExtents(p);
+    const box = aabb(p);
     for (let k = 0; k < 3; k++) {
-      lo[k] = Math.min(lo[k], p.location[k] - h[k]);
-      hi[k] = Math.max(hi[k], p.location[k] + h[k]);
+      lo[k] = Math.min(lo[k], box.center[k] - box.half[k]);
+      hi[k] = Math.max(hi[k], box.center[k] + box.half[k]);
     }
   }
   const center = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
@@ -324,13 +324,12 @@ export default function Viewport({
   const p = specParams(spec);
   const measured = Math.max(
     HUMAN_HEIGHT * 0.25,
-    ...primitives.map((prim) => {
-      const z = prim.location[2];
-      if (prim.kind === "cylinder" || prim.kind === "cone")
-        return z + (prim.params.depth ?? 0) / 2;
-      if (prim.kind === "box") return z + (prim.params.size?.[2] ?? 0) / 2;
-      return z + (prim.params.radius ?? 0);
-    }),
+    ...primitives
+      .filter((prim) => !prim.cut)
+      .map((prim) => {
+        const box = aabb(prim);
+        return box.center[2] + box.half[2];
+      }),
   );
   const heightM = p.pole_height ?? p.height ?? measured;
   const armM = p.arm_length ?? 0;

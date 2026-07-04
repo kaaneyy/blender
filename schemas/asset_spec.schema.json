@@ -118,7 +118,10 @@
         "additionalProperties": false,
         "required": ["kind", "params"],
         "properties": {
-          "kind": { "enum": ["cylinder", "cone", "box", "sphere"] },
+          "kind": {
+            "enum": ["cylinder", "cone", "box", "sphere", "lathe", "sweep", "loft", "tube"],
+            "description": "lathe: revolve a profile around Z (lantern globes, finials, domes, planters). sweep: round tube following a 3D path with optional taper (mast arms, handrails, pipe runs). loft: taper between two cross-sections (cobra heads, flared transitions). tube: hollow cylinder with wall thickness (real poles/bollards are not solid)."
+          },
           "name": { "type": "string" },
           "component": { "type": "string", "default": "body" },
           "location": {
@@ -139,6 +142,26 @@
             "type": "string",
             "description": "Expression; primitive is skipped when it evaluates to 0 (use toggle ids)."
           },
+          "cut": {
+            "type": "boolean",
+            "default": false,
+            "description": "Negative space: this primitive is boolean-SUBTRACTED from the other parts of its component (bolt holes, slots, cutouts) instead of being rendered."
+          },
+          "array": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["count", "step"],
+            "description": "Linear repetition: expands this primitive into `count` copies offset by `step` each (fence pickets, slats, bolt rows).",
+            "properties": {
+              "count": { "type": ["number", "string"] },
+              "step": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": { "type": ["number", "string"] }
+              }
+            }
+          },
           "params": {
             "type": "object",
             "additionalProperties": false,
@@ -156,6 +179,56 @@
               "segments": {
                 "type": ["number", "string"],
                 "description": "Radial segments for cylinders/cones (default 24; use 6 for hex bolt heads and nuts)."
+              },
+              "shell": {
+                "type": ["number", "string"],
+                "description": "Wall thickness in meters: turns the part into hollow sheet/cast construction (luminaire housings, bins, shades). Applied as a solidify pass in Blender."
+              },
+              "profile": {
+                "description": "For kind=lathe: a named profile (acorn, teardrop, dome, finial, flared_base, vase — scaled by radius+depth) or a raw [[r,z],...] point list in meters, z from 0 (bottom, at the primitive's location) upward.",
+                "oneOf": [
+                  { "enum": ["acorn", "teardrop", "dome", "finial", "flared_base", "vase"] },
+                  { "type": "array", "minItems": 3,
+                    "items": { "type": "array", "minItems": 2, "maxItems": 2,
+                               "items": { "type": ["number", "string"] } } }
+                ]
+              },
+              "path": {
+                "type": "array",
+                "minItems": 2,
+                "description": "For kind=sweep: 3D points (relative to location, meters) the tube follows.",
+                "items": { "type": "array", "minItems": 3, "maxItems": 3,
+                           "items": { "type": ["number", "string"] } }
+              },
+              "radius_end": {
+                "type": ["number", "string"],
+                "description": "For kind=sweep: tip radius (tapers from radius to radius_end along the path)."
+              },
+              "wall": {
+                "type": ["number", "string"],
+                "description": "For kind=tube: wall thickness in meters."
+              },
+              "profile_start": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["shape", "w", "h"],
+                "description": "For kind=loft: cross-section at -depth/2 along local Z.",
+                "properties": {
+                  "shape": { "enum": ["rect", "ellipse"] },
+                  "w": { "type": ["number", "string"] },
+                  "h": { "type": ["number", "string"] }
+                }
+              },
+              "profile_end": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["shape", "w", "h"],
+                "description": "For kind=loft: cross-section at +depth/2 along local Z.",
+                "properties": {
+                  "shape": { "enum": ["rect", "ellipse"] },
+                  "w": { "type": ["number", "string"] },
+                  "h": { "type": ["number", "string"] }
+                }
               }
             }
           }

@@ -35,7 +35,21 @@ export interface SpecMaterial {
   emission?: number; // glow strength
 }
 
-export type PrimitiveKind = "cylinder" | "cone" | "box" | "sphere";
+export type PrimitiveKind =
+  | "cylinder"
+  | "cone"
+  | "box"
+  | "sphere"
+  | "lathe"
+  | "sweep"
+  | "loft"
+  | "tube";
+
+export interface LoftProfile {
+  shape: "rect" | "ellipse";
+  w: number;
+  h: number;
+}
 
 /** Raw (pre-evaluation) primitive as it appears in a custom spec: numeric
  * fields may be expression strings over parameter/toggle ids. */
@@ -47,6 +61,10 @@ export interface SpecPrimitive {
   rotation?: Array<number | string>;
   material_slot?: string;
   visible_if?: string;
+  /** negative space: boolean-subtracted from the component in Blender */
+  cut?: boolean;
+  /** linear repetition: count copies offset by step each */
+  array?: { count: number | string; step: Array<number | string> };
   params: {
     radius?: number | string;
     depth?: number | string;
@@ -54,6 +72,13 @@ export interface SpecPrimitive {
     radius_top?: number | string;
     size?: Array<number | string>;
     segments?: number | string;
+    shell?: number | string;
+    profile?: string | Array<Array<number | string>>;
+    path?: Array<Array<number | string>>;
+    radius_end?: number | string;
+    wall?: number | string;
+    profile_start?: { shape: string; w: number | string; h: number | string };
+    profile_end?: { shape: string; w: number | string; h: number | string };
   };
 }
 
@@ -83,6 +108,8 @@ export interface Primitive {
   location: Vec3;
   rotation: Vec3; // Euler XYZ radians, Blender convention
   materialSlot: string;
+  /** negative space — not rendered in the preview, subtracted in Blender */
+  cut?: boolean;
   params: {
     radius?: number;
     depth?: number;
@@ -91,5 +118,13 @@ export interface Primitive {
     size?: Vec3;
     /** Radial segments for cylinders/cones (6 = hex bolt heads/nuts). */
     segments?: number;
+    /** Wall thickness for shell parts (Blender solidify; shape-only in preview). */
+    shell?: number;
+    profile?: string | Array<[number, number]>;
+    path?: Vec3[];
+    radius_end?: number;
+    wall?: number;
+    profile_start?: LoftProfile;
+    profile_end?: LoftProfile;
   };
 }

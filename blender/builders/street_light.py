@@ -37,42 +37,44 @@ def _arm_points(arm_length: float, attach_z: float, rise: float):
 
 
 def _arm_primitives(arm_length: float, pole_height: float) -> List[Primitive]:
+    """One swept, tapered tube following a smooth curve (B2) — a real mast
+    arm instead of overlapping cylinder segments."""
     rise = min(0.15 * arm_length, 0.75)
     attach_z = pole_height - 0.25 - rise  # arm meets the pole just below the top
-    prims: List[Primitive] = []
-    pts = _arm_points(arm_length, attach_z, rise)
-    for i, ((x0, z0), (x1, z1)) in enumerate(zip(pts, pts[1:]), start=1):
-        dx, dz = x1 - x0, z1 - z0
-        length = math.hypot(dx, dz)
-        prims.append(
-            Primitive(
-                kind="cylinder",
-                name=f"arm_seg_{i}",
-                component="arm",
-                location=((x0 + x1) / 2, 0.0, (z0 + z1) / 2),
-                # cylinder axis is +Z; tilt it toward +X by the segment slope
-                rotation=(0.0, math.atan2(dx, dz), 0.0),
-                material_slot="pole",
-                # slight overlap so segments read as one continuous tube
-                params={"radius": ARM_RADIUS, "depth": length * 1.08},
-            )
+    path = tuple((x, 0.0, z) for x, z in _arm_points(arm_length, attach_z, rise))
+    return [
+        Primitive(
+            kind="sweep",
+            name="mast_arm",
+            component="arm",
+            location=(0.0, 0.0, 0.0),
+            material_slot="pole",
+            params={"path": path, "radius": ARM_RADIUS * 1.25, "radius_end": ARM_RADIUS * 0.8},
         )
-    return prims
+    ]
 
 
 def _luminaire_primitives(arm_length: float, pole_height: float) -> List[Primitive]:
-    rise = min(0.15 * arm_length, 0.75)
+    """Cobra-head housing lofted from a rounded-rect door end to a slimmer
+    elliptical nose (B4), hollow sheet-metal walls (A4 shell)."""
     tip_z = pole_height - 0.25  # top of the arm curve (attach_z + rise)
     head_len, head_w, head_h = 0.75, 0.32, 0.17
     head_x = arm_length + head_len / 2 - 0.15  # head overhangs the arm tip
     return [
         Primitive(
-            kind="box",
+            kind="loft",
             name="head",
             component="luminaire",
             location=(head_x, 0.0, tip_z + head_h / 2 - 0.02),
+            # loft axis is local Z; rotate it to run along +X (arm direction)
+            rotation=(0.0, math.pi / 2, 0.0),
             material_slot="luminaire",
-            params={"size": (head_len, head_w, head_h)},
+            params={
+                "depth": head_len,
+                "profile_start": {"shape": "rect", "w": head_w, "h": head_h},
+                "profile_end": {"shape": "ellipse", "w": head_w * 0.7, "h": head_h * 0.6},
+                "shell": 0.003,
+            },
         ),
         Primitive(
             kind="cylinder",
@@ -136,12 +138,12 @@ def compute_primitives(spec: dict) -> List[Primitive]:
     )
     prims.append(
         Primitive(
-            kind="sphere",
+            kind="lathe",
             name="cap",
             component="pole",
-            location=(0.0, 0.0, pole_height),
+            location=(0.0, 0.0, pole_height - 0.01),
             material_slot="pole",
-            params={"radius": top_r * 1.15},
+            params={"profile": "dome", "radius": top_r * 1.25, "depth": top_r * 1.6},
         )
     )
 

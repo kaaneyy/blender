@@ -15,4 +15,5 @@ export {
   specParams,
 } from "./base";
 export type { ResolvedMaterial } from "./base";
-export { halfExtents } from "./hardware";
+export { aabb, halfExtents } from "./hardware";
+export type { Aabb } from "./hardware";

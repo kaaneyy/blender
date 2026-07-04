@@ -22,6 +22,35 @@ def expression_env(spec: dict) -> dict:
     return env
 
 
+def _eval_params(raw_params: dict, env: dict) -> dict:
+    """Evaluate primitive params: scalars, triples, lathe profiles, sweep
+    paths, and loft cross-sections all accept expressions."""
+    params = {}
+    for key, value in raw_params.items():
+        if key == "profile":
+            if isinstance(value, str):
+                params[key] = value  # named profile, resolved at realization
+            else:
+                params[key] = tuple(
+                    (safe_eval(r, env), safe_eval(z, env)) for r, z in value
+                )
+        elif key == "path":
+            params[key] = tuple(
+                tuple(safe_eval(v, env) for v in point) for point in value
+            )
+        elif key in ("profile_start", "profile_end"):
+            params[key] = {
+                "shape": value["shape"],
+                "w": safe_eval(value["w"], env),
+                "h": safe_eval(value["h"], env),
+            }
+        elif isinstance(value, (list, tuple)):
+            params[key] = tuple(safe_eval(v, env) for v in value)
+        else:
+            params[key] = safe_eval(value, env)
+    return params
+
+
 def build_custom(spec: dict) -> List[Primitive]:
     env = expression_env(spec)
     prims: List[Primitive] = []
@@ -32,29 +61,46 @@ def build_custom(spec: dict) -> List[Primitive]:
         if visible_if is not None and safe_eval(visible_if, env) == 0:
             continue
 
-        params = {}
-        for key, value in raw.get("params", {}).items():
-            if isinstance(value, (list, tuple)):
-                params[key] = tuple(safe_eval(v, env) for v in value)
-            else:
-                params[key] = safe_eval(value, env)
+        params = _eval_params(raw.get("params", {}), env)
+        base_name = raw.get("name") or f"part_{i + 1}"
+        location = tuple(safe_eval(v, env) for v in raw.get("location", (0, 0, 0)))
+        rotation = tuple(safe_eval(v, env) for v in raw.get("rotation", (0, 0, 0)))
 
-        name = raw.get("name") or f"part_{i + 1}"
-        while name in used_names:  # LLMs occasionally repeat names
-            name += "_"
-        used_names.add(name)
+        # B7: linear array — expand into evenly stepped copies
+        array = raw.get("array")
+        if array:
+            count = max(1, int(round(safe_eval(array["count"], env))))
+            step = tuple(safe_eval(v, env) for v in array["step"])
+            placements = [
+                (
+                    f"{base_name}_{n + 1}" if count > 1 else base_name,
+                    (
+                        location[0] + step[0] * n,
+                        location[1] + step[1] * n,
+                        location[2] + step[2] * n,
+                    ),
+                )
+                for n in range(count)
+            ]
+        else:
+            placements = [(base_name, location)]
 
-        prims.append(
-            Primitive(
-                kind=raw["kind"],
-                name=name,
-                component=raw.get("component", "body"),
-                location=tuple(safe_eval(v, env) for v in raw.get("location", (0, 0, 0))),
-                rotation=tuple(safe_eval(v, env) for v in raw.get("rotation", (0, 0, 0))),
-                material_slot=raw.get("material_slot", "default"),
-                params=params,
+        for name, loc in placements:
+            while name in used_names:  # LLMs occasionally repeat names
+                name += "_"
+            used_names.add(name)
+            prims.append(
+                Primitive(
+                    kind=raw["kind"],
+                    name=name,
+                    component=raw.get("component", "body"),
+                    location=loc,
+                    rotation=rotation,
+                    material_slot=raw.get("material_slot", "default"),
+                    cut=bool(raw.get("cut", False)),
+                    params=dict(params),
+                )
             )
-        )
-    if not prims:
+    if not any(not p.cut for p in prims):
         raise ValueError("Custom spec produced no visible primitives")
     return prims

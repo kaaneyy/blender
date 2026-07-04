@@ -86,6 +86,23 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [x] E8 Camera UX: click-to-select glides the camera to center the part; turning on connection hardware tours every bolt in order then zooms back out; WASD/QE fly-through; adopting a new AI asset re-frames the view; guide results are cached per spec (Regenerate to force).
 - [x] E9 Maps-style nav overlay: round zoom/home/top-view buttons, a live compass (click → face north), and a sun-direction dial (click → rotate the sun 45°, shadows follow).
 
+## PHASE 3.6 — Geometry quality upgrade (Parts A & B of the quality plan)
+
+- [x] G-A1/A2 Universal finishing pass (`builders/ops.py:finish`, run on every object in `build()`): shade-smooth with a 30° angle split + size-scaled bevel modifier (segments 2, ANGLE limit, clamped, hardened normals) — machined/cast edges instead of razor-sharp CG edges.
+- [x] G-A3 Quality tiers: `build(spec, quality=draft|preview|final)` → 24/32/64 radial segments (spheres scale accordingly); `build_cli.py --quality=`; explicit `segments` (hex bolts) always wins.
+- [x] G-A4 `shell` param → solidify pass: real 2–4 mm wall thickness for housings/bins/shades (the cobra head now ships hollow).
+- [x] G-A5 Weld/merge-by-distance on constructed meshes and after boolean cuts.
+- [x] G-A6 Modifiers baked before DAE/OBJ/GLB/FBX export; `.blend` keeps them live for non-destructive re-editing.
+- [x] G-B1 `lathe` kind — revolve (r,z) profiles around Z; named profile library (acorn, teardrop, dome, finial, flared_base, vase) shared py/ts (`shapes.py` / `shapes.ts`).
+- [x] G-B2 `sweep` kind — smooth tapered tube along a 3D path (bpy curve with per-point radius; preview = lerped-radius segments). The street-light mast arm is now ONE tapered sweep instead of 6 overlapping cylinders.
+- [x] G-B3 `cut: true` primitives — boolean-difference negative space (bolt holes, slots) with auto-weld; union intentionally omitted to preserve the named-component hierarchy.
+- [x] G-B4 `loft` kind — bridge two cross-sections (rect/ellipse superellipse rings) along the axis; the cobra head is now a rect→ellipse loft.
+- [x] G-B5 `tube` kind — hollow cylinder with wall thickness (poles/bollards/arms are never solid).
+- [~] G-B6 Profile library — 2D revolve profiles shipped; structural sections (I-beam, C-channel) for sweeps still pending.
+- [x] G-B7 `array` op — linear repetition with expression-driven count/step (pickets, slats, bolt rows), expanded in the pure layer so preview and Blender agree.
+- [ ] G-C Part C (base flanges/bolt circles/gussets, slip-fit joints, weld beads, member sizing rules) — next.
+- [ ] G-D/G-E materials detail + prompt archetypes — after C.
+
 ## PHASE 4 — Live Preview (frontend)
 
 - [x] T4.1 React app shell: prompt box + chat refine panel (left), 3D viewport (center), auto-generated controls panel (right). *Prompt box present but disabled until Phase 2 ships.*

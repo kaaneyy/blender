@@ -151,3 +151,97 @@ class TestTiltedGeometry:
         spec["parameters"][0]["value"] = 45
         prims = {p.name: p for p in compute_primitives(spec)}
         assert prims["panel"].rotation[1] == pytest.approx(45 * 0.01745, abs=1e-4)
+
+
+class TestFabricationKinds:
+    """Part B vocabulary in the generate-anything path."""
+
+    def _spec(self, prims):
+        return {
+            "asset_type": "prop", "name": "T", "units": "metric",
+            "parameters": [
+                {"id": "h", "label": "H", "type": "slider",
+                 "min": 0.5, "max": 3, "step": 0.1, "value": 2, "unit": "m"},
+            ],
+            "toggles": [],
+            "primitives": prims,
+        }
+
+    def test_lathe_named_profile(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "lathe", "name": "globe", "component": "top",
+             "location": [0, 0, "h"],
+             "params": {"profile": "acorn", "radius": 0.18, "depth": 0.4}},
+        ]))
+        [globe] = prims
+        assert globe.kind == "lathe" and globe.params["profile"] == "acorn"
+        from blender.builders.hardware import _aabb
+        center, half = _aabb(globe)
+        assert center[2] == pytest.approx(2 + 0.2)  # profile spans z 0..0.4
+        assert half[0] == pytest.approx(0.85 * 0.18)
+
+    def test_lathe_raw_profile_with_expressions(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "lathe", "name": "vase", "component": "body",
+             "params": {"profile": [[0.1, 0], ["h/10", "h/4"], [0.05, "h/2"]]}},
+        ]))
+        assert prims[0].params["profile"][1] == (0.2, 0.5)
+
+    def test_sweep_path_and_taper(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "sweep", "name": "rail", "component": "rail",
+             "params": {"path": [[0, 0, "h"], [1, 0, "h"], [2, 0, "h - 0.5"]],
+                        "radius": 0.04, "radius_end": 0.02}},
+        ]))
+        [rail] = prims
+        assert rail.params["path"][2] == (2.0, 0.0, 1.5)
+        from blender.builders.hardware import _aabb
+        center, half = _aabb(rail)
+        assert center[0] == pytest.approx(1.0)  # path bbox center, not location
+        assert half[0] == pytest.approx(1.0 + 0.04)
+
+    def test_tube_and_loft(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "tube", "name": "post", "component": "post",
+             "location": [0, 0, "h/2"],
+             "params": {"radius": 0.06, "wall": 0.004, "depth": "h"}},
+            {"kind": "loft", "name": "hood", "component": "hood",
+             "location": [0, 0, "h + 0.1"],
+             "params": {"depth": 0.2,
+                        "profile_start": {"shape": "rect", "w": 0.3, "h": 0.2},
+                        "profile_end": {"shape": "ellipse", "w": "h/10", "h": 0.08}}},
+        ]))
+        post, hood = prims
+        assert post.params["wall"] == 0.004
+        assert hood.params["profile_end"]["w"] == pytest.approx(0.2)
+
+    def test_array_expansion(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "box", "name": "picket", "component": "fence",
+             "location": [0, 0, 0.5],
+             "array": {"count": 5, "step": ["h/8", 0, 0]},
+             "params": {"size": [0.04, 0.04, 1.0]}},
+        ]))
+        assert len(prims) == 5
+        assert [p.name for p in prims] == [f"picket_{i}" for i in range(1, 6)]
+        assert prims[3].location[0] == pytest.approx(3 * 0.25)
+
+    def test_cut_marks_negative_space(self):
+        prims = compute_primitives(self._spec([
+            {"kind": "box", "name": "plate", "component": "base",
+             "params": {"size": [0.4, 0.4, 0.02]}},
+            {"kind": "cylinder", "name": "hole", "component": "base", "cut": True,
+             "params": {"radius": 0.02, "depth": 0.1}},
+        ]))
+        hole = next(p for p in prims if p.name == "hole")
+        assert hole.cut is True
+        # cut prims never receive hardware
+        from blender.builders.hardware import compute_hardware
+        assert all("hole" not in p.name for p in compute_hardware(prims))
+
+    def test_all_cut_spec_rejected(self):
+        with pytest.raises(ValueError, match="no visible"):
+            compute_primitives(self._spec([
+                {"kind": "box", "name": "x", "component": "a", "cut": True,
+                 "params": {"size": [1, 1, 1]}},
+            ]))

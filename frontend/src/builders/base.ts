@@ -128,15 +128,22 @@ export function specToggles(spec: AssetSpec): Record<string, boolean> {
 
 /** Mirror primitives across the YZ plane (same math as base.py mirror_x). */
 export function mirrorX(prims: Primitive[], suffix = "_b"): Primitive[] {
-  return prims.map((p) => ({
-    ...p,
-    name: p.name + suffix,
-    location: [-p.location[0], p.location[1], p.location[2]],
-    rotation: [
-      p.rotation[0],
-      -p.rotation[1],
-      p.rotation[2] === 0 ? 0 : Math.PI - p.rotation[2],
-    ],
-    params: { ...p.params },
-  }));
+  return prims.map((p) => {
+    const params = { ...p.params };
+    if (params.path) {
+      // sweep paths carry their own coordinates
+      params.path = params.path.map(([x, y, z]) => [-x, y, z] as Primitive["location"]);
+    }
+    return {
+      ...p,
+      name: p.name + suffix,
+      location: [-p.location[0], p.location[1], p.location[2]] as Primitive["location"],
+      rotation: [
+        p.rotation[0],
+        -p.rotation[1],
+        p.rotation[2] === 0 ? 0 : Math.PI - p.rotation[2],
+      ] as Primitive["rotation"],
+      params,
+    };
+  });
 }

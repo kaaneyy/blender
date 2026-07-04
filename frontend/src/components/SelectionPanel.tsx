@@ -4,7 +4,7 @@
  * editable primitive dimensions. */
 import type { AssetSpec, Primitive, SpecPrimitive, UnitSystem } from "../types";
 import type { Selection } from "./AssetMesh";
-import { halfExtents } from "../builders";
+import { aabb } from "../builders";
 import { convert, formatLength } from "../units";
 
 type Axis = 0 | 1 | 2;
@@ -18,10 +18,10 @@ function groupBounds(prims: Primitive[]) {
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
   for (const p of prims) {
-    const h = halfExtents(p);
+    const box = aabb(p);
     for (let k = 0; k < 3; k++) {
-      lo[k] = Math.min(lo[k], p.location[k] - h[k]);
-      hi[k] = Math.max(hi[k], p.location[k] + h[k]);
+      lo[k] = Math.min(lo[k], box.center[k] - box.half[k]);
+      hi[k] = Math.max(hi[k], box.center[k] + box.half[k]);
     }
   }
   return [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
@@ -195,6 +195,29 @@ export default function SelectionPanel({
           <DimRow label="Radius" meters={part.params.radius!} displayUnits={displayUnits}
             editable={editable("radius", null)} onChange={change("radius", null)} />
         );
+      case "tube":
+        return (
+          <>
+            <DimRow label="Radius" meters={part.params.radius!} displayUnits={displayUnits}
+              editable={editable("radius", null)} onChange={change("radius", null)} />
+            <DimRow label="Wall" meters={part.params.wall!} displayUnits={displayUnits}
+              editable={editable("wall", null)} onChange={change("wall", null)} />
+            <DimRow label="Length" meters={part.params.depth!} displayUnits={displayUnits}
+              editable={editable("depth", null)} onChange={change("depth", null)} />
+          </>
+        );
+      case "sweep":
+        return (
+          <>
+            <DimRow label="Radius" meters={part.params.radius!} displayUnits={displayUnits}
+              editable={editable("radius", null)} onChange={change("radius", null)} />
+            <DimRow label="Tip radius" meters={part.params.radius_end ?? part.params.radius!}
+              displayUnits={displayUnits} editable={editable("radius_end", null)}
+              onChange={change("radius_end", null)} />
+          </>
+        );
+      default: // lathe / loft: overall size is in the stats box above
+        return null;
     }
   };
 

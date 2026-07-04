@@ -26,26 +26,23 @@ function armPoints(armLength: number, attachZ: number, rise: number) {
 }
 
 function armPrimitives(armLength: number, poleHeight: number): Primitive[] {
+  // one swept, tapered tube (B2) — mirror of street_light.py
   const rise = Math.min(0.15 * armLength, 0.75);
   const attachZ = poleHeight - 0.25 - rise;
-  const pts = armPoints(armLength, attachZ, rise);
-  const prims: Primitive[] = [];
-  for (let i = 1; i <= ARM_SEGMENTS; i++) {
-    const [x0, z0] = pts[i - 1];
-    const [x1, z1] = pts[i];
-    const dx = x1 - x0;
-    const dz = z1 - z0;
-    prims.push({
-      kind: "cylinder",
-      name: `arm_seg_${i}`,
+  const path = armPoints(armLength, attachZ, rise).map(
+    ([x, z]) => [x, 0, z] as [number, number, number],
+  );
+  return [
+    {
+      kind: "sweep",
+      name: "mast_arm",
       component: "arm",
-      location: [(x0 + x1) / 2, 0, (z0 + z1) / 2],
-      rotation: [0, Math.atan2(dx, dz), 0],
+      location: [0, 0, 0],
+      rotation: [0, 0, 0],
       materialSlot: "pole",
-      params: { radius: ARM_RADIUS, depth: Math.hypot(dx, dz) * 1.08 },
-    });
-  }
-  return prims;
+      params: { path, radius: ARM_RADIUS * 1.25, radius_end: ARM_RADIUS * 0.8 },
+    },
+  ];
 }
 
 function luminairePrimitives(armLength: number, poleHeight: number): Primitive[] {
@@ -56,13 +53,18 @@ function luminairePrimitives(armLength: number, poleHeight: number): Primitive[]
   const headX = armLength + headLen / 2 - 0.15;
   return [
     {
-      kind: "box",
+      kind: "loft",
       name: "head",
       component: "luminaire",
       location: [headX, 0, tipZ + headH / 2 - 0.02],
-      rotation: [0, 0, 0],
+      rotation: [0, Math.PI / 2, 0],
       materialSlot: "luminaire",
-      params: { size: [headLen, headW, headH] },
+      params: {
+        depth: headLen,
+        profile_start: { shape: "rect", w: headW, h: headH },
+        profile_end: { shape: "ellipse", w: headW * 0.7, h: headH * 0.6 },
+        shell: 0.003,
+      },
     },
     {
       kind: "cylinder",
@@ -125,13 +127,13 @@ function computeStreetLight(spec: AssetSpec): Primitive[] {
     params: { radius_bottom: baseR, radius_top: topR, depth: poleHeight },
   });
   prims.push({
-    kind: "sphere",
+    kind: "lathe",
     name: "cap",
     component: "pole",
-    location: [0, 0, poleHeight],
+    location: [0, 0, poleHeight - 0.01],
     rotation: [0, 0, 0],
     materialSlot: "pole",
-    params: { radius: topR * 1.15 },
+    params: { profile: "dome", radius: topR * 1.25, depth: topR * 1.6 },
   });
 
   // mast arm + luminaire (mirrored when double_arm is on)

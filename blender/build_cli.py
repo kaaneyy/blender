@@ -11,7 +11,9 @@ useful for CI and for eyeballing preview parity):
     python3 blender/build_cli.py examples/street_light.json out/primitives.json
 
 Flags:
-    --no-validate    skip the standards validator (debugging only)
+    --no-validate       skip the standards validator (debugging only)
+    --quality=<tier>    draft | preview | final (default final) — segment
+                        counts for round geometry (A3)
 """
 from __future__ import annotations
 
@@ -110,8 +112,18 @@ def main() -> None:
     from blender.builders import base
     import blender.builders  # noqa: F401  (registers builders)
 
+    quality = "final"
+    for flag in flags:
+        if flag.startswith("--quality="):
+            quality = flag.split("=", 1)[1]
+
     base.clear_scene()
-    root = base.build(spec)
+    # .blend keeps the finishing modifiers live (re-editable); every other
+    # format bakes them in (A6)
+    root = base.build(
+        spec, quality=quality,
+        apply_modifiers=out_path.suffix.lower() != ".blend",
+    )
     print(f"[build_cli] built collection {root.name!r} "
           f"({sum(len(c.objects) for c in root.children_recursive)} objects)")
     _export(out_path)

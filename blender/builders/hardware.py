@@ -27,6 +27,10 @@ import math
 from typing import List, Sequence, Tuple
 
 from .base import Primitive
+from .shapes import profile_bounds, resolve_profile
+
+#: kinds treated as round members for band-clamp detection
+ROUND_KINDS = ("cylinder", "cone", "sweep", "tube")
 
 MAX_JOINTS = 24
 EMBED = 0.025      # max bolt embedment into each member beyond the joint, m
@@ -50,34 +54,88 @@ def _cylinder_axis(rotation: Sequence[float]) -> Tuple[float, float, float]:
     return (x, y, z)
 
 
-def _half_extents(p: Primitive) -> Tuple[float, float, float]:
-    """Axis-aligned half extents; exact for boxes/spheres and for arbitrarily
-    rotated cylinders/cones (oriented-cylinder AABB), conservative only for
-    rotated boxes."""
+def _aabb(p: Primitive) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """(center, half_extents) of the primitive's world AABB. Exact for
+    boxes/spheres/tubes and arbitrarily rotated cylinders/cones
+    (oriented-cylinder AABB); path/profile-based for sweeps and lathes;
+    conservative cube for rotated constructed kinds."""
+    loc = p.location
+
+    def rotated_cube(h):
+        m = max(h)
+        return (loc, (m, m, m))
+
     if p.kind == "box":
         sx, sy, sz = p.params["size"]
-        hx, hy, hz = sx / 2, sy / 2, sz / 2
+        h = (sx / 2, sy / 2, sz / 2)
         if any(abs(a) > 1e-6 for a in p.rotation):
-            m = max(hx, hy, hz)
-            return (m, m, m)
-        return (hx, hy, hz)
+            return rotated_cube(h)
+        return (loc, h)
     if p.kind == "sphere":
         r = p.params["radius"]
-        return (r, r, r)
-    # cylinder / cone
+        return (loc, (r, r, r))
+    if p.kind == "lathe":
+        pts = resolve_profile(
+            p.params["profile"], radius=p.params.get("radius"),
+            depth=p.params.get("depth"),
+        )
+        max_r, z0, z1 = profile_bounds(pts)
+        h = (max_r, max_r, (z1 - z0) / 2)
+        center = (loc[0], loc[1], loc[2] + (z0 + z1) / 2)
+        if any(abs(a) > 1e-6 for a in p.rotation):
+            return rotated_cube(h)
+        return (center, h)
+    if p.kind == "sweep":
+        r = max(p.params["radius"], p.params.get("radius_end", 0.0))
+        xs = [pt[0] for pt in p.params["path"]]
+        ys = [pt[1] for pt in p.params["path"]]
+        zs = [pt[2] for pt in p.params["path"]]
+        h = (
+            (max(xs) - min(xs)) / 2 + r,
+            (max(ys) - min(ys)) / 2 + r,
+            (max(zs) - min(zs)) / 2 + r,
+        )
+        center = (
+            loc[0] + (max(xs) + min(xs)) / 2,
+            loc[1] + (max(ys) + min(ys)) / 2,
+            loc[2] + (max(zs) + min(zs)) / 2,
+        )
+        if any(abs(a) > 1e-6 for a in p.rotation):
+            return rotated_cube(h)
+        return (center, h)
+    if p.kind == "loft":
+        ps, pe = p.params["profile_start"], p.params["profile_end"]
+        h = (
+            max(ps["w"], pe["w"]) / 2,
+            max(ps["h"], pe["h"]) / 2,
+            p.params["depth"] / 2,
+        )
+        if any(abs(a) > 1e-6 for a in p.rotation):
+            return rotated_cube(h)
+        return (loc, h)
+    # cylinder / cone / tube
     r = p.params.get("radius") or max(
         p.params.get("radius_bottom", 0.0), p.params.get("radius_top", 0.0)
     )
     hd = p.params["depth"] / 2
     u = _cylinder_axis(p.rotation)
-    return tuple(
-        hd * abs(u[k]) + r * math.sqrt(max(0.0, 1.0 - u[k] * u[k])) for k in range(3)
+    return (
+        loc,
+        tuple(
+            hd * abs(u[k]) + r * math.sqrt(max(0.0, 1.0 - u[k] * u[k]))
+            for k in range(3)
+        ),
     )
 
 
+def _half_extents(p: Primitive) -> Tuple[float, float, float]:
+    """Back-compat wrapper — extents only (center may differ for sweeps)."""
+    return _aabb(p)[1]
+
+
 def _radius_at_z(prim: Primitive, z: float) -> float:
-    """Radius of an upright cylinder/cone at world height z (follows taper)."""
-    if prim.kind == "cylinder":
+    """Radius of an upright cylinder/tube/cone at world height z."""
+    if prim.kind in ("cylinder", "tube"):
         return prim.params["radius"]
     rb = prim.params["radius_bottom"]
     rt = prim.params["radius_top"]
@@ -87,7 +145,9 @@ def _radius_at_z(prim: Primitive, z: float) -> float:
 
 
 def _is_upright_round(p: Primitive) -> bool:
-    return p.kind in ("cylinder", "cone") and all(abs(a) < 1e-3 for a in p.rotation)
+    return p.kind in ("cylinder", "cone", "tube") and all(
+        abs(a) < 1e-3 for a in p.rotation
+    )
 
 
 def _pos(center: Sequence[float], axis: int, along: float) -> Tuple[float, float, float]:
@@ -171,7 +231,9 @@ def _bolt_pattern(d1: float, d2: float, head_r: float) -> List[Tuple[float, floa
 
 def compute_hardware(prims: List[Primitive]) -> List[Primitive]:
     boxes = [
-        (p, p.location, _half_extents(p)) for p in prims if p.component != "hardware"
+        (p, *_aabb(p))
+        for p in prims
+        if p.component != "hardware" and not p.cut
     ]
     out: List[Primitive] = []
     seen: set = set()
@@ -211,7 +273,7 @@ def compute_hardware(prims: List[Primitive]) -> List[Primitive]:
                 axis != 2
                 and upright is not None
                 and not _is_upright_round(other)
-                and other.kind in ("cylinder", "cone")
+                and other.kind in ROUND_KINDS
             ):
                 out.extend(_band_clamp(joint, upright, center[2], axis))
             else:

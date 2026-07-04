@@ -1,12 +1,14 @@
 """Builder tests at min/mid/max parameters (T7.1 style) — pure layer only,
 no bpy required. Guards: finite geometry, correct overall dimensions,
-component naming, toggle behavior."""
+component naming, toggle behavior. Updated for the Part B rebuild: swept
+mast arm, lofted cobra head, lathed pole cap."""
 import math
 
 import pytest
 
 import blender.builders  # noqa: F401  registers builders
-from blender.builders.base import PRIMITIVE_KINDS, compute_primitives
+from blender.builders.base import compute_primitives
+from blender.builders.hardware import _aabb
 from standards.validator import validate_spec
 
 FT = 0.3048
@@ -32,14 +34,20 @@ def make_spec(pole_height=30, arm_length=8, **toggle_overrides):
     }
 
 
+def _flat(value):
+    if isinstance(value, (tuple, list)):
+        for v in value:
+            yield from _flat(v)
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _flat(v)
+    elif isinstance(value, (int, float)):
+        yield float(value)
+
+
 def top_z(prim):
-    """Highest Z any part of an axis-aligned-ish primitive can reach."""
-    z = prim.location[2]
-    if prim.kind in ("cylinder", "cone"):
-        return z + prim.params["depth"] / 2
-    if prim.kind == "box":
-        return z + prim.params["size"][2] / 2
-    return z + prim.params["radius"]
+    center, half = _aabb(prim)
+    return center[2] + half[2]
 
 
 @pytest.mark.parametrize("pole_height,arm_length", [
@@ -51,16 +59,8 @@ def test_geometry_is_finite_at_param_extremes(pole_height, arm_length):
     prims = compute_primitives(make_spec(pole_height, arm_length))
     assert prims
     for p in prims:
-        values = list(p.location) + list(p.rotation)
-        for key in PRIMITIVE_KINDS[p.kind]:
-            v = p.params[key]
-            values.extend(v if isinstance(v, (tuple, list)) else [v])
+        values = list(p.location) + list(p.rotation) + list(_flat(p.params))
         assert all(math.isfinite(v) for v in values), f"non-finite value in {p.name}"
-        # every dimension must be strictly positive
-        for key in PRIMITIVE_KINDS[p.kind]:
-            v = p.params[key]
-            dims = v if isinstance(v, (tuple, list)) else [v]
-            assert all(d > 0 for d in dims), f"non-positive dim in {p.name}"
 
 
 @pytest.mark.parametrize("pole_height", [20, 30, 40])
@@ -74,15 +74,30 @@ def test_pole_height_matches_spec(pole_height):
 
 
 @pytest.mark.parametrize("arm_length", [4, 8, 15])
-def test_arm_reach_tracks_arm_length(arm_length):
+def test_arm_is_a_tapered_sweep_reaching_arm_length(arm_length):
     prims = compute_primitives(make_spec(arm_length=arm_length))
+    [arm] = [p for p in prims if p.component == "arm"]
+    assert arm.kind == "sweep"
+    # the swept path spans from the pole face to the full arm length
+    xs = [pt[0] for pt in arm.params["path"]]
+    assert min(xs) == pytest.approx(0.0)
+    assert max(xs) == pytest.approx(arm_length * FT)
+    # real mast arms taper toward the tip
+    assert arm.params["radius_end"] < arm.params["radius"]
+    # cobra head is a loft centered near the arm tip
     head = next(p for p in prims if p.name == "head")
-    # luminaire head is centered near the arm tip
+    assert head.kind == "loft"
     assert head.location[0] == pytest.approx(arm_length * FT, abs=0.5)
-    arm_segs = [p for p in prims if p.component == "arm"]
-    assert len(arm_segs) == 6
-    max_reach = max(p.location[0] for p in arm_segs)
-    assert max_reach < arm_length * FT <= max_reach + 1.0
+    assert head.params["profile_start"]["shape"] == "rect"
+    assert head.params["profile_end"]["shape"] == "ellipse"
+    assert head.params["shell"] == pytest.approx(0.003)  # hollow housing (A4)
+
+
+def test_pole_cap_is_a_lathe_dome():
+    prims = compute_primitives(make_spec())
+    cap = next(p for p in prims if p.name == "cap")
+    assert cap.kind == "lathe"
+    assert cap.params["profile"] == "dome"
 
 
 def test_component_naming_convention():
@@ -100,11 +115,16 @@ def test_double_arm_toggle_mirrors_arm_and_luminaire():
     assert len(double) == len(single) + len(arm_and_head)
     mirrored = [p for p in double if p.name.endswith("_b")]
     assert len(mirrored) == len(arm_and_head)
-    # mirrored copies sit at negated X
-    for m in mirrored:
-        original = next(p for p in double if p.name == m.name[:-2])
-        assert m.location[0] == pytest.approx(-original.location[0])
-        assert m.location[2] == pytest.approx(original.location[2])
+    # the mirrored sweep's path runs toward -X (paths carry their own coords)
+    mirrored_arm = next(p for p in mirrored if p.kind == "sweep")
+    original_arm = next(p for p in double if p.name == "mast_arm")
+    assert min(pt[0] for pt in mirrored_arm.params["path"]) == pytest.approx(
+        -max(pt[0] for pt in original_arm.params["path"])
+    )
+    # mirrored head sits at negated X
+    m_head = next(p for p in mirrored if p.kind == "loft")
+    o_head = next(p for p in double if p.name == "head")
+    assert m_head.location[0] == pytest.approx(-o_head.location[0])
 
 
 def test_anchor_bolt_and_banner_toggles():

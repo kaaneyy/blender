@@ -4,6 +4,10 @@
  * clamps where horizontal round members meet upright poles. Keep in exact
  * lockstep with the Python implementation. */
 import type { Primitive, Vec3 } from "../types";
+import { profileBounds, resolveProfile } from "../shapes";
+
+/** kinds treated as round members for band-clamp detection */
+const ROUND_KINDS = new Set(["cylinder", "cone", "sweep", "tube"]);
 
 const MAX_JOINTS = 24;
 const EMBED = 0.025;
@@ -27,33 +31,86 @@ function cylinderAxis(rotation: Vec3): Vec3 {
   return [x, y, z];
 }
 
-export function halfExtents(p: Primitive): Vec3 {
+export interface Aabb {
+  center: Vec3;
+  half: Vec3;
+}
+
+/** Mirror of hardware.py _aabb: (center, half extents) of the world AABB. */
+export function aabb(p: Primitive): Aabb {
+  const loc = p.location;
+  const rotated = p.rotation.some((a) => Math.abs(a) > 1e-6);
+  const cube = (h: Vec3): Aabb => {
+    const m = Math.max(...h);
+    return { center: loc, half: [m, m, m] };
+  };
+
   if (p.kind === "box") {
     const [sx, sy, sz] = p.params.size!;
-    const hx = sx / 2;
-    const hy = sy / 2;
-    const hz = sz / 2;
-    if (p.rotation.some((a) => Math.abs(a) > 1e-6)) {
-      const m = Math.max(hx, hy, hz);
-      return [m, m, m];
-    }
-    return [hx, hy, hz];
+    const h: Vec3 = [sx / 2, sy / 2, sz / 2];
+    return rotated ? cube(h) : { center: loc, half: h };
   }
   if (p.kind === "sphere") {
     const r = p.params.radius!;
-    return [r, r, r];
+    return { center: loc, half: [r, r, r] };
   }
+  if (p.kind === "lathe") {
+    const pts = resolveProfile(p.params.profile!, p.params.radius, p.params.depth);
+    const [maxR, z0, z1] = profileBounds(pts);
+    const h: Vec3 = [maxR, maxR, (z1 - z0) / 2];
+    if (rotated) return cube(h);
+    return { center: [loc[0], loc[1], loc[2] + (z0 + z1) / 2], half: h };
+  }
+  if (p.kind === "sweep") {
+    const r = Math.max(p.params.radius!, p.params.radius_end ?? 0);
+    const xs = p.params.path!.map((pt) => pt[0]);
+    const ys = p.params.path!.map((pt) => pt[1]);
+    const zs = p.params.path!.map((pt) => pt[2]);
+    const h: Vec3 = [
+      (Math.max(...xs) - Math.min(...xs)) / 2 + r,
+      (Math.max(...ys) - Math.min(...ys)) / 2 + r,
+      (Math.max(...zs) - Math.min(...zs)) / 2 + r,
+    ];
+    if (rotated) return cube(h);
+    return {
+      center: [
+        loc[0] + (Math.max(...xs) + Math.min(...xs)) / 2,
+        loc[1] + (Math.max(...ys) + Math.min(...ys)) / 2,
+        loc[2] + (Math.max(...zs) + Math.min(...zs)) / 2,
+      ],
+      half: h,
+    };
+  }
+  if (p.kind === "loft") {
+    const ps = p.params.profile_start!;
+    const pe = p.params.profile_end!;
+    const h: Vec3 = [
+      Math.max(ps.w, pe.w) / 2,
+      Math.max(ps.h, pe.h) / 2,
+      p.params.depth! / 2,
+    ];
+    return rotated ? cube(h) : { center: loc, half: h };
+  }
+  // cylinder / cone / tube
   const r =
     p.params.radius ?? Math.max(p.params.radius_bottom ?? 0, p.params.radius_top ?? 0);
   const hd = p.params.depth! / 2;
   const u = cylinderAxis(p.rotation);
-  return [0, 1, 2].map(
-    (k) => hd * Math.abs(u[k]) + r * Math.sqrt(Math.max(0, 1 - u[k] * u[k])),
-  ) as Vec3;
+  return {
+    center: loc,
+    half: [0, 1, 2].map(
+      (k) => hd * Math.abs(u[k]) + r * Math.sqrt(Math.max(0, 1 - u[k] * u[k])),
+    ) as Vec3,
+  };
+}
+
+/** Back-compat: extents only (center may differ for sweeps/lathes). */
+export function halfExtents(p: Primitive): Vec3 {
+  return aabb(p).half;
 }
 
 function radiusAtZ(prim: Primitive, z: number): number {
-  if (prim.kind === "cylinder") return prim.params.radius!;
+  if (prim.kind === "cylinder" || prim.kind === "tube") return prim.params.radius!;
   const rb = prim.params.radius_bottom!;
   const rt = prim.params.radius_top!;
   const depth = prim.params.depth!;
@@ -63,7 +120,7 @@ function radiusAtZ(prim: Primitive, z: number): number {
 
 function isUprightRound(p: Primitive): boolean {
   return (
-    (p.kind === "cylinder" || p.kind === "cone") &&
+    (p.kind === "cylinder" || p.kind === "cone" || p.kind === "tube") &&
     p.rotation.every((a) => Math.abs(a) < 1e-3)
   );
 }
@@ -170,8 +227,11 @@ function boltPattern(d1: number, d2: number, headR: number): Array<[number, numb
 
 export function computeHardware(prims: Primitive[]): Primitive[] {
   const boxes = prims
-    .filter((p) => p.component !== "hardware")
-    .map((p) => ({ p, c: p.location, h: halfExtents(p) }));
+    .filter((p) => p.component !== "hardware" && !p.cut)
+    .map((p) => {
+      const box = aabb(p);
+      return { p, c: box.center, h: box.half };
+    });
   const out: Primitive[] = [];
   const seen = new Set<string>();
   let joint = 0;
@@ -219,7 +279,7 @@ export function computeHardware(prims: Primitive[]): Primitive[] {
         axis !== 2 &&
         upright !== null &&
         !isUprightRound(other) &&
-        (other.kind === "cylinder" || other.kind === "cone")
+        ROUND_KINDS.has(other.kind)
       ) {
         out.push(...bandClamp(joint, upright, center[2], axis));
       } else {

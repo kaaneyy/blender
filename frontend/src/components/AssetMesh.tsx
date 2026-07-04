@@ -8,8 +8,79 @@
  * emission map straight onto meshStandardMaterial. */
 import { useMemo } from "react";
 import * as THREE from "three";
-import type { AssetSpec, Primitive } from "../types";
+import type { AssetSpec, LoftProfile, Primitive, Vec3 } from "../types";
 import { resolveMaterial } from "../builders";
+import { resolveProfile, ringPoints } from "../shapes";
+
+/** Loft: bridge two cross-section rings along local Z (mirror of
+ * ops.realize_loft — shape parity, finishing stays Blender-side). */
+function buildLoftGeometry(
+  ps: LoftProfile,
+  pe: LoftProfile,
+  depth: number,
+  n = 32,
+): THREE.BufferGeometry {
+  const r0 = ringPoints(ps.shape, ps.w, ps.h, n);
+  const r1 = ringPoints(pe.shape, pe.w, pe.h, n);
+  const positions: number[] = [];
+  for (const [x, y] of r0) positions.push(x, y, -depth / 2);
+  for (const [x, y] of r1) positions.push(x, y, depth / 2);
+  positions.push(0, 0, -depth / 2); // bottom cap center (index 2n)
+  positions.push(0, 0, depth / 2); // top cap center (index 2n+1)
+
+  const indices: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    indices.push(i, j, n + j, i, n + j, n + i); // side quad
+    indices.push(2 * n, j, i); // bottom cap fan (faces -Z)
+    indices.push(2 * n + 1, n + i, n + j); // top cap fan (faces +Z)
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+/** Sweep: tapered tube along a path, previewed as lerped-radius segments
+ * (dimension parity with the Blender curve sweep; smoothness differs). */
+function SweepMesh({
+  prim,
+  material,
+}: {
+  prim: Primitive;
+  material: THREE.MeshStandardMaterial;
+}) {
+  const segments = useMemo(() => {
+    const path = prim.params.path!;
+    const r0 = prim.params.radius!;
+    const r1 = prim.params.radius_end ?? r0;
+    const n = path.length - 1;
+    return path.slice(0, -1).map((a, i) => {
+      const b = path[i + 1];
+      const dir = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+      const len = dir.length() || 1e-6;
+      const mid: Vec3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+      const q = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        dir.divideScalar(len),
+      );
+      const ra = r0 + (r1 - r0) * (i / n);
+      const rb = r0 + (r1 - r0) * ((i + 1) / n);
+      return { mid, q, len: len * 1.04, ra, rb, key: i };
+    });
+  }, [prim]);
+
+  return (
+    <>
+      {segments.map((s) => (
+        <mesh key={s.key} position={s.mid} quaternion={s.q} material={material} castShadow receiveShadow>
+          <cylinderGeometry args={[s.rb, s.ra, s.len, 20]} />
+        </mesh>
+      ))}
+    </>
+  );
+}
 
 /** Shared 256px near-white noise, generated once (deterministic seed). */
 let noiseImage: HTMLCanvasElement | null = null;
@@ -101,10 +172,56 @@ function PrimitiveMesh({
           : "group";
   const material = useSlotMaterial(spec, prim.materialSlot, highlight);
 
-  let geometry: JSX.Element;
+  // custom geometry objects for the fabrication kinds
+  const builtGeometry = useMemo(() => {
+    if (prim.kind === "lathe") {
+      const pts = resolveProfile(prim.params.profile!, prim.params.radius, prim.params.depth);
+      return new THREE.LatheGeometry(
+        pts.map(([r, z]) => new THREE.Vector2(Math.max(r, 1e-5), z)),
+        32,
+      );
+    }
+    if (prim.kind === "loft") {
+      return buildLoftGeometry(
+        prim.params.profile_start!,
+        prim.params.profile_end!,
+        prim.params.depth!,
+      );
+    }
+    return null;
+  }, [prim]);
+
+  if (prim.cut) return null; // negative space: subtracted in Blender only
+
+  const handleClick = (e: { stopPropagation(): void }) => {
+    e.stopPropagation();
+    // first click selects the group; clicking inside the selected group
+    // drills down to the individual part
+    onSelect(
+      selected?.component === prim.component
+        ? { component: prim.component, part: prim.name }
+        : { component: prim.component },
+    );
+  };
+
+  if (prim.kind === "sweep") {
+    return (
+      <group position={prim.location} rotation={prim.rotation} onClick={handleClick}>
+        <SweepMesh prim={prim} material={material} />
+      </group>
+    );
+  }
+
+  let geometry: JSX.Element | null = null;
   let fix: [number, number, number] = [0, 0, 0];
   switch (prim.kind) {
     case "cylinder":
+      geometry = (
+        <cylinderGeometry args={[prim.params.radius!, prim.params.radius!, prim.params.depth!, 24]} />
+      );
+      fix = AXIS_FIX;
+      break;
+    case "tube": // preview shows the outer shell; wall is a Blender solidify
       geometry = (
         <cylinderGeometry args={[prim.params.radius!, prim.params.radius!, prim.params.depth!, 24]} />
       );
@@ -124,6 +241,11 @@ function PrimitiveMesh({
     case "sphere":
       geometry = <sphereGeometry args={[prim.params.radius!, 24, 12]} />;
       break;
+    case "lathe":
+      fix = AXIS_FIX; // LatheGeometry revolves around Y; our axis is local Z
+      break;
+    case "loft":
+      break; // built along local Z already
   }
 
   return (
@@ -133,16 +255,8 @@ function PrimitiveMesh({
         castShadow
         receiveShadow
         material={material}
-        onClick={(e) => {
-          e.stopPropagation();
-          // first click selects the group; clicking inside the selected
-          // group drills down to the individual part
-          onSelect(
-            selected?.component === prim.component
-              ? { component: prim.component, part: prim.name }
-              : { component: prim.component },
-          );
-        }}
+        geometry={builtGeometry ?? undefined}
+        onClick={handleClick}
       >
         {geometry}
       </mesh>

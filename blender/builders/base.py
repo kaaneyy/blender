@@ -30,7 +30,15 @@ PRIMITIVE_KINDS = {
     "cone": ("radius_bottom", "radius_top", "depth"),
     "box": ("size",),
     "sphere": ("radius",),
+    # Part B fabrication vocabulary:
+    "lathe": ("profile",),          # revolve profile around Z (globes, finials)
+    "sweep": ("path", "radius"),    # round tube along a 3D path, optional taper
+    "loft": ("profile_start", "profile_end", "depth"),  # section-to-section taper
+    "tube": ("radius", "wall", "depth"),  # hollow cylinder
 }
+
+#: A3 quality tiers -> radial segment counts for round geometry.
+QUALITY_SEGMENTS = {"draft": 24, "preview": 32, "final": 64}
 
 #: PBR presets assigned per component slot (T3.3). Baked to simple diffuse
 #: for DAE later — SketchUp ignores full PBR, so base_color is what survives.
@@ -56,6 +64,8 @@ class Primitive:
     location: Vec3 = (0.0, 0.0, 0.0)
     rotation: Vec3 = (0.0, 0.0, 0.0)  # Euler XYZ, radians
     material_slot: str = "default"
+    #: negative space — boolean-subtracted from its component, never rendered
+    cut: bool = False
     params: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -166,6 +176,9 @@ def mirror_x(primitives: List[Primitive], suffix: str = "_mirrored") -> List[Pri
     for p in primitives:
         x, y, z = p.location
         rx, ry, rz = p.rotation
+        params = dict(p.params)
+        if "path" in params:  # sweep paths carry their own coordinates
+            params["path"] = tuple((-px, py, pz) for px, py, pz in params["path"])
         out.append(
             Primitive(
                 kind=p.kind,
@@ -174,7 +187,8 @@ def mirror_x(primitives: List[Primitive], suffix: str = "_mirrored") -> List[Pri
                 location=(-x, y, z),
                 rotation=(rx, -ry, rz if rz == 0.0 else math.pi - rz),
                 material_slot=p.material_slot,
-                params=dict(p.params),
+                cut=p.cut,
+                params=params,
             )
         )
     return out
@@ -254,21 +268,26 @@ def clear_scene() -> None:
         bpy.data.collections.remove(coll)
 
 
-def _realize(prim: Primitive):
+def _realize(prim: Primitive, quality: str = "final"):
     import bpy
+
+    from . import ops
+
+    default_segments = QUALITY_SEGMENTS.get(quality, QUALITY_SEGMENTS["final"])
+    segments = int(prim.params.get("segments", default_segments))
 
     if prim.kind == "cylinder":
         bpy.ops.mesh.primitive_cylinder_add(
             radius=prim.params["radius"], depth=prim.params["depth"],
             location=prim.location, rotation=prim.rotation,
-            vertices=int(prim.params.get("segments", 24)),
+            vertices=segments,
         )
     elif prim.kind == "cone":
         bpy.ops.mesh.primitive_cone_add(
             radius1=prim.params["radius_bottom"], radius2=prim.params["radius_top"],
             depth=prim.params["depth"],
             location=prim.location, rotation=prim.rotation,
-            vertices=int(prim.params.get("segments", 24)),
+            vertices=segments,
         )
     elif prim.kind == "box":
         bpy.ops.mesh.primitive_cube_add(size=1.0, location=prim.location, rotation=prim.rotation)
@@ -278,20 +297,35 @@ def _realize(prim: Primitive):
     elif prim.kind == "sphere":
         bpy.ops.mesh.primitive_uv_sphere_add(
             radius=prim.params["radius"], location=prim.location,
-            rotation=prim.rotation, segments=24, ring_count=12,
+            rotation=prim.rotation,
+            segments=max(segments // 2, 16), ring_count=max(segments // 4, 8),
         )
+    elif prim.kind == "lathe":
+        return ops.realize_lathe(prim, segments)
+    elif prim.kind == "sweep":
+        return ops.realize_sweep(prim, segments)
+    elif prim.kind == "loft":
+        return ops.realize_loft(prim, segments)
+    elif prim.kind == "tube":
+        return ops.realize_tube(prim, segments)
     else:  # pragma: no cover - Primitive.__post_init__ already guards this
         raise ValueError(f"Unknown primitive kind {prim.kind!r}")
     return bpy.context.active_object
 
 
-def build(spec: dict):
+def build(spec: dict, quality: str = "final", apply_modifiers: bool = True):
     """Realize a spec into bpy objects; returns the root collection.
+
+    quality: draft|preview|final segment tiers (A3). apply_modifiers bakes
+    the finishing pass into the meshes (A6) — pass False for .blend output
+    so the file stays non-destructively editable.
 
     Assumes the spec has already been validated/clamped (build_cli and the
     export worker both run the validator first).
     """
     import bpy
+
+    from . import ops
 
     primitives = compute_primitives(spec)
     asset_name = spec.get("name") or spec["asset_type"]
@@ -300,6 +334,10 @@ def build(spec: dict):
     bpy.context.scene.collection.children.link(root)
 
     component_colls: Dict[str, object] = {}
+    solids: Dict[str, list] = {}
+    cutters: Dict[str, list] = {}
+    realized: List[tuple] = []
+
     for prim in primitives:
         coll = component_colls.get(prim.component)
         if coll is None:
@@ -307,15 +345,33 @@ def build(spec: dict):
             root.children.link(coll)
             component_colls[prim.component] = coll
 
-        obj = _realize(prim)
+        obj = _realize(prim, quality)
         obj.name = f"{asset_name}/{prim.component}/{prim.name}"
         for existing in list(obj.users_collection):
             existing.objects.unlink(obj)
         coll.objects.link(obj)
 
+        if prim.cut:
+            cutters.setdefault(prim.component, []).append(obj)
+            continue
+
+        solids.setdefault(prim.component, []).append(obj)
+        realized.append((obj, prim))
+
         props = resolve_material(spec, prim.material_slot)
         obj.data.materials.append(
             _get_or_create_material(f"AF_{asset_name}_{prim.material_slot}", props)
         )
+
+    # B3: boolean-difference negative space (bolt holes, slots, cutouts)
+    for component, cut_objs in cutters.items():
+        ops.apply_cuts(solids.get(component, []), cut_objs)
+
+    # Part A: universal finishing pass
+    for obj, prim in realized:
+        ops.finish(obj, prim, quality)
+
+    if apply_modifiers:
+        ops.apply_all_modifiers([obj for obj, _ in realized])
 
     return root
