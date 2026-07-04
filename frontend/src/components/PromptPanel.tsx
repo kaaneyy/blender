@@ -67,9 +67,13 @@ const QUICK_FIXES: Array<{ label: string; title: string; message: string }> = [
 ];
 
 /** Live "the AI is generating" card: shows the streaming tail so the user
- * can see progress without needing to read it. */
+ * can see progress without needing to read it. Reasoning ("thinking") models
+ * wrap their chain of thought in <think> tags — strip the literal tags for
+ * display and flag when the model is still thinking. */
 function StreamCard({ title, text }: { title: string; text: string }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const thinking = text.lastIndexOf("<think>") > text.lastIndexOf("</think>");
+  const clean = text.replace(/<\/?think>/g, "");
   useEffect(() => {
     boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
   }, [text]);
@@ -77,9 +81,10 @@ function StreamCard({ title, text }: { title: string; text: string }) {
     <div className="stream-card" aria-live="off">
       <div className="stream-card__title">
         <span className="stream-card__dot" /> {title}
+        {thinking && <span className="stream-card__thinking"> · thinking…</span>}
       </div>
       <div className="stream-card__text" ref={boxRef}>
-        {text.slice(-800) || "…"}
+        {clean.slice(-800) || "…"}
       </div>
     </div>
   );

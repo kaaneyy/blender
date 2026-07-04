@@ -85,6 +85,55 @@ class TestPostprocess:
         with pytest.raises(SpecGenerationError, match="not valid JSON"):
             _postprocess("I cannot help with that.", "strict")
 
+    def test_reasoning_block_before_json(self):
+        """A thinking model's <think>…</think> preamble is stripped and the
+        JSON that follows still parses."""
+        spec = json.dumps(self._spec())
+        raw = ("<think>Let me plan this street light. Base plate first, then the "
+               "pole {tapered}, then the arm.</think>\nHere is the spec:\n" + spec)
+        out = _postprocess(raw, "strict")
+        assert out["spec"]["asset_type"] == "street_light"
+
+    def test_braces_in_reasoning_prose_do_not_fool_extraction(self):
+        """Untagged reasoning prose full of stray braces before the real answer
+        must not break JSON extraction (the last balanced object wins)."""
+        spec = json.dumps(self._spec())
+        raw = ("Thinking: the height should be around {40} ft and the arm {8} ft, "
+               "using a set like {a, b}. Final answer:\n" + spec)
+        out = _postprocess(raw, "strict")
+        assert out["spec"]["asset_type"] == "street_light"
+
+    def test_truncated_reasoning_fails_cleanly(self):
+        """A response cut off mid-thought (unclosed <think>) has no answer, so
+        it fails as invalid JSON rather than silently mis-parsing."""
+        with pytest.raises(SpecGenerationError, match="not valid JSON"):
+            _postprocess("<think>Still working through the geometry, first the",
+                         "strict")
+
+
+class TestReasoningModel:
+    def test_strip_reasoning_removes_think_blocks(self):
+        from backend.app.llm import strip_reasoning
+
+        assert strip_reasoning("<think>a</think>ANSWER") == "ANSWER"
+        # unterminated block (truncated) is dropped from its opening tag on
+        assert strip_reasoning("done<think>still going") == "done"
+        assert strip_reasoning("no tags here") == "no tags here"
+
+    def test_reasoning_model_gets_longer_timeout_and_more_tokens(self):
+        from backend.app.llm import (
+            _budget, is_reasoning_model, REASONING_TIMEOUT,
+            REASONING_MIN_TOKENS, TIMEOUT,
+        )
+
+        assert is_reasoning_model("deepseek-v4-pro")
+        assert not is_reasoning_model("deepseek-chat")
+        # reasoning model: longer timeout and a floor on the token budget
+        assert _budget("deepseek-v4-pro", 6000) == (REASONING_TIMEOUT, REASONING_MIN_TOKENS)
+        assert _budget("deepseek-v4-pro", 20000) == (REASONING_TIMEOUT, 20000)
+        # plain model: defaults, budget untouched
+        assert _budget("deepseek-chat", 6000) == (TIMEOUT, 6000)
+
 
 def test_install_guide_mock():
     spec = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())

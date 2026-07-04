@@ -719,6 +719,12 @@ hr {
   animation: pulse 1.1s ease-in-out infinite;
 }
 
+.stream-card__thinking {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-faint);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.25; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1); }
