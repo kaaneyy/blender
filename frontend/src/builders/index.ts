@@ -10,6 +10,7 @@ setHardwareBuilder(computeHardware);
 
 export {
   computePrimitives,
+  preEditPrimitives,
   MATERIAL_PRESETS,
   resolveMaterial,
   weatheredShading,
@@ -18,3 +19,4 @@ export {
 export type { ResolvedMaterial, ShadedMaterial } from "./base";
 export { aabb, halfExtents } from "./hardware";
 export type { Aabb } from "./hardware";
+export { componentPivot } from "./edits";

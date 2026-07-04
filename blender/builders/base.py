@@ -164,9 +164,12 @@ def compute_primitives(spec: dict) -> List[Primitive]:
 
         prims = prims + compute_hardware(prims, spec)
 
-    offsets = spec.get("offsets") or {}
-    if offsets:
-        prims = apply_offsets(prims, {k: tuple(v) for k, v in offsets.items()})
+    # SketchUp-style edit overlay: structural (duplicate/delete) then the
+    # move/rotate/scale transform, baked so the export matches the viewport.
+    from .edits import apply_structure, apply_transforms
+
+    prims = apply_structure(prims, spec)
+    prims = apply_transforms(prims, spec)
     return prims
 
 

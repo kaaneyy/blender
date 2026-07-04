@@ -153,7 +153,7 @@ export interface Selection {
   part?: string;
 }
 
-function PrimitiveMesh({
+export function PrimitiveMesh({
   prim,
   spec,
   selected,
@@ -321,6 +321,7 @@ export default function AssetMesh({
   wireframe = false,
   explode = false,
   lightsOn = false,
+  editingComponent = null,
 }: {
   primitives: Primitive[];
   spec: AssetSpec;
@@ -330,6 +331,9 @@ export default function AssetMesh({
   wireframe?: boolean;
   explode?: boolean;
   lightsOn?: boolean;
+  /** Component currently held by the transform gizmo — skipped here so the
+   * gizmo can render and move it live without a double image. */
+  editingComponent?: string | null;
 }) {
   const offsets = useMemo(
     () => (explode ? explodeOffsets(primitives) : {}),
@@ -339,20 +343,22 @@ export default function AssetMesh({
   // primitives to meshes, comfortably within the 16 ms budget (T4.3).
   const items = useMemo(
     () =>
-      primitives.map((p) => (
-        <PrimitiveMesh
-          key={p.name}
-          prim={p}
-          spec={spec}
-          selected={selected}
-          onSelect={onSelect}
-          tourJoint={tourJoint}
-          wireframe={wireframe}
-          lightsOn={lightsOn}
-          explodeOffset={offsets[p.component] ?? NO_OFFSET}
-        />
-      )),
-    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets],
+      primitives
+        .filter((p) => p.component !== editingComponent)
+        .map((p) => (
+          <PrimitiveMesh
+            key={`${p.component}/${p.name}`}
+            prim={p}
+            spec={spec}
+            selected={selected}
+            onSelect={onSelect}
+            tourJoint={tourJoint}
+            wireframe={wireframe}
+            lightsOn={lightsOn}
+            explodeOffset={offsets[p.component] ?? NO_OFFSET}
+          />
+        )),
+    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets, editingComponent],
   );
   return <>{items}</>;
 }
