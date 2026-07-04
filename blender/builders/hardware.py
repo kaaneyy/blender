@@ -212,6 +212,25 @@ def _band_clamp(joint: int, vert: Primitive, center_z: float, axis_h: int) -> Li
     return prims
 
 
+#: C6: fastener sizing scales with the connection's tributary load tier —
+#: derived from the larger joined member's bounding volume (heuristic
+#: fabrication convention, not FEA).
+LOAD_FACTOR = {"light": 0.75, "standard": 1.0, "heavy": 1.35}
+
+
+def _load_class(pa: Primitive, pb: Primitive) -> str:
+    def volume(p: Primitive) -> float:
+        _, h = _aabb(p)
+        return 8.0 * h[0] * h[1] * h[2]
+
+    v = max(volume(pa), volume(pb))
+    if v > 0.15:
+        return "heavy"
+    if v < 0.01:
+        return "light"
+    return "standard"
+
+
 def _bolt_pattern(d1: float, d2: float, head_r: float) -> List[Tuple[float, float]]:
     """Bolt offsets on the joint face: 1 center bolt for small faces, a
     2-bolt row along a long face, a 4-bolt pattern for plate-like faces —
@@ -277,7 +296,8 @@ def compute_hardware(prims: List[Primitive]) -> List[Primitive]:
             ):
                 out.extend(_band_clamp(joint, upright, center[2], axis))
             else:
-                shaft_r = min(max(0.22 * min(d1, d2), 0.004), 0.011)
+                factor = LOAD_FACTOR[_load_class(pa, pb)]
+                shaft_r = min(max(0.22 * min(d1, d2) * factor, 0.004), 0.014)
                 above = max(ca[axis] + ha[axis], cb[axis] + hb[axis]) - hi[axis]
                 below = lo[axis] - min(ca[axis] - ha[axis], cb[axis] - hb[axis])
                 span_hi = hi[axis] + min(above, EMBED)

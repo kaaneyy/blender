@@ -192,4 +192,54 @@ def validate_spec(spec: dict, standards: Optional[dict] = None) -> ValidationRes
             if strict:
                 param["value"] = corrected
 
+    # C5: member-sizing ratio rules (load-plausible proportions, not FEA) —
+    # e.g. a tapered pole's base:top diameter ratio must stay in a real
+    # fabrication range; the "of" parameter is corrected in strict mode.
+    by_id = {p.get("id"): p for p in out.get("parameters", [])}
+    for rr in rules.get("sizing", {}).get("ratios", []):
+        p_of = by_id.get(rr.get("of"))
+        p_to = by_id.get(rr.get("to"))
+        if (
+            p_of is None or p_to is None
+            or not isinstance(p_of.get("value"), (int, float))
+            or not isinstance(p_to.get("value"), (int, float))
+        ):
+            continue
+        unit_of = p_of.get("unit") or _default_unit(out)
+        unit_to = p_to.get("unit") or _default_unit(out)
+        v_of = convert(p_of["value"], unit_of, "m")
+        v_to = convert(p_to["value"], unit_to, "m")
+        if v_to <= 0:
+            continue
+        ratio = v_of / v_to
+        for limit_type in ("min", "max"):
+            limit = rr.get(limit_type)
+            if limit is None:
+                continue
+            too_low = limit_type == "min" and ratio < limit
+            too_high = limit_type == "max" and ratio > limit
+            if not (too_low or too_high):
+                continue
+            corrected = round(convert(v_to * limit, "m", unit_of), 6)
+            violations.append(
+                Violation(
+                    parameter_id=rr["of"],
+                    value=round(ratio, 4),
+                    unit="ratio",
+                    limit_type=limit_type,
+                    limit_value=limit,
+                    limit_unit=f"× {rr['to']}",
+                    corrected_value=corrected if strict else None,
+                    code_ref=rr.get("code_ref", ""),
+                    source=source,
+                    message=(
+                        f"{rr['of']} : {rr['to']} ratio {ratio:.2f} is "
+                        f"{'below' if too_low else 'above'} the fabrication range "
+                        f"{limit_type} {limit} ({rr.get('code_ref', source)})"
+                    ),
+                )
+            )
+            if strict:
+                p_of["value"] = corrected
+
     return ValidationResult(spec=out, violations=violations, checked=True)

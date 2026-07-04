@@ -11,7 +11,8 @@ from __future__ import annotations
 import math
 from typing import List
 
-from .base import Primitive, mirror_x, register, spec_params, spec_toggles
+from .base import Primitive, mirror_x, register, spec_params, spec_selects, spec_toggles
+from .connections import ground_connection
 
 ARM_SEGMENTS = 6
 ARM_RADIUS = 0.035  # m, mast-arm tube radius
@@ -36,12 +37,15 @@ def _arm_points(arm_length: float, attach_z: float, rise: float):
     return pts
 
 
-def _arm_primitives(arm_length: float, pole_height: float) -> List[Primitive]:
-    """One swept, tapered tube following a smooth curve (B2) — a real mast
-    arm instead of overlapping cylinder segments."""
+def _arm_primitives(arm_length: float, pole_height: float,
+                    pole_r_at_attach: float) -> List[Primitive]:
+    """One swept, tapered tube (B2), mounted with a slip-fitter collar (C2)
+    and a gusset plate at the pole (C4) — the sweep stays FIRST so the
+    hardware pass band-clamps the arm itself."""
     rise = min(0.15 * arm_length, 0.75)
     attach_z = pole_height - 0.25 - rise  # arm meets the pole just below the top
     path = tuple((x, 0.0, z) for x, z in _arm_points(arm_length, attach_z, rise))
+    gusset_len = 0.16
     return [
         Primitive(
             kind="sweep",
@@ -50,7 +54,28 @@ def _arm_primitives(arm_length: float, pole_height: float) -> List[Primitive]:
             location=(0.0, 0.0, 0.0),
             material_slot="pole",
             params={"path": path, "radius": ARM_RADIUS * 1.25, "radius_end": ARM_RADIUS * 0.8},
-        )
+        ),
+        Primitive(  # C2: telescoping slip-fitter collar wrapping the pole
+            kind="tube",
+            name="slipfitter",
+            component="arm",
+            location=(0.0, 0.0, attach_z + 0.02),
+            material_slot="pole",
+            params={"radius": pole_r_at_attach + 0.012, "wall": 0.006, "depth": 0.30},
+        ),
+        Primitive(  # C4: gusset wedge under the cantilever, tall at the pole
+            kind="loft",
+            name="arm_gusset",
+            component="arm",
+            location=(pole_r_at_attach + gusset_len / 2, 0.0, attach_z - 0.10),
+            rotation=(0.0, math.pi / 2, 0.0),  # loft axis -> radial (+X)
+            material_slot="pole",
+            params={
+                "depth": gusset_len,
+                "profile_start": {"shape": "rect", "w": 0.16, "h": 0.008},
+                "profile_end": {"shape": "rect", "w": 0.02, "h": 0.008},
+            },
+        ),
     ]
 
 
@@ -91,6 +116,7 @@ def _luminaire_primitives(arm_length: float, pole_height: float) -> List[Primiti
 def compute_primitives(spec: dict) -> List[Primitive]:
     p = spec_params(spec)
     toggles = spec_toggles(spec)
+    selects = spec_selects(spec)
 
     pole_height = p.get("pole_height", DEFAULTS_M["pole_height"])
     arm_length = p.get("arm_length", DEFAULTS_M["arm_length"])
@@ -99,31 +125,12 @@ def compute_primitives(spec: dict) -> List[Primitive]:
 
     prims: List[Primitive] = []
 
-    # base plate + anchor bolts -------------------------------------------
-    plate = max(0.45, base_r * 4)
-    prims.append(
-        Primitive(
-            kind="box",
-            name="plate",
-            component="base_plate",
-            location=(0.0, 0.0, 0.016),
-            material_slot="base",
-            params={"size": (plate, plate, 0.032)},
-        )
+    # C1/C7: engineered ground connection (flange / burial / embedded)
+    mount = selects.get("mounting", "flange")
+    prims.extend(
+        ground_connection(base_r, mount=mount, load_class="standard",
+                          component="base_plate", slot="base")
     )
-    if toggles.get("anchor_bolts", True):
-        offset = plate / 2 - 0.05
-        for i, (sx, sy) in enumerate([(1, 1), (1, -1), (-1, 1), (-1, -1)], start=1):
-            prims.append(
-                Primitive(
-                    kind="cylinder",
-                    name=f"anchor_bolt_{i}",
-                    component="base_plate",
-                    location=(sx * offset, sy * offset, 0.05),
-                    material_slot="base",
-                    params={"radius": 0.014, "depth": 0.10},
-                )
-            )
 
     # tapered pole ---------------------------------------------------------
     prims.append(
@@ -148,9 +155,11 @@ def compute_primitives(spec: dict) -> List[Primitive]:
     )
 
     # mast arm + luminaire (mirrored when double_arm is on) -----------------
-    arm_side = _arm_primitives(arm_length, pole_height) + _luminaire_primitives(
-        arm_length, pole_height
-    )
+    rise = min(0.15 * arm_length, 0.75)
+    attach_z = pole_height - 0.25 - rise
+    pole_r_at_attach = base_r + (top_r - base_r) * min(1.0, attach_z / pole_height)
+    arm_side = _arm_primitives(arm_length, pole_height, pole_r_at_attach) + \
+        _luminaire_primitives(arm_length, pole_height)
     prims.extend(arm_side)
     if toggles.get("double_arm", False):
         prims.extend(mirror_x(arm_side, suffix="_b"))

@@ -22,6 +22,16 @@
         "code_ref": "AASHTO-RDG-lighting",
         "note": "Luminaire must clear a walkway by at least 8 ft."
       }
+    },
+    "sizing": {
+      "ratios": [
+        {
+          "of": "pole_base_diameter", "to": "pole_top_diameter",
+          "min": 1.6, "max": 2.2,
+          "code_ref": "AASHTO-LTS-taper",
+          "note": "Tapered steel light poles run a base:top diameter ratio of roughly 1.6-2.2 (deflection-driven proportion, not FEA)."
+        }
+      ]
     }
   },
   "pedestrian_lamp": {

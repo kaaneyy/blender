@@ -192,3 +192,49 @@ class TestStandardsDbValidator:
         assert "bad unit" in errors
         assert "code_ref" in errors
         assert "source" in errors
+
+
+class TestSizingRatios:
+    """C5: member-sizing proportion rules (fabrication convention, not FEA)."""
+
+    def _spec(self, base_in, top_in, code_mode="strict"):
+        return {
+            "asset_type": "street_light",
+            "name": "T",
+            "units": "imperial",
+            "code_mode": code_mode,
+            "parameters": [
+                {"id": "pole_base_diameter", "label": "Base", "type": "slider",
+                 "min": 6, "max": 14, "step": 0.5, "value": base_in, "unit": "in"},
+                {"id": "pole_top_diameter", "label": "Top", "type": "slider",
+                 "min": 3, "max": 6, "step": 0.5, "value": top_in, "unit": "in"},
+            ],
+        }
+
+    def test_in_range_taper_passes(self):
+        assert validate_spec(self._spec(8, 4)).ok  # ratio 2.0 in [1.6, 2.2]
+
+    def test_over_tapered_base_is_clamped(self):
+        result = validate_spec(self._spec(12, 4))  # ratio 3.0 > 2.2
+        [v] = result.violations
+        assert v.limit_type == "max" and v.unit == "ratio"
+        assert v.code_ref == "AASHTO-LTS-taper"
+        base = next(p for p in result.spec["parameters"]
+                    if p["id"] == "pole_base_diameter")
+        assert base["value"] == pytest.approx(4 * 2.2)
+
+    def test_under_tapered_base_is_raised(self):
+        result = validate_spec(self._spec(5, 4))  # ratio 1.25 < 1.6
+        [v] = result.violations
+        assert v.limit_type == "min"
+        base = next(p for p in result.spec["parameters"]
+                    if p["id"] == "pole_base_diameter")
+        assert base["value"] == pytest.approx(4 * 1.6)
+
+    def test_advisory_reports_without_clamping(self):
+        result = validate_spec(self._spec(12, 4, code_mode="advisory"))
+        [v] = result.violations
+        assert v.corrected_value is None
+        base = next(p for p in result.spec["parameters"]
+                    if p["id"] == "pole_base_diameter")
+        assert base["value"] == 12

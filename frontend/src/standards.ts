@@ -64,12 +64,69 @@ export function checkParam(
   return null;
 }
 
+interface RatioRule {
+  of: string;
+  to: string;
+  min?: number | null;
+  max?: number | null;
+  code_ref?: string;
+  note?: string;
+}
+
+/** C5 mirror: member-sizing ratio rules (e.g. pole base:top taper). */
+function checkRatios(spec: AssetSpec): Record<string, CodeViolation> {
+  const entry = DB[spec.asset_type] as
+    | { sizing?: { ratios?: RatioRule[] }; source?: string }
+    | undefined;
+  const out: Record<string, CodeViolation> = {};
+  const byId = new Map(spec.parameters.map((p) => [p.id, p]));
+  for (const rr of entry?.sizing?.ratios ?? []) {
+    const pOf = byId.get(rr.of);
+    const pTo = byId.get(rr.to);
+    if (!pOf || !pTo || typeof pOf.value !== "number" || typeof pTo.value !== "number") {
+      continue;
+    }
+    const unitOf: Unit = pOf.unit ?? (spec.units === "imperial" ? "ft" : "m");
+    const unitTo: Unit = pTo.unit ?? (spec.units === "imperial" ? "ft" : "m");
+    const vOf = convert(pOf.value, unitOf, "m");
+    const vTo = convert(pTo.value, unitTo, "m");
+    if (vTo <= 0) continue;
+    const ratio = vOf / vTo;
+    for (const limitType of ["min", "max"] as const) {
+      const limit = rr[limitType];
+      if (limit == null) continue;
+      const broken = limitType === "min" ? ratio < limit : ratio > limit;
+      if (!broken) continue;
+      out[rr.of] = {
+        parameterId: rr.of,
+        limitType,
+        limitValue: limit,
+        limitUnit: unitOf,
+        correctedValue: Number(convert(vTo * limit, "m", unitOf).toFixed(6)),
+        codeRef: rr.code_ref ?? "",
+        message:
+          `${rr.of} : ${rr.to} ratio ${ratio.toFixed(2)} is ` +
+          `${limitType === "min" ? "below" : "above"} the fabrication range ` +
+          `${limitType} ${limit} — ${rr.code_ref ?? entry?.source ?? "sizing rule"}` +
+          (rr.note ? `. ${rr.note}` : ""),
+      };
+      break;
+    }
+  }
+  return out;
+}
+
 /** All current violations keyed by parameter id. */
 export function checkSpec(spec: AssetSpec): Record<string, CodeViolation> {
   const out: Record<string, CodeViolation> = {};
   for (const p of spec.parameters) {
     const v = checkParam(spec, p);
     if (v) out[p.id] = v;
+  }
+  // sizing ratios only fill slots without a direct min/max violation
+  const ratios = checkRatios(spec);
+  for (const [id, v] of Object.entries(ratios)) {
+    if (!out[id]) out[id] = v;
   }
   return out;
 }

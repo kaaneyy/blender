@@ -2,7 +2,8 @@
  * Any geometry change there MUST be mirrored here — dimensional parity
  * between preview and final export is a hard requirement (T4.3). */
 import type { AssetSpec, Primitive } from "../types";
-import { mirrorX, register, specParams, specToggles } from "./base";
+import { mirrorX, register, specParams, specSelects, specToggles } from "./base";
+import { groundConnection } from "./connections";
 
 const ARM_SEGMENTS = 6;
 const ARM_RADIUS = 0.035;
@@ -25,13 +26,19 @@ function armPoints(armLength: number, attachZ: number, rise: number) {
   return pts;
 }
 
-function armPrimitives(armLength: number, poleHeight: number): Primitive[] {
-  // one swept, tapered tube (B2) — mirror of street_light.py
+function armPrimitives(
+  armLength: number,
+  poleHeight: number,
+  poleRAtAttach: number,
+): Primitive[] {
+  // swept tapered tube (B2) + slip-fitter collar (C2) + gusset (C4);
+  // the sweep stays FIRST so hardware band-clamps the arm itself
   const rise = Math.min(0.15 * armLength, 0.75);
   const attachZ = poleHeight - 0.25 - rise;
   const path = armPoints(armLength, attachZ, rise).map(
     ([x, z]) => [x, 0, z] as [number, number, number],
   );
+  const gussetLen = 0.16;
   return [
     {
       kind: "sweep",
@@ -41,6 +48,28 @@ function armPrimitives(armLength: number, poleHeight: number): Primitive[] {
       rotation: [0, 0, 0],
       materialSlot: "pole",
       params: { path, radius: ARM_RADIUS * 1.25, radius_end: ARM_RADIUS * 0.8 },
+    },
+    {
+      kind: "tube",
+      name: "slipfitter",
+      component: "arm",
+      location: [0, 0, attachZ + 0.02],
+      rotation: [0, 0, 0],
+      materialSlot: "pole",
+      params: { radius: poleRAtAttach + 0.012, wall: 0.006, depth: 0.3 },
+    },
+    {
+      kind: "loft",
+      name: "arm_gusset",
+      component: "arm",
+      location: [poleRAtAttach + gussetLen / 2, 0, attachZ - 0.1],
+      rotation: [0, Math.PI / 2, 0],
+      materialSlot: "pole",
+      params: {
+        depth: gussetLen,
+        profile_start: { shape: "rect", w: 0.16, h: 0.008 },
+        profile_end: { shape: "rect", w: 0.02, h: 0.008 },
+      },
     },
   ];
 }
@@ -81,6 +110,7 @@ function luminairePrimitives(armLength: number, poleHeight: number): Primitive[]
 function computeStreetLight(spec: AssetSpec): Primitive[] {
   const p = specParams(spec);
   const toggles = specToggles(spec);
+  const selects = specSelects(spec);
 
   const poleHeight = p.pole_height ?? DEFAULTS_M.pole_height;
   const armLength = p.arm_length ?? DEFAULTS_M.arm_length;
@@ -89,32 +119,10 @@ function computeStreetLight(spec: AssetSpec): Primitive[] {
 
   const prims: Primitive[] = [];
 
-  // base plate + anchor bolts
-  const plate = Math.max(0.45, baseR * 4);
-  prims.push({
-    kind: "box",
-    name: "plate",
-    component: "base_plate",
-    location: [0, 0, 0.016],
-    rotation: [0, 0, 0],
-    materialSlot: "base",
-    params: { size: [plate, plate, 0.032] },
-  });
-  if (toggles.anchor_bolts ?? true) {
-    const offset = plate / 2 - 0.05;
-    const corners: Array<[number, number]> = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
-    corners.forEach(([sx, sy], i) => {
-      prims.push({
-        kind: "cylinder",
-        name: `anchor_bolt_${i + 1}`,
-        component: "base_plate",
-        location: [sx * offset, sy * offset, 0.05],
-        rotation: [0, 0, 0],
-        materialSlot: "base",
-        params: { radius: 0.014, depth: 0.1 },
-      });
-    });
-  }
+  // C1/C7: engineered ground connection (flange / burial / embedded)
+  prims.push(
+    ...groundConnection(baseR, selects.mounting ?? "flange", "standard", "base_plate", "base"),
+  );
 
   // tapered pole
   prims.push({
@@ -137,8 +145,11 @@ function computeStreetLight(spec: AssetSpec): Primitive[] {
   });
 
   // mast arm + luminaire (mirrored when double_arm is on)
+  const rise = Math.min(0.15 * armLength, 0.75);
+  const attachZ = poleHeight - 0.25 - rise;
+  const poleRAtAttach = baseR + (topR - baseR) * Math.min(1, attachZ / poleHeight);
   const armSide = [
-    ...armPrimitives(armLength, poleHeight),
+    ...armPrimitives(armLength, poleHeight, poleRAtAttach),
     ...luminairePrimitives(armLength, poleHeight),
   ];
   prims.push(...armSide);

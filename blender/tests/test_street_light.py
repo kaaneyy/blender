@@ -14,8 +14,8 @@ from standards.validator import validate_spec
 FT = 0.3048
 
 
-def make_spec(pole_height=30, arm_length=8, **toggle_overrides):
-    toggles = {"double_arm": False, "banner_bracket": False, "anchor_bolts": True}
+def make_spec(pole_height=30, arm_length=8, mounting="flange", **toggle_overrides):
+    toggles = {"double_arm": False, "banner_bracket": False}
     toggles.update(toggle_overrides)
     return {
         "asset_type": "street_light",
@@ -27,6 +27,8 @@ def make_spec(pole_height=30, arm_length=8, **toggle_overrides):
              "min": 20, "max": 40, "step": 0.5, "value": pole_height, "unit": "ft"},
             {"id": "arm_length", "label": "Arm Length", "type": "slider",
              "min": 4, "max": 15, "step": 0.5, "value": arm_length, "unit": "ft"},
+            {"id": "mounting", "label": "Mounting", "type": "select",
+             "value": mounting, "options": ["flange", "burial", "embedded"]},
         ],
         "toggles": [{"id": k, "label": k, "value": v} for k, v in toggles.items()],
         "materials": [{"slot": "pole", "preset": "galvanized_steel"}],
@@ -76,8 +78,7 @@ def test_pole_height_matches_spec(pole_height):
 @pytest.mark.parametrize("arm_length", [4, 8, 15])
 def test_arm_is_a_tapered_sweep_reaching_arm_length(arm_length):
     prims = compute_primitives(make_spec(arm_length=arm_length))
-    [arm] = [p for p in prims if p.component == "arm"]
-    assert arm.kind == "sweep"
+    [arm] = [p for p in prims if p.component == "arm" and p.kind == "sweep"]
     # the swept path spans from the pole face to the full arm length
     xs = [pt[0] for pt in arm.params["path"]]
     assert min(xs) == pytest.approx(0.0)
@@ -122,19 +123,76 @@ def test_double_arm_toggle_mirrors_arm_and_luminaire():
         -max(pt[0] for pt in original_arm.params["path"])
     )
     # mirrored head sits at negated X
-    m_head = next(p for p in mirrored if p.kind == "loft")
+    m_head = next(p for p in mirrored if p.name == "head_b")
     o_head = next(p for p in double if p.name == "head")
     assert m_head.location[0] == pytest.approx(-o_head.location[0])
 
 
-def test_anchor_bolt_and_banner_toggles():
-    base_count = len(compute_primitives(make_spec()))
-    without_bolts = compute_primitives(make_spec(anchor_bolts=False))
-    assert len(without_bolts) == base_count - 4
+def test_banner_toggle():
     with_banner = compute_primitives(make_spec(banner_bracket=True))
     brackets = [p for p in with_banner if p.component == "banner_bracket"]
     assert len(brackets) == 2
     assert all(top_z(b) < 30 * FT for b in brackets)
+
+
+class TestGroundConnection:
+    """C1/C7: the pole meets the ground like an engineered installation."""
+
+    def test_flange_mount_details(self):
+        prims = {p.name: p for p in compute_primitives(make_spec())
+                 if p.component == "base_plate"}
+        # grout pad + round flange + weld bead (C3)
+        assert {"grout_pad", "flange", "weld_bead"} <= set(prims)
+        # anchor-bolt circle: 4 bolts with washers and hex nuts on a BCD
+        bolts = [p for n, p in prims.items() if n.startswith("anchor_bolt_")]
+        nuts = [p for n, p in prims.items() if n.startswith("anchor_nut_")]
+        washers = [p for n, p in prims.items() if n.startswith("anchor_washer_")]
+        assert len(bolts) == len(nuts) == len(washers) == 4
+        assert all(p.params.get("segments") == 6 for p in nuts)
+        # bolts sit ON a circle between the pole and the flange edge
+        flange_r = prims["flange"].params["radius"]
+        pole_r = (8 * 0.0254) / 2
+        for b in bolts:
+            r = math.hypot(b.location[0], b.location[1])
+            assert pole_r < r < flange_r
+        # gusset webs between the bolts, tall at the pole, thin at the rim
+        gussets = [p for n, p in prims.items() if n.startswith("gusset_")]
+        assert len(gussets) == 4
+        assert all(g.kind == "loft" for g in gussets)
+        g = gussets[0]
+        assert g.params["profile_start"]["w"] > g.params["profile_end"]["w"]
+
+    def test_burial_and_embedded_variants(self):
+        burial = [p for p in compute_primitives(make_spec(mounting="burial"))
+                  if p.component == "base_plate"]
+        assert [p.name for p in burial] == ["backfill_collar"]
+        assert burial[0].kind == "lathe" and burial[0].params["profile"] == "flared_base"
+
+        embedded = {p.name for p in compute_primitives(make_spec(mounting="embedded"))
+                    if p.component == "base_plate"}
+        assert "concrete_pier" in embedded
+        # no anchor bolts in either non-flange variant
+        assert not any(n.startswith("anchor_bolt") for n in embedded)
+
+
+class TestArmConnection:
+    """C2/C4: the mast arm mounts with a slip-fitter and a gusset."""
+
+    def test_slipfitter_wraps_pole_at_attach_height(self):
+        prims = {p.name: p for p in compute_primitives(make_spec())}
+        collar = prims["slipfitter"]
+        assert collar.kind == "tube"
+        pole_top_r = (4 * 0.0254) / 2
+        pole_base_r = (8 * 0.0254) / 2
+        assert pole_top_r < collar.params["radius"] < pole_base_r + 0.02
+        # near the top of the pole where the arm attaches
+        assert 30 * FT - 1.5 < collar.location[2] < 30 * FT
+
+    def test_arm_gusset_under_cantilever(self):
+        prims = {p.name: p for p in compute_primitives(make_spec())}
+        gusset = prims["arm_gusset"]
+        assert gusset.kind == "loft"
+        assert gusset.params["profile_start"]["w"] > gusset.params["profile_end"]["w"]
 
 
 def test_unknown_asset_type_raises():

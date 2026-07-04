@@ -100,8 +100,13 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 - [x] G-B5 `tube` kind — hollow cylinder with wall thickness (poles/bollards/arms are never solid).
 - [~] G-B6 Profile library — 2D revolve profiles shipped; structural sections (I-beam, C-channel) for sweeps still pending.
 - [x] G-B7 `array` op — linear repetition with expression-driven count/step (pickets, slats, bolt rows), expanded in the pure layer so preview and Blender agree.
-- [ ] G-C Part C (base flanges/bolt circles/gussets, slip-fit joints, weld beads, member sizing rules) — next.
-- [ ] G-D/G-E materials detail + prompt archetypes — after C.
+- [x] G-C1/C7 Ground connections (`builders/connections.py` + TS mirror): flange mount = grout pad + round base flange + anchor-bolt circle on a real BCD (count/Ø by load class, hex nuts + washers) + triangular gusset webs between the bolts + weld bead where the pole lands; direct-burial = flared backfill collar; embedded = cast concrete pier. Street light exposes them as a `mounting` dropdown.
+- [x] G-C2 Slip-fitter collar (tube) wrapping the pole where the mast arm attaches — a telescoping joint, not an interpenetration.
+- [x] G-C3 Weld-bead fillets as revolved lathe rings (reuses B1) at welded round-member joints.
+- [x] G-C4 Cantilever gusset wedge (loft, tall at the pole) under the mast arm.
+- [x] G-C5 Member-sizing ratio rules in `us_codes.json` (`sizing.ratios`, e.g. pole base:top taper 1.6–2.2 per AASHTO LTS proportions) enforced by the validator — strict mode corrects the "of" parameter; mirrored in the client for live red-slider feedback. Heuristic proportions, NOT FEA.
+- [x] G-C6 Fastener sizing by load class: through-bolt diameter scales light/standard/heavy from the larger joined member's bounding volume (0.75×/1×/1.35×, cap raised to Ø28 mm).
+- [ ] G-D/G-E materials detail + prompt archetypes — next.
 
 ## PHASE 4 — Live Preview (frontend)
 

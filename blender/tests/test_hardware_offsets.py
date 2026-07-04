@@ -157,3 +157,26 @@ class TestOffsets:
         base = {p.name: p for p in compute_primitives(load("park_bench.json"))}
         assert prims["slat_mid"].location[2] == pytest.approx(base["slat_mid"].location[2] + 0.05)
         assert prims["slat_front"].location == base["slat_front"].location
+
+
+class TestLoadClassFasteners:
+    """C6: bolt diameter scales with the joined members' load tier."""
+
+    def _joint(self, size):
+        from blender.builders.base import Primitive
+
+        a = Primitive(kind="box", name="a", component="ca",
+                      location=(0, 0, size / 2), params={"size": (size, size, size)})
+        b = Primitive(kind="box", name="b", component="cb",
+                      location=(0, 0, size + 0.02), params={"size": (0.05, 0.05, 0.06)})
+        return [a, b]
+
+    def test_heavier_members_get_bigger_bolts(self):
+        from blender.builders.hardware import compute_hardware
+
+        light = compute_hardware(self._joint(0.15))    # ~0.003 m3 -> light
+        heavy = compute_hardware(self._joint(0.9))     # ~0.73 m3 -> heavy
+        r_light = next(p for p in light if p.name.endswith("_shaft")).params["radius"]
+        r_heavy = next(p for p in heavy if p.name.endswith("_shaft")).params["radius"]
+        assert r_heavy > r_light
+        assert r_heavy <= 0.014

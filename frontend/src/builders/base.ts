@@ -126,6 +126,15 @@ export function specToggles(spec: AssetSpec): Record<string, boolean> {
   return out;
 }
 
+/** String-valued (type=select) parameters keyed by id (mirror of base.py). */
+export function specSelects(spec: AssetSpec): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of spec.parameters) {
+    if (typeof p.value === "string") out[p.id] = p.value;
+  }
+  return out;
+}
+
 /** Mirror primitives across the YZ plane (same math as base.py mirror_x). */
 export function mirrorX(prims: Primitive[], suffix = "_b"): Primitive[] {
   return prims.map((p) => {

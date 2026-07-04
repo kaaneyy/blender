@@ -208,6 +208,21 @@ function bandClamp(
   return prims;
 }
 
+/** C6: fastener sizing scales with the connection's tributary load tier
+ * (larger joined member's bounding volume — heuristic, not FEA). */
+const LOAD_FACTOR: Record<string, number> = { light: 0.75, standard: 1.0, heavy: 1.35 };
+
+function loadClass(pa: Primitive, pb: Primitive): string {
+  const volume = (p: Primitive) => {
+    const h = aabb(p).half;
+    return 8 * h[0] * h[1] * h[2];
+  };
+  const v = Math.max(volume(pa), volume(pb));
+  if (v > 0.15) return "heavy";
+  if (v < 0.01) return "light";
+  return "standard";
+}
+
 function boltPattern(d1: number, d2: number, headR: number): Array<[number, number]> {
   const edge = 1.5 * headR;
   const big1 = d1 >= 0.22 && d1 / 2 - 0.3 * d1 >= edge;
@@ -283,7 +298,8 @@ export function computeHardware(prims: Primitive[]): Primitive[] {
       ) {
         out.push(...bandClamp(joint, upright, center[2], axis));
       } else {
-        const shaftR = Math.min(Math.max(0.22 * Math.min(d1, d2), 0.004), 0.011);
+        const factor = LOAD_FACTOR[loadClass(a.p, b.p)];
+        const shaftR = Math.min(Math.max(0.22 * Math.min(d1, d2) * factor, 0.004), 0.014);
         const above = Math.max(a.c[axis] + a.h[axis], b.c[axis] + b.h[axis]) - hi[axis];
         const below = lo[axis] - Math.min(a.c[axis] - a.h[axis], b.c[axis] - b.h[axis]);
         const spanHi = hi[axis] + Math.min(above, EMBED);
