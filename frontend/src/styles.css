@@ -370,6 +370,145 @@ textarea:disabled {
   color: var(--text-muted);
 }
 
+/* generate vs guided build */
+.gen-row {
+  display: flex;
+  gap: 6px;
+}
+
+.gen-row button {
+  flex: 1 1 0;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gen-row button.secondary {
+  background: var(--panel-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  font-weight: 400;
+}
+
+/* guided 4-step build wizard */
+.wizard {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2, var(--panel));
+}
+
+.wizard__steps {
+  display: flex;
+  gap: 2px;
+  background: var(--border);
+}
+
+.wizard__pill {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--panel-3);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.wizard__pill.is-current {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.wizard__pill.is-done {
+  color: var(--text);
+}
+
+.wizard__pill-n {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.25);
+  font-size: 9px;
+}
+
+.wizard__pill.is-current .wizard__pill-n {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.wizard__body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+}
+
+.wizard__title {
+  margin: 0;
+  font-size: 13px;
+}
+
+.wizard__blurb {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.wizard__body textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.wizard__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wizard__actions button {
+  flex: 1 1 auto;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wizard__actions button.secondary {
+  flex: 0 0 auto;
+  background: var(--panel-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  font-weight: 400;
+}
+
+.wizard__exit {
+  align-self: flex-start;
+  background: none !important;
+  border: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .quick-fixes {
   display: flex;
   flex-direction: column;
