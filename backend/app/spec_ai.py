@@ -63,6 +63,9 @@ class SpecGenerationError(RuntimeError):
 def _system_prompt(code_mode: str) -> str:
     standards = load_standards()
     standards.pop("_meta", None)
+    # fastener tables are for the hardware generator, not the LLM — don't
+    # spend prompt tokens on them
+    standards.pop("_connections", None)
     return f"""You convert user requests into AssetSpec JSON for a parametric 3D asset generator (street furniture, lighting, signage, props of any kind).
 
 OUTPUT RULES
@@ -331,8 +334,14 @@ def focus_spec(spec: dict, area: str, code_mode: str = "strict",
 # ---------------------------------------------------------------------------
 
 def _install_guide_prompts(spec: dict) -> tuple:
+    """(system, user, joint_schedule): the user message embeds the generated
+    joint schedule so the guide documents the REAL fasteners — the fix for
+    guides that invented bolt sizes the geometry never had."""
+    from blender.builders.schedule import joint_schedule
+
     standards = load_standards()
     relevant = standards.get(spec.get("asset_type", ""), {})
+    schedule = joint_schedule(spec)
     system = (
         "You are a licensed site-furnishing installation specialist writing for a "
         "homeowner/contractor audience. Produce a clear, numbered installation guide "
@@ -340,27 +349,35 @@ def _install_guide_prompts(spec: dict) -> tuple:
         "Structure: ## Overview (what it is, overall dimensions in ft/in AND meters), "
         "## Tools & materials, ## Site preparation (foundation/footing sizing guidance), "
         "## Assembly sequence (reference the spec's component names in order, with "
-        "hardware: anchor bolts, nuts, washers, torque ranges), ## Connections "
-        "(enumerate EVERY joint: which two components meet, the fastener type and "
-        "size class, and exactly how it is executed on site — drilled, through-"
-        "bolted, band-clamped, torqued, embedded), ## Code compliance "
+        "hardware: anchor bolts, nuts, washers, torque ranges), ## Joint schedule "
+        "(a Markdown table of the generated joint schedule you were given: joint id, "
+        "connection type, the two members, fastener, count, torque), ## Connections "
+        "(walk through EVERY joint in that schedule: which two components meet, the "
+        "exact fastener from the schedule, and exactly how it is executed on site — "
+        "drilled, through-bolted, band-clamped, slip-fitted, welded, torqued, "
+        "embedded), ## Code compliance "
         "checklist (cite the code_refs from the spec/standards, with the actual limits), "
-        "## Inspection & maintenance. Use ONLY dimensions derivable from the spec; do "
-        "not invent sizes. Include a short safety disclaimer that a licensed engineer "
-        "must approve structural anchoring for public installations."
+        "## Inspection & maintenance. Use ONLY dimensions derivable from the spec and "
+        "ONLY the fasteners in the joint schedule; do not invent sizes. Include a "
+        "short safety disclaimer that a licensed engineer must approve structural "
+        "anchoring for public installations."
     )
     user = (
         f"INSTALL GUIDE request.\nAssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
-        f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}"
+        f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}\n\n"
+        f"Joint schedule (the hardware the app actually generated — cite EXACTLY "
+        f"these fasteners, counts, and torque values):\n"
+        f"{json.dumps(schedule, separators=(',', ':'))}"
     )
-    return system, user
+    return system, user, schedule
 
 
-def generate_install_guide(spec: dict) -> str:
-    """Plain-language installation instructions for the current asset,
-    grounded in its actual dimensions, components, and code citations."""
-    system, user = _install_guide_prompts(spec)
-    return complete(system, user, temperature=0.3).strip()
+def generate_install_guide(spec: dict) -> tuple:
+    """(guide_markdown, joint_schedule): plain-language installation
+    instructions grounded in the asset's actual dimensions, components, code
+    citations, and the generated connection hardware."""
+    system, user, schedule = _install_guide_prompts(spec)
+    return complete(system, user, temperature=0.3).strip(), schedule
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +425,8 @@ def _standards_prompts() -> tuple:
         "'source' and 'parameters'; each parameter rule has min, max (number or "
         "null), default, unit (ft|in|m|cm|mm), code_ref, and optionally note. "
         "Cite real, specific sections in code_ref/source. Bump _meta.version by 1 "
-        "and keep the _meta.disclaimer. Return ONLY the complete updated JSON."
+        "and keep the _meta.disclaimer. Keep any '_connections' section EXACTLY "
+        "as-is (it is maintained by hand). Return ONLY the complete updated JSON."
     )
     user = f"STANDARDS UPDATE request.\nCurrent database:\n{json.dumps(current, indent=1)}"
     return system, user
@@ -422,6 +440,12 @@ def _standards_finalize(raw: str) -> dict:
     problems = validate_standards_db(proposal)
     if problems:
         raise SpecGenerationError("Structural problems: " + "; ".join(problems[:8]))
+    # the fastener tables are maintained by hand, not the AI refresh — carry
+    # them over verbatim if the proposal dropped them
+    if isinstance(proposal, dict) and "_connections" not in proposal:
+        current = load_standards().get("_connections")
+        if current:
+            proposal["_connections"] = current
     return {
         "proposal": proposal,
         "changes": _diff_standards(load_standards(), proposal),
@@ -541,10 +565,11 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
 
 
 def stream_install_guide(spec: dict):
-    system, user = _install_guide_prompts(spec)
+    system, user, schedule = _install_guide_prompts(spec)
     return _stream_pipeline(
         system, user,
-        lambda raw, lenient=False: {"guide": strip_reasoning(raw).strip()},
+        lambda raw, lenient=False: {"guide": strip_reasoning(raw).strip(),
+                                    "joint_schedule": schedule},
         retry=False,
     )
 

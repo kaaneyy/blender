@@ -220,19 +220,54 @@ function isVerticalStructural(p: Primitive): boolean {
   return false;
 }
 
-/** C6: fastener sizing scales with the connection's tributary load tier
- * (larger joined member's bounding volume — heuristic, not FEA). */
+/** C6: fastener sizing scales with the connection's tributary load tier. */
 const LOAD_FACTOR: Record<string, number> = { light: 0.75, standard: 1.0, heavy: 1.35 };
+
+/** Metric fastener catalog: name -> shaft radius (m). Mirror of
+ * hardware.py BOLT_CATALOG (source of truth: us_codes.json _connections). */
+const BOLT_CATALOG: Array<[string, number]> = [
+  ["M6", 0.003], ["M8", 0.004], ["M10", 0.005], ["M12", 0.006],
+  ["M16", 0.008], ["M20", 0.01], ["M24", 0.012],
+];
+
+/** rough densities (t/m³) for the moment proxy, keyed by material family */
+const DENSITY = { metal: 7.9, concrete: 2.4, wood: 0.6, other: 1.0 };
+
+function snapBolt(r: number): [string, number] {
+  return BOLT_CATALOG.reduce((best, entry) =>
+    Math.abs(entry[1] - r) < Math.abs(best[1] - r) ? entry : best,
+  );
+}
 
 function volume(p: Primitive): number {
   const h = aabb(p).half;
   return 8 * h[0] * h[1] * h[2];
 }
 
-function loadClass(pa: Primitive, pb: Primitive): string {
-  const v = Math.max(volume(pa), volume(pb));
-  if (v > 0.15) return "heavy";
-  if (v < 0.01) return "light";
+function density(slot: string, spec?: AssetSpec): number {
+  const preset = presetName(slot, spec);
+  if (preset === null || METAL_PRESETS.has(preset)) return DENSITY.metal;
+  if (preset === "concrete") return DENSITY.concrete;
+  if (WOOD_PRESETS.has(preset)) return DENSITY.wood;
+  return DENSITY.other;
+}
+
+/** Tributary-moment proxy for the joint: each member's bounding mass times
+ * its horizontal lever arm about the joint; the larger governs (mirror of
+ * hardware.py _moment — heuristic fabrication convention, not FEA). */
+function jointMoment(pa: Primitive, pb: Primitive, center: Vec3, spec?: AssetSpec): number {
+  let best = 0;
+  for (const p of [pa, pb]) {
+    const c = aabb(p).center;
+    const lever = Math.max(0.05, Math.hypot(c[0] - center[0], c[1] - center[1]));
+    best = Math.max(best, volume(p) * density(p.materialSlot, spec) * lever);
+  }
+  return best;
+}
+
+function loadClassFromMoment(moment: number): string {
+  if (moment > 0.12) return "heavy";
+  if (moment < 0.004) return "light";
   return "standard";
 }
 
@@ -369,6 +404,7 @@ interface PairCandidate {
   kind: "pair";
   rank: number;
   key: [number, number, number];
+  moment: number;
   pa: Primitive;
   pb: Primitive;
   ca: Vec3;
@@ -393,6 +429,7 @@ interface AnchorCandidate {
   memberR: number;
   shape: "round" | "square";
   slot: string;
+  component: string;
   load: string;
 }
 
@@ -453,8 +490,12 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       const d2 = hi[perp[1]] - lo[perp[1]];
       if (Math.min(d1, d2) < MIN_FACE) continue;
 
+      // structural (high-moment) inferred joints outrank light ones so the
+      // MAX_JOINTS budget never drops a mast arm for a trim strip
+      const moment = jointMoment(a.p, b.p, center, spec);
+      const rank = decl ? 1 : moment >= 0.01 ? 2 : 3;
       candidates.push({
-        kind: "pair", rank: decl ? 1 : 2, key,
+        kind: "pair", rank, key, moment,
         pa: a.p, pb: b.p, ca: a.c, ha: a.h, cb: b.c, hb: b.h,
         lo, hi, center, axis, perp, d1, d2, decl,
       });
@@ -499,6 +540,7 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       kind: "anchor", rank: 0,
       key: [Math.round(c[0] / GRID), Math.round(c[1] / GRID), 0],
       centerXY: [c[0], c[1]], memberR, shape, slot: p.materialSlot,
+      component: p.component,
       load: gdecl?.load ?? (volume(p) > 0.15 ? "heavy" : "standard"),
     });
   }
@@ -523,12 +565,44 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
   return out;
 }
 
+/** heuristic anchor-rod torque per tier (see us_codes.json _connections) */
+const ANCHOR_TORQUE: Record<string, number> = { light: 100, standard: 220, heavy: 400 };
+
+const CATALOG_TORQUE: Record<string, number> = {
+  M6: 10, M8: 25, M10: 50, M12: 85, M16: 210, M20: 425, M24: 730,
+};
+
+function catalogRow(name: string): { grade: string; code_ref: string; torque_nm: number } {
+  return {
+    grade: "8.8 / A325",
+    code_ref: "AISC J3 / RCSC Table 8.1",
+    torque_nm: CATALOG_TORQUE[name],
+  };
+}
+
+/** Attach the joint record to the first emitted prim (mirror of
+ * hardware.py _with_joint_meta) so the schedule can cite what was built. */
+function withJointMeta(emitted: Primitive[], record: Record<string, unknown>): Primitive[] {
+  if (!emitted.length) return emitted;
+  return [{ ...emitted[0], meta: { joint: record } }, ...emitted.slice(1)];
+}
+
 /** Emit one joint's hardware from a candidate record. */
 function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[] {
   if (cand.kind === "anchor") {
-    return groundConnection(
-      cand.memberR, "flange", cand.load, "hardware", cand.slot,
-      cand.centerXY, cand.shape, `joint${joint}_`,
+    const nBolts = { light: 4, standard: 4, heavy: 6 }[cand.load] ?? 4;
+    const diaMm = { light: 16, standard: 22, heavy: 28 }[cand.load] ?? 22;
+    return withJointMeta(
+      groundConnection(
+        cand.memberR, "flange", cand.load, "hardware", cand.slot,
+        cand.centerXY, cand.shape, `joint${joint}_`,
+      ),
+      {
+        id: joint, type: "anchor_base", a: cand.component, b: "ground",
+        fastener: `${diaMm}mm anchor bolt`, count: nBolts,
+        grade: "F1554 Gr.55", torque_nm: ANCHOR_TORQUE[cand.load],
+        code_ref: "AASHTO LTS-6 / ACI 318-19 Ch.17",
+      },
     );
   }
 
@@ -570,6 +644,17 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
   }
   if (ctype === "anchor_base") ctype = "through_bolt"; // pair-declared: no grade side
 
+  const record = (
+    fastener: string,
+    count: number,
+    grade = "",
+    torque: number | null = null,
+    codeRef = "",
+  ): Record<string, unknown> => ({
+    id: joint, type: ctype, a: pa.component, b: pb.component,
+    fastener, count, grade, torque_nm: torque, code_ref: codeRef,
+  });
+
   // ------------------------------------------------ emit
   if (ctype === "weld") {
     const roundM =
@@ -580,12 +665,15 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       ["cylinder", "cone", "tube"].includes(roundM.kind) && isUprightRound(roundM)
         ? radiusAtZ(roundM, center[2])
         : roundRadius(roundM);
-    return [
-      weldFillet(
-        r, Math.max(0.008, r * 0.2), center[2], "hardware", "hardware",
-        `joint${joint}_weld`, [roundM.location[0], roundM.location[1]],
-      ),
-    ];
+    return withJointMeta(
+      [
+        weldFillet(
+          r, Math.max(0.008, r * 0.2), center[2], "hardware", "hardware",
+          `joint${joint}_weld`, [roundM.location[0], roundM.location[1]],
+        ),
+      ],
+      record("fillet weld", 1, "E70XX", null, "AWS D1.1 (heuristic)"),
+    );
   }
 
   if (ctype === "band_clamp") {
@@ -594,10 +682,16 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
     // pole's flanks, clear of the arm), not the overlap box's thin axis
     const direction = memberDirection(other);
     const axisH = Math.abs(direction[0]) >= Math.abs(direction[1]) ? 0 : 1;
-    return splitBandClamp(
-      joint, radiusAtZ(upright!, center[2]),
-      [upright!.location[0], upright!.location[1]], center[2],
-      axisH, armR,
+    const [earName] = snapBolt(Math.min(Math.max(0.4 * armR, 0.004), 0.008));
+    const row = catalogRow(earName);
+    return withJointMeta(
+      splitBandClamp(
+        joint, radiusAtZ(upright!, center[2]),
+        [upright!.location[0], upright!.location[1]], center[2],
+        axisH, armR,
+      ),
+      record(`${earName} ear bolt (split band clamp)`, 2, row.grade,
+             row.torque_nm, row.code_ref),
     );
   }
 
@@ -607,18 +701,32 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
     );
     const outer = roundPrims.reduce((mx, p) => (roundRadius(p) > roundRadius(mx) ? p : mx));
     const outerR = isUprightRound(outer) ? radiusAtZ(outer, center[2]) : roundRadius(outer);
-    return slipFitter(joint, outerR, [outer.location[0], outer.location[1]], center[2]);
+    return withJointMeta(
+      slipFitter(joint, outerR, [outer.location[0], outer.location[1]], center[2]),
+      record("M8 set screw (slip fitter)", 3, "45H", 15,
+             "pole-fitter convention (heuristic)"),
+    );
   }
 
   if (ctype === "flange_splice") {
     const memberR = Math.min(d1, d2) / 2;
-    return flangeSplice(joint, center, axis, memberR, decl?.count ?? 6);
+    const nBolts = decl?.count ?? 6;
+    const [spliceName] = snapBolt(Math.min(Math.max(0.35 * memberR, 0.005), 0.012));
+    const row = catalogRow(spliceName);
+    return withJointMeta(
+      flangeSplice(joint, center, axis, memberR, nBolts),
+      record(`${spliceName} flange bolt`, nBolts, row.grade, row.torque_nm,
+             row.code_ref),
+    );
   }
 
-  // bolted family: through / carriage / lag
-  const load = decl?.load ?? loadClass(pa, pb);
+  // bolted family: through / carriage / lag — snapped to the catalog
+  const load =
+    decl?.load ?? loadClassFromMoment(cand.kind === "pair" ? cand.moment : 0);
   const factor = LOAD_FACTOR[load] ?? 1.0;
-  const shaftR = Math.min(Math.max(0.22 * Math.min(d1, d2) * factor, 0.004), 0.014);
+  const [boltName, shaftR] = snapBolt(
+    Math.min(Math.max(0.22 * Math.min(d1, d2) * factor, 0.004), 0.012),
+  );
   const above = Math.max(ca[axis] + ha[axis], cb[axis] + hb[axis]) - hi[axis];
   const below = lo[axis] - Math.min(ca[axis] - ha[axis], cb[axis] - hb[axis]);
   const spanHi = hi[axis] + Math.min(above, EMBED);
@@ -643,5 +751,14 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       out.push(...throughBoltAssembly(joint, i + 1, c, axis, shaftR, spanLo, spanHi));
     }
   });
-  return out;
+  const row = catalogRow(boltName);
+  const label =
+    ctype === "carriage_bolt" ? "carriage bolt"
+    : ctype === "lag_screw" ? "lag screw"
+    : "through bolt";
+  return withJointMeta(
+    out,
+    record(`${boltName} ${label}`, pattern.length, row.grade, row.torque_nm,
+           row.code_ref),
+  );
 }

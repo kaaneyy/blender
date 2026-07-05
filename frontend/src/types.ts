@@ -152,6 +152,8 @@ export interface Primitive {
   materialSlot: string;
   /** negative space — not rendered in the preview, subtracted in Blender */
   cut?: boolean;
+  /** generator metadata (e.g. the joint record on a hardware anchor prim) */
+  meta?: Record<string, unknown>;
   params: {
     radius?: number;
     depth?: number;

@@ -216,10 +216,25 @@ def _is_vertical_structural(p: Primitive) -> bool:
     return False
 
 
-#: C6: fastener sizing scales with the connection's tributary load tier —
-#: derived from the larger joined member's bounding volume (heuristic
-#: fabrication convention, not FEA).
+#: C6: fastener sizing scales with the connection's tributary load tier.
 LOAD_FACTOR = {"light": 0.75, "standard": 1.0, "heavy": 1.35}
+
+#: Metric fastener catalog: name -> shaft radius (m). Computed sizes snap to
+#: the nearest entry so exports cite real hardware. The human-facing table
+#: (grades, torque, clearance holes) lives in standards/us_codes.json under
+#: `_connections.bolt_catalog`; a test asserts the two stay in sync.
+BOLT_CATALOG = (
+    ("M6", 0.003), ("M8", 0.004), ("M10", 0.005), ("M12", 0.006),
+    ("M16", 0.008), ("M20", 0.010), ("M24", 0.012),
+)
+
+#: rough densities (t/m³) for the moment proxy, keyed by material family
+DENSITY = {"metal": 7.9, "concrete": 2.4, "wood": 0.6, "other": 1.0}
+
+
+def _snap_bolt(r: float) -> Tuple[str, float]:
+    """Nearest catalog fastener for a computed shaft radius."""
+    return min(BOLT_CATALOG, key=lambda entry: abs(entry[1] - r))
 
 
 def _volume(p: Primitive) -> float:
@@ -227,11 +242,34 @@ def _volume(p: Primitive) -> float:
     return 8.0 * h[0] * h[1] * h[2]
 
 
-def _load_class(pa: Primitive, pb: Primitive) -> str:
-    v = max(_volume(pa), _volume(pb))
-    if v > 0.15:
+def _density(slot: str, spec) -> float:
+    preset = _preset_name(slot, spec)
+    if preset is None or preset in METAL_PRESETS:
+        return DENSITY["metal"]
+    if preset == "concrete":
+        return DENSITY["concrete"]
+    if preset in WOOD_PRESETS:
+        return DENSITY["wood"]
+    return DENSITY["other"]
+
+
+def _moment(pa: Primitive, pb: Primitive, center: Sequence[float], spec) -> float:
+    """Tributary-moment proxy for the joint: each member's bounding mass
+    times its horizontal lever arm about the joint; the larger governs. A
+    cantilevered arm outranks an equal-volume compact mass (heuristic
+    fabrication convention, not FEA)."""
+    best = 0.0
+    for p in (pa, pb):
+        c, _ = _aabb(p)
+        lever = max(0.05, math.hypot(c[0] - center[0], c[1] - center[1]))
+        best = max(best, _volume(p) * _density(p.material_slot, spec) * lever)
+    return best
+
+
+def _load_class_from_moment(moment: float) -> str:
+    if moment > 0.12:
         return "heavy"
-    if v < 0.01:
+    if moment < 0.004:
         return "light"
     return "standard"
 
@@ -443,8 +481,12 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             if min(d1, d2) < MIN_FACE:
                 continue  # face too thin to drill — not a real joint
 
+            # structural (high-moment) inferred joints outrank light ones so
+            # the MAX_JOINTS budget never drops a mast arm for a trim strip
+            moment = _moment(pa, pb, center, spec)
+            rank = 1 if decl else (2 if moment >= 0.01 else 3)
             candidates.append({
-                "kind": "pair", "rank": 1 if decl else 2, "key": key,
+                "kind": "pair", "rank": rank, "key": key, "moment": moment,
                 "pa": pa, "pb": pb, "ca": ca, "ha": ha, "cb": cb, "hb": hb,
                 "lo": lo, "hi": hi, "center": center,
                 "axis": axis, "perp": perp, "d1": d1, "d2": d2, "decl": decl,
@@ -492,7 +534,7 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             "kind": "anchor", "rank": 0,
             "key": (round(c[0] / GRID), round(c[1] / GRID), 0),
             "center_xy": (c[0], c[1]), "member_r": member_r, "shape": shape,
-            "slot": p.material_slot,
+            "slot": p.material_slot, "component": p.component,
             "load": load or ("heavy" if _volume(p) > 0.15 else "standard"),
         })
 
@@ -511,14 +553,45 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
     return out
 
 
+#: heuristic anchor-rod torque per tier (see us_codes.json _connections)
+ANCHOR_TORQUE = {"light": 100, "standard": 220, "heavy": 400}
+
+
+def _with_joint_meta(emitted: List[Primitive], record: dict) -> List[Primitive]:
+    """Attach the joint record to the first emitted prim so the schedule can
+    enumerate exactly what was generated."""
+    from dataclasses import replace
+
+    if not emitted:
+        return emitted
+    return [replace(emitted[0], meta={"joint": record})] + emitted[1:]
+
+
+def _catalog_row(name: str) -> dict:
+    return {"grade": "8.8 / A325", "code_ref": "AISC J3 / RCSC Table 8.1",
+            "torque_nm": {"M6": 10, "M8": 25, "M10": 50, "M12": 85,
+                          "M16": 210, "M20": 425, "M24": 730}[name]}
+
+
 def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
-    """Emit one joint's hardware from a candidate record."""
+    """Emit one joint's hardware from a candidate record, snapping fastener
+    sizes to the catalog and stamping a joint record (type, members,
+    fastener, count, torque) onto the first prim for the joint schedule."""
     if cand["kind"] == "anchor":
-        return ground_connection(
-            cand["member_r"], mount="flange", load_class=cand["load"],
-            component="hardware", slot=cand["slot"],
-            center=cand["center_xy"], shape=cand["shape"],
-            name_prefix=f"joint{joint}_",
+        n_bolts = {"light": 4, "standard": 4, "heavy": 6}[cand["load"]]
+        dia_mm = {"light": 16, "standard": 22, "heavy": 28}[cand["load"]]
+        return _with_joint_meta(
+            ground_connection(
+                cand["member_r"], mount="flange", load_class=cand["load"],
+                component="hardware", slot=cand["slot"],
+                center=cand["center_xy"], shape=cand["shape"],
+                name_prefix=f"joint{joint}_",
+            ),
+            {"id": joint, "type": "anchor_base",
+             "a": cand["component"], "b": "ground",
+             "fastener": f"{dia_mm}mm anchor bolt", "count": n_bolts,
+             "grade": "F1554 Gr.55", "torque_nm": ANCHOR_TORQUE[cand["load"]],
+             "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17"},
         )
 
     pa, pb = cand["pa"], cand["pb"]
@@ -557,6 +630,12 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
     if ctype == "anchor_base":  # pair-declared anchor_base has no grade side
         ctype = "through_bolt"
 
+    def record(fastener: str, count: int, grade: str = "", torque=None,
+               code_ref: str = "") -> dict:
+        return {"id": joint, "type": ctype, "a": pa.component, "b": pb.component,
+                "fastener": fastener, "count": count, "grade": grade,
+                "torque_nm": torque, "code_ref": code_ref}
+
     # ------------------------------------------------ emit
     if ctype == "weld":
         round_m = upright or (pa if pa.kind in ROUND_KINDS else pb if pb.kind in ROUND_KINDS else None)
@@ -567,11 +646,14 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
             if round_m.kind in ("cylinder", "cone", "tube") and _is_upright_round(round_m)
             else _round_radius(round_m)
         )
-        return [weld_fillet(
-            r, max(0.008, r * 0.2), center[2], "hardware", "hardware",
-            name=f"joint{joint}_weld",
-            center=(round_m.location[0], round_m.location[1]),
-        )]
+        return _with_joint_meta(
+            [weld_fillet(
+                r, max(0.008, r * 0.2), center[2], "hardware", "hardware",
+                name=f"joint{joint}_weld",
+                center=(round_m.location[0], round_m.location[1]),
+            )],
+            record("fillet weld", 1, grade="E70XX", code_ref="AWS D1.1 (heuristic)"),
+        )
 
     if ctype == "band_clamp":
         arm_r = _round_radius(other) if other.kind in ROUND_KINDS else min(d1, d2) / 2
@@ -579,10 +661,17 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
         # pole's flanks, clear of the arm), not the overlap box's thin axis
         direction = _member_direction(other)
         axis_h = 0 if abs(direction[0]) >= abs(direction[1]) else 1
-        return split_band_clamp(
-            joint, _radius_at_z(upright, center[2]),
-            (upright.location[0], upright.location[1]), center[2],
-            axis_h, arm_r,
+        ear_name, _ = _snap_bolt(min(max(0.4 * arm_r, 0.004), 0.008))
+        row = _catalog_row(ear_name)
+        return _with_joint_meta(
+            split_band_clamp(
+                joint, _radius_at_z(upright, center[2]),
+                (upright.location[0], upright.location[1]), center[2],
+                axis_h, arm_r,
+            ),
+            record(f"{ear_name} ear bolt (split band clamp)", 2,
+                   grade=row["grade"], torque=row["torque_nm"],
+                   code_ref=row["code_ref"]),
         )
 
     if ctype == "slip_fit":
@@ -592,18 +681,30 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
             _radius_at_z(outer, center[2]) if _is_upright_round(outer)
             else _round_radius(outer)
         )
-        return slip_fitter(joint, outer_r, (outer.location[0], outer.location[1]),
-                           center[2])
+        return _with_joint_meta(
+            slip_fitter(joint, outer_r, (outer.location[0], outer.location[1]),
+                        center[2]),
+            record("M8 set screw (slip fitter)", 3, grade="45H",
+                   torque=15, code_ref="pole-fitter convention (heuristic)"),
+        )
 
     if ctype == "flange_splice":
         member_r = min(d1, d2) / 2
-        return flange_splice(joint, center, axis, member_r,
-                             n_bolts=(decl or {}).get("count") or 6)
+        n_bolts = (decl or {}).get("count") or 6
+        splice_name, _ = _snap_bolt(min(max(0.35 * member_r, 0.005), 0.012))
+        row = _catalog_row(splice_name)
+        return _with_joint_meta(
+            flange_splice(joint, center, axis, member_r, n_bolts=n_bolts),
+            record(f"{splice_name} flange bolt", n_bolts, grade=row["grade"],
+                   torque=row["torque_nm"], code_ref=row["code_ref"]),
+        )
 
-    # bolted family: through / carriage / lag
-    load = (decl or {}).get("load") or _load_class(pa, pb)
+    # bolted family: through / carriage / lag — snapped to the catalog
+    load = (decl or {}).get("load") or _load_class_from_moment(cand.get("moment", 0.0))
     factor = LOAD_FACTOR.get(load, 1.0)
-    shaft_r = min(max(0.22 * min(d1, d2) * factor, 0.004), 0.014)
+    bolt_name, shaft_r = _snap_bolt(
+        min(max(0.22 * min(d1, d2) * factor, 0.004), 0.012)
+    )
     above = max(ca[axis] + ha[axis], cb[axis] + hb[axis]) - hi[axis]
     below = lo[axis] - min(ca[axis] - ha[axis], cb[axis] - hb[axis])
     span_hi = hi[axis] + min(above, EMBED)
@@ -629,4 +730,11 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
         else:
             out.extend(through_bolt_assembly(joint, idx, c, axis, shaft_r,
                                              span_lo, span_hi))
-    return out
+    row = _catalog_row(bolt_name)
+    label = {"carriage_bolt": "carriage bolt", "lag_screw": "lag screw"}.get(
+        ctype, "through bolt")
+    return _with_joint_meta(
+        out,
+        record(f"{bolt_name} {label}", len(pattern), grade=row["grade"],
+               torque=row["torque_nm"], code_ref=row["code_ref"]),
+    )

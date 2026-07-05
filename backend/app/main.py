@@ -155,9 +155,11 @@ def focus(body: FocusRequest) -> dict:
 
 @router.post("/install-guide")
 def install_guide(body: InstallGuideRequest) -> dict:
-    """AI-written installation instructions grounded in the current spec."""
+    """AI-written installation instructions grounded in the current spec and
+    the generated joint schedule (also returned for BOM use)."""
     try:
-        return {"guide": spec_ai.generate_install_guide(body.spec)}
+        guide, schedule = spec_ai.generate_install_guide(body.spec)
+        return {"guide": guide, "joint_schedule": schedule}
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
