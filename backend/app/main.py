@@ -86,7 +86,9 @@ def asset_spec_schema() -> dict:
 
 @router.post("/validate-spec")
 def validate(spec: dict) -> dict:
-    """Validate (and in strict mode clamp) an AssetSpec against US codes."""
+    """Validate (and in strict mode clamp) an AssetSpec against US codes,
+    plus the buildability contact-graph check (floating parts, below-grade
+    geometry, declared connections with no real contact)."""
     try:
         import jsonschema
 
@@ -96,7 +98,17 @@ def validate(spec: dict) -> dict:
     except jsonschema.ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid AssetSpec: {exc.message}")
 
-    return validate_spec(spec).to_dict()
+    result = validate_spec(spec).to_dict()
+    try:  # buildability findings are best-effort: an unbuildable spec just skips them
+        from blender.builders.base import compute_primitives
+        from blender.builders.connectivity import check_buildability
+
+        result["violations"] = result["violations"] + check_buildability(
+            compute_primitives(result["spec"]), result["spec"]
+        )
+    except Exception:
+        pass
+    return result
 
 
 @router.post("/generate-spec")

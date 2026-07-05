@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AssetSpec } from "../types";
 import type { CodeViolation } from "../standards";
 import {
+  buildabilityFindings,
   focusSpecStream,
   generateSpecStream,
   installGuideStream,
@@ -215,10 +216,19 @@ export default function PromptPanel({
     });
 
   /** One-click "quick fix" presets: canned refine instructions run through
-   * the existing refine stream (reuse the "refine" busy tag). */
+   * the existing refine stream (reuse the "refine" busy tag). The
+   * connections audit also fetches the server's machine findings (floating
+   * parts, dead declarations) so the AI fixes measured problems, not vibes. */
   const runPreset = (preset: { label: string; message: string }) =>
     run("refine", async () => {
-      const newSpec = await refineSpecStream(spec, preset.message, setStreamText, model);
+      let message = preset.message;
+      if (preset.label.includes("connections")) {
+        const findings = await buildabilityFindings(spec);
+        if (findings.length) {
+          message += `\nMachine findings to fix first:\n- ${findings.join("\n- ")}`;
+        }
+      }
+      const newSpec = await refineSpecStream(spec, message, setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [

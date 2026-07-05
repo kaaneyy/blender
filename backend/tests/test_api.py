@@ -90,6 +90,46 @@ class TestPostprocess:
         with pytest.raises(SpecGenerationError, match="Schema violation"):
             _postprocess(json.dumps(spec), "strict")
 
+    def _floating_spec(self):
+        return {
+            "asset_type": "sculpture", "name": "F", "units": "metric",
+            "parameters": [],
+            "primitives": [
+                {"kind": "box", "name": "base", "component": "base",
+                 "location": [0, 0, 0.1], "params": {"size": [0.5, 0.5, 0.2]}},
+                {"kind": "sphere", "name": "orb", "component": "orb",
+                 "location": [0, 0, 1.5], "params": {"radius": 0.2}},
+            ],
+        }
+
+    def test_floating_part_fails_buildability(self):
+        """T2.6 fuel: a floating part raises with the machine finding so the
+        retry prompt carries 'component X floats ... Nmm away'."""
+        with pytest.raises(SpecGenerationError, match="floats.*mm away"):
+            _postprocess(json.dumps(self._floating_spec()), "strict")
+
+    def test_lenient_retry_accepts_floating_with_warnings(self):
+        out = _postprocess(json.dumps(self._floating_spec()), "strict",
+                           lenient_buildability=True)
+        assert out["ok"] is False
+        findings = [v for v in out["violations"]
+                    if v.get("parameter_id") == "__buildability__"]
+        assert findings and findings[0]["severity"] == "error"
+
+
+def test_validate_spec_reports_buildability():
+    spec = json.loads((REPO_ROOT / "examples" / "park_bench.json").read_text())
+    spec["primitives"].append({
+        "kind": "sphere", "name": "orb", "component": "orb",
+        "material_slot": "frame", "location": [0, 0, 3.0],
+        "params": {"radius": 0.2},
+    })
+    r = client.post("/api/validate-spec", json=spec)
+    assert r.status_code == 200
+    findings = [v for v in r.json()["violations"]
+                if v.get("parameter_id") == "__buildability__"]
+    assert findings and "floats" in findings[0]["message"]
+
     def test_rejects_unbuildable_geometry(self):
         spec = self._spec()
         spec["asset_type"] = "mystery_prop"  # no builder, no primitives

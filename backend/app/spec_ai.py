@@ -27,6 +27,10 @@ from standards.validator import (  # noqa: E402
     validate_standards_db,
 )
 from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: E402
+from blender.builders.connectivity import (  # noqa: E402
+    buildability_errors,
+    check_buildability,
+)
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
 from .llm import LLMError, complete, complete_stream, strip_reasoning  # noqa: E402
@@ -213,8 +217,13 @@ def _strip_fences(raw: str) -> str:
     return text
 
 
-def _postprocess(raw: str, code_mode: str) -> dict:
-    """Parse, schema-validate (T7.4), geometry-check, and code-clamp (T2.3)."""
+def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
+    """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3), and
+    buildability-check (contact graph: floating parts, below-grade geometry,
+    dead declarations). Floating parts raise — the deterministic findings
+    feed the retry — unless ``lenient_buildability`` (the retry itself), in
+    which case they're accepted and surfaced as violations instead, so a
+    stubborn generation never bricks."""
     try:
         spec = json.loads(_strip_fences(raw))
     except json.JSONDecodeError as exc:
@@ -235,11 +244,24 @@ def _postprocess(raw: str, code_mode: str) -> dict:
     result = validate_spec(spec)
 
     try:  # prove the spec actually builds (catches bad expressions/params)
-        compute_primitives(result.spec)
+        prims = compute_primitives(result.spec)
     except Exception as exc:
         raise SpecGenerationError(f"Spec does not build: {exc}") from None
 
-    return result.to_dict()
+    findings = check_buildability(prims, result.spec)
+    errors = buildability_errors(findings)
+    if errors and not lenient_buildability:
+        raise SpecGenerationError(
+            "Buildability check failed: "
+            + " ".join(f["message"] for f in errors[:4])
+        )
+
+    out = result.to_dict()
+    if findings:
+        out["violations"] = out["violations"] + findings
+        if errors:
+            out["ok"] = False
+    return out
 
 
 def _run(system: str, user: str, code_mode: str, model: str | None = None) -> dict:
@@ -247,14 +269,16 @@ def _run(system: str, user: str, code_mode: str, model: str | None = None) -> di
     try:
         return _postprocess(raw, code_mode)
     except SpecGenerationError as first_error:
-        # T2.6: one retry with the error appended
+        # T2.6: one retry with the error appended. The retry is lenient about
+        # buildability: a still-floating spec ships with warning violations
+        # instead of failing the whole generation.
         retry_user = (
             f"{user}\n\nYour previous answer failed validation with this error:\n"
             f"{first_error}\n\nPrevious answer:\n{raw[:4000]}\n\n"
             f"Return the corrected AssetSpec JSON only."
         )
         raw = complete(system, retry_user, model=model)
-        return _postprocess(raw, code_mode)
+        return _postprocess(raw, code_mode, lenient_buildability=True)
 
 
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None) -> dict:
@@ -430,6 +454,9 @@ def propose_standards_update() -> dict:
 # ---------------------------------------------------------------------------
 
 def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
+    """``finalize(raw, lenient=False)`` turns the streamed text into the
+    result payload; the retry pass calls it leniently so a spec that still
+    fails only the buildability check ships with warnings instead of dying."""
     payload = None
     try:
         parts = []
@@ -452,7 +479,7 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
                     parts.append(chunk)
                     yield chunk
                 try:
-                    payload = {"ok": True, "result": finalize("".join(parts))}
+                    payload = {"ok": True, "result": finalize("".join(parts), True)}
                 except SpecGenerationError as err2:
                     payload = {"ok": False, "error": str(err2)}
     except LLMError as exc:
@@ -478,8 +505,8 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
         brief = "".join(parts).strip() or prompt
         yield "\n\n[designing the asset from the brief]\n\n"
 
-        def finalize(raw: str) -> dict:
-            result = _postprocess(raw, code_mode)
+        def finalize(raw: str, lenient: bool = False) -> dict:
+            result = _postprocess(raw, code_mode, lenient_buildability=lenient)
             result["brief"] = brief
             return result
 
@@ -498,7 +525,8 @@ def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict",
         f"(keep everything else identical, including ids):\n{message}"
     )
     return _stream_pipeline(
-        _system_prompt(code_mode), user, lambda raw: _postprocess(raw, code_mode),
+        _system_prompt(code_mode), user,
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
         model=model,
     )
 
@@ -507,14 +535,17 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
                       model: str | None = None):
     return _stream_pipeline(
         _system_prompt(code_mode), _focus_user(spec, area),
-        lambda raw: _postprocess(raw, code_mode), model=model,
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        model=model,
     )
 
 
 def stream_install_guide(spec: dict):
     system, user = _install_guide_prompts(spec)
     return _stream_pipeline(
-        system, user, lambda raw: {"guide": strip_reasoning(raw).strip()}, retry=False,
+        system, user,
+        lambda raw, lenient=False: {"guide": strip_reasoning(raw).strip()},
+        retry=False,
     )
 
 
@@ -522,7 +553,7 @@ def stream_update_standards(commit_fn):
     """``commit_fn(proposal_dict) -> dict`` merges commit status into the result."""
     system, user = _standards_prompts()
 
-    def finalize(raw: str) -> dict:
+    def finalize(raw: str, lenient: bool = False) -> dict:
         result = _standards_finalize(raw)
         result.update(commit_fn(result["proposal"]))
         return result
