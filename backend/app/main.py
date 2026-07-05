@@ -64,6 +64,15 @@ class FocusRequest(BaseModel):
     model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
+class WizardStepRequest(BaseModel):
+    spec: dict
+    step: str = Field(pattern="^(connections|materials|details)$")
+    #: optional user steer for the step; empty runs the default pass
+    message: str = Field(default="", max_length=2000)
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+
+
 class InstallGuideRequest(BaseModel):
     spec: dict
 
@@ -153,6 +162,23 @@ def focus(body: FocusRequest) -> dict:
         )
 
 
+@router.post("/wizard-step")
+def wizard_step(body: WizardStepRequest) -> dict:
+    """One guided-build step (connections | materials | details): a scoped
+    refinement, optionally steered by the user's message."""
+    try:
+        return spec_ai.wizard_step(
+            body.spec, body.step, body.message, body.code_mode, model=body.model
+        )
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
 @router.post("/install-guide")
 def install_guide(body: InstallGuideRequest) -> dict:
     """AI-written installation instructions grounded in the current spec and
@@ -211,6 +237,15 @@ def refine_stream(body: RefineRequest) -> StreamingResponse:
 def focus_stream(body: FocusRequest) -> StreamingResponse:
     return _stream(
         spec_ai.stream_focus_spec(body.spec, body.area, body.code_mode, model=body.model)
+    )
+
+
+@router.post("/wizard-step-stream")
+def wizard_step_stream(body: WizardStepRequest) -> StreamingResponse:
+    return _stream(
+        spec_ai.stream_wizard_step(
+            body.spec, body.step, body.message, body.code_mode, model=body.model
+        )
     )
 
 

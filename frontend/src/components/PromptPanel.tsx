@@ -12,9 +12,11 @@ import {
   installGuideStream,
   refineSpecStream,
   updateStandardsStream,
+  wizardStepStream,
   MODEL_OPTIONS,
   type DeepseekModel,
   type StandardsUpdateResult,
+  type WizardStep,
 } from "../api";
 import Modal from "./Modal";
 
@@ -23,7 +25,7 @@ interface ChatEntry {
   text: string;
 }
 
-type Busy = false | "generate" | "refine" | "focus" | "guide" | "standards";
+type Busy = false | "generate" | "refine" | "focus" | "guide" | "standards" | "wizard";
 
 const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
   generate: "Generating your asset…",
@@ -31,9 +33,58 @@ const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
   focus: "Detailing that area…",
   guide: "Writing the installation guide…",
   standards: "Researching standards…",
+  wizard: "Working on this step…",
 };
 
 const MODEL_KEY = "af-model";
+
+/** The guided 4-step build. Step 1 (Form) is the initial generate; steps
+ * 2-4 are scoped AI passes (backend keys connections | materials | details).
+ * Nothing auto-advances — each step waits for the user to refine or accept. */
+const WIZARD_STEPS = [
+  {
+    key: "form",
+    n: 1,
+    icon: "📐",
+    title: "Form",
+    short: "Form",
+    blurb: "The raw shape, size, and proportions of what you asked for.",
+    placeholder: 'change the form — "make it 14 ft", "add a second arm", "art-deco style"',
+    accept: "Form's right — build the connections →",
+  },
+  {
+    key: "connections",
+    n: 2,
+    icon: "🔩",
+    title: "Connections",
+    short: "Joints",
+    blurb:
+      "How every part joins and carries load to the ground — bolts, welds, clamps, anchors, or nothing where a connection isn't needed.",
+    placeholder: 'adjust joints — "weld the arm instead of clamping", "no anchor bolts"',
+    accept: "Connections good — choose materials →",
+  },
+  {
+    key: "materials",
+    n: 3,
+    icon: "🎨",
+    title: "Materials",
+    short: "Materials",
+    blurb: "The material, finish, and weathering of each part.",
+    placeholder: 'change finish — "weathered bronze pole", "brand-new powder coat"',
+    accept: "Materials good — detail the working parts →",
+  },
+  {
+    key: "details",
+    n: 4,
+    icon: "💡",
+    title: "Working parts",
+    short: "Details",
+    blurb:
+      "Lights, lenses, and adjustable features (banner brackets, extra arms) worked out in detail.",
+    placeholder: 'tune the parts — "warmer, brighter lens", "add a dimming toggle"',
+    accept: "Done — finish ✓",
+  },
+] as const;
 
 /** One-click quick-fix presets. Each `message` is a canned refine
  * instruction (kept well under the 2000-char API cap). */
@@ -142,6 +193,8 @@ export default function PromptPanel({
   const [model, setModel] = useState<DeepseekModel>(
     () => (localStorage.getItem(MODEL_KEY) as DeepseekModel) || "deepseek-chat",
   );
+  const [wizardStep, setWizardStep] = useState<number | null>(null); // null = not in guided build
+  const [wizardMsg, setWizardMsg] = useState("");
   const guideCache = useRef<{ key: string; text: string } | null>(null);
   const violationCount = Object.keys(violations).length;
 
@@ -182,6 +235,87 @@ export default function PromptPanel({
       });
       setChat(entries);
       setPrompt("");
+    });
+
+  /** Start the guided 4-step build: generate the raw form, then enter the
+   * wizard at step 1. Steps never auto-chain from here. */
+  const runGuidedStart = () =>
+    run("wizard", async () => {
+      const text = prompt.trim();
+      if (!text) return;
+      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText, model);
+      const problem = onSpec(newSpec);
+      if (problem) throw new Error(problem);
+      const entries: ChatEntry[] = [{ role: "you", text }];
+      if (brief && brief.toLowerCase() !== text.toLowerCase()) {
+        const shown = brief.length > 220 ? `${brief.slice(0, 220)}…` : brief;
+        entries.push({ role: "assetforge", text: `Interpreted as: ${shown}` });
+      }
+      entries.push({
+        role: "assetforge",
+        text: `Step 1 — built the form of "${newSpec.name}". Review it, then refine or accept.`,
+      });
+      setChat(entries);
+      setPrompt("");
+      setWizardMsg("");
+      setWizardStep(0);
+    });
+
+  /** Apply a user change to the CURRENT step (stays on the same step). Form
+   * is a plain refine; later steps re-run their scoped pass with the note. */
+  const applyWizardChange = () =>
+    run("wizard", async () => {
+      if (wizardStep === null) return;
+      const msg = wizardMsg.trim();
+      if (!msg) return;
+      const step = WIZARD_STEPS[wizardStep];
+      const newSpec =
+        step.key === "form"
+          ? await refineSpecStream(spec, msg, setStreamText, model)
+          : await wizardStepStream(spec, step.key as WizardStep, msg, setStreamText, model);
+      const problem = onSpec(newSpec);
+      if (problem) throw new Error(problem);
+      setChat((c) => [
+        ...c,
+        { role: "you", text: `✎ ${step.title}: ${msg}` },
+        { role: "assetforge", text: `Updated the ${step.title.toLowerCase()}.` },
+      ]);
+      setWizardMsg("");
+    });
+
+  /** Accept the current step and move on: run the NEXT step's pass, or finish
+   * on the last step. This is the only place a step advances. */
+  const acceptWizardStep = () =>
+    run("wizard", async () => {
+      if (wizardStep === null) return;
+      if (wizardStep >= WIZARD_STEPS.length - 1) {
+        setChat((c) => [
+          ...c,
+          { role: "assetforge", text: "Guided build complete — keep tweaking with the tools below." },
+        ]);
+        setWizardStep(null);
+        setWizardMsg("");
+        return;
+      }
+      const next = WIZARD_STEPS[wizardStep + 1];
+      const newSpec = await wizardStepStream(
+        spec,
+        next.key as WizardStep,
+        "",
+        setStreamText,
+        model,
+      );
+      const problem = onSpec(newSpec);
+      if (problem) throw new Error(problem);
+      setChat((c) => [
+        ...c,
+        {
+          role: "assetforge",
+          text: `Step ${next.n} — worked on the ${next.title.toLowerCase()}. Review, then refine or accept.`,
+        },
+      ]);
+      setWizardMsg("");
+      setWizardStep(wizardStep + 1);
     });
 
   const runRefine = () =>
@@ -298,36 +432,115 @@ export default function PromptPanel({
         rows={4}
         disabled={busy !== false}
       />
-      <button onClick={runGenerate} disabled={busy !== false || !prompt.trim()}>
-        {busy === "generate" ? "Generating…" : "Generate"}
-      </button>
-
-      <div className="quick-fixes">
-        <span className="quick-fixes__label">Quick fixes (AI, on the current asset)</span>
-        <div className="quick-fixes__row">
-          {QUICK_FIXES.map((qf) => (
-            <button
-              key={qf.label}
-              className="quick-fix-btn"
-              title={qf.title}
-              onClick={() => runPreset(qf)}
-              disabled={busy !== false}
-            >
-              {qf.label}
-            </button>
-          ))}
-        </div>
+      <div className="gen-row">
+        <button
+          onClick={runGuidedStart}
+          disabled={busy !== false || !prompt.trim()}
+          title="Build in 4 reviewable steps: form → connections → materials → working parts"
+        >
+          {busy === "wizard" && wizardStep === null ? "Building…" : "🪄 Build step by step"}
+        </button>
+        <button
+          className="secondary"
+          onClick={runGenerate}
+          disabled={busy !== false || !prompt.trim()}
+          title="Generate the whole asset in one pass"
+        >
+          {busy === "generate" ? "Generating…" : "Generate all at once"}
+        </button>
       </div>
 
-      {chat.length > 0 && (
-        <>
-          <div className="chat">
-            {chat.map((entry, i) => (
-              <p key={i} className={`chat__msg chat__msg--${entry.role}`}>
-                <strong>{entry.role === "you" ? "You" : "AssetForge"}:</strong> {entry.text}
-              </p>
+      {wizardStep !== null && (
+        <div className="wizard">
+          <div className="wizard__steps">
+            {WIZARD_STEPS.map((s, i) => (
+              <div
+                key={s.key}
+                className={`wizard__pill${
+                  i === wizardStep ? " is-current" : i < wizardStep ? " is-done" : ""
+                }`}
+                title={s.blurb}
+              >
+                <span className="wizard__pill-n">{i < wizardStep ? "✓" : s.n}</span>
+                {s.short}
+              </div>
             ))}
           </div>
+          <div className="wizard__body">
+            <h4 className="wizard__title">
+              {WIZARD_STEPS[wizardStep].icon} Step {WIZARD_STEPS[wizardStep].n} of 4 —{" "}
+              {WIZARD_STEPS[wizardStep].title}
+            </h4>
+            <p className="wizard__blurb">{WIZARD_STEPS[wizardStep].blurb}</p>
+            <textarea
+              value={wizardMsg}
+              onChange={(e) => setWizardMsg(e.target.value)}
+              placeholder={WIZARD_STEPS[wizardStep].placeholder}
+              rows={2}
+              disabled={busy !== false}
+            />
+            <div className="wizard__actions">
+              <button
+                className="secondary"
+                onClick={applyWizardChange}
+                disabled={busy !== false || !wizardMsg.trim()}
+                title="Apply this change and stay on this step"
+              >
+                {busy === "wizard" ? "…" : "Apply change"}
+              </button>
+              <button
+                onClick={acceptWizardStep}
+                disabled={busy !== false}
+                title="Accept this step as-is and move on"
+              >
+                {busy === "wizard" ? "Working…" : WIZARD_STEPS[wizardStep].accept}
+              </button>
+            </div>
+            <button
+              className="wizard__exit"
+              onClick={() => {
+                setWizardStep(null);
+                setWizardMsg("");
+              }}
+              disabled={busy !== false}
+            >
+              Exit guided build (keep what's here)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {wizardStep === null && (
+        <div className="quick-fixes">
+          <span className="quick-fixes__label">Quick fixes (AI, on the current asset)</span>
+          <div className="quick-fixes__row">
+            {QUICK_FIXES.map((qf) => (
+              <button
+                key={qf.label}
+                className="quick-fix-btn"
+                title={qf.title}
+                onClick={() => runPreset(qf)}
+                disabled={busy !== false}
+              >
+                {qf.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {chat.length > 0 && (
+        <div className="chat">
+          {chat.map((entry, i) => (
+            <p key={i} className={`chat__msg chat__msg--${entry.role}`}>
+              <strong>{entry.role === "you" ? "You" : "AssetForge"}:</strong> {entry.text}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {chat.length > 0 && wizardStep === null && (
+        <>
           <div className="refine-row">
             <input
               type="text"

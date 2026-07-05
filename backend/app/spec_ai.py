@@ -330,6 +330,96 @@ def focus_spec(spec: dict, area: str, code_mode: str = "strict",
 
 
 # ---------------------------------------------------------------------------
+# Guided 4-step build (Form → Connections → Materials → Working parts)
+#
+# Step 1 (Form) is the ordinary generate. Steps 2-4 are scoped refinement
+# passes, each concerned with exactly ONE aspect and told to leave the others
+# alone, so the user can review — and change via prompt or accept — one
+# concern at a time. The passes never auto-chain; the UI runs the next one
+# only when the user accepts the current step.
+# ---------------------------------------------------------------------------
+
+WIZARD_STEP_KEYS = ("connections", "materials", "details")
+
+_WIZARD_DIRECTIVES = {
+    "connections": (
+        "STEP — CONNECTIONS. Work through this asset joint by joint, from the "
+        "ground up, and make every connection real and buildable. For each pair "
+        "of touching components, first decide whether a connection is even "
+        "needed, then choose the fabrication type a crew would actually use and "
+        "DECLARE it in the top-level \"connections\" array with the right type: "
+        "anchor_base (a structural vertical meeting grade, b:\"ground\"), "
+        "band_clamp (arm on a round pole), slip_fit (a telescoping post-top "
+        "fit), carriage_bolt (wood on a metal frame), through_bolt (general "
+        "bolted lap), flange_splice (collinear members end-to-end), weld "
+        "(shop-welded steel — no bolts shown), lag_screw, or none (concealed "
+        "joinery / cast-integral, no visible hardware). Ensure every part has a "
+        "real load path down to z=0: add connecting members (rails, stretchers, "
+        "brackets, gussets, collars, base plates) ONLY where a part would "
+        "otherwise float or have nothing to fasten to. Parts that join MUST "
+        "interpenetrate 10-20 mm. Do NOT restyle the asset, change its "
+        "materials, or add decorative detail — this pass is only about how it "
+        "holds together. Return the FULL updated AssetSpec JSON, keeping the "
+        "asset_type, geometry, materials, and all existing ids/values stable "
+        "except for the connecting members a real joint requires."
+    ),
+    "materials": (
+        "STEP — MATERIALS. Give every material slot the right preset and surface "
+        "properties for the part it covers and the asset's style. For each slot "
+        "set: the fitting preset, and where it helps color, metalness, roughness, "
+        "uv_scale, emission (2-6 for lit lenses), and finish (cast for cast-iron "
+        "bases/finials, machined for turned fittings, sheet for housings/panels, "
+        "rough for galvanized poles and concrete). Add weathering ONLY if the "
+        "request implies age or setting (an old park, movie dressing). Honor any "
+        "style/material words in the original request. Do NOT change geometry, "
+        "connections, toggles, or parameters — this pass is only about how the "
+        "asset is finished. Return the FULL updated AssetSpec JSON, keeping "
+        "every id, value, and part identical outside the materials."
+    ),
+    "details": (
+        "STEP — WORKING PARTS. Detail the functional and adjustable parts of "
+        "this asset, one by one and thoroughly. Identify every part that does a "
+        "job or moves/adjusts: lights and lenses (give lenses a lamp_lens "
+        "material with realistic emission and model the reflector/housing/gasket "
+        "if missing), and adjustable features (a street light's banner bracket "
+        "or second arm, a sign's changeable panel, a bollard's removable "
+        "sleeve). For EACH such part: model its detail geometry properly, and "
+        "expose what a user would tune — optional features as toggles gated by "
+        "visible_if, and dimensions/angles as sliders — reusing existing ids and "
+        "adding new ones only for genuinely new controls. Keep the overall form, "
+        "connections, and materials stable except where a newly detailed part "
+        "needs them. Return the FULL updated AssetSpec JSON."
+    ),
+}
+
+
+def _wizard_user(spec: dict, step: str, message: str) -> str:
+    directive = _WIZARD_DIRECTIVES[step]
+    note = ""
+    if message and message.strip():
+        note = (
+            "\n\nThe user reviewed this step and asks for this specific change "
+            "(honor it within this step's scope):\n" + message.strip()
+        )
+    return (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}"
+        f"\n\n{directive}{note}"
+    )
+
+
+def wizard_step(spec: dict, step: str, message: str = "",
+                code_mode: str = "strict", model: str | None = None) -> dict:
+    """One guided-build step: a scoped refinement of ``spec`` (connections /
+    materials / details), optionally steered by the user's ``message``."""
+    if step not in _WIZARD_DIRECTIVES:
+        raise SpecGenerationError(
+            f"Unknown build step {step!r} (expected one of {', '.join(WIZARD_STEP_KEYS)})"
+        )
+    return _run(_system_prompt(code_mode), _wizard_user(spec, step, message),
+                code_mode, model=model)
+
+
+# ---------------------------------------------------------------------------
 # Installation guide
 # ---------------------------------------------------------------------------
 
@@ -559,6 +649,24 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
                       model: str | None = None):
     return _stream_pipeline(
         _system_prompt(code_mode), _focus_user(spec, area),
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        model=model,
+    )
+
+
+def stream_wizard_step(spec: dict, step: str, message: str = "",
+                       code_mode: str = "strict", model: str | None = None):
+    """Streaming twin of :func:`wizard_step` — one guided-build pass."""
+    if step not in _WIZARD_DIRECTIVES:
+        def bad():
+            yield STREAM_SENTINEL + json.dumps({
+                "ok": False,
+                "error": f"Unknown build step {step!r} "
+                         f"(expected one of {', '.join(WIZARD_STEP_KEYS)})",
+            })
+        return bad()
+    return _stream_pipeline(
+        _system_prompt(code_mode), _wizard_user(spec, step, message),
         lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
         model=model,
     )

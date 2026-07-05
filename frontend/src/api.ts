@@ -202,6 +202,27 @@ export async function focusSpecStream(
   return result.spec as AssetSpec;
 }
 
+/** One guided-build step: a scoped refinement (connections | materials |
+ * details), optionally steered by a user message (empty runs the default
+ * pass). Returns the updated spec + any violations. */
+export type WizardStep = "connections" | "materials" | "details";
+
+export async function wizardStepStream(
+  spec: AssetSpec,
+  step: WizardStep,
+  message: string,
+  onChunk: (text: string) => void,
+  model: DeepseekModel | "" = "",
+): Promise<AssetSpec> {
+  const result = await streamPost(
+    "/wizard-step-stream",
+    { spec, step, message, code_mode: spec.code_mode ?? "strict", model },
+    onChunk,
+  );
+  if (!result?.spec) throw new Error("Backend returned no spec");
+  return result.spec as AssetSpec;
+}
+
 export async function installGuideStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,

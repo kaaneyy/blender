@@ -236,6 +236,45 @@ def test_install_guide_stream():
     assert "Assembly sequence" in payload["result"]["guide"]
 
 
+class TestWizardStep:
+    def _spec(self):
+        return json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
+
+    @pytest.mark.parametrize("step", ["connections", "materials", "details"])
+    def test_step_returns_valid_spec(self, step):
+        r = client.post("/api/wizard-step", json={"spec": self._spec(), "step": step})
+        assert r.status_code == 200
+        assert r.json()["spec"]["asset_type"] == "street_light"
+
+    def test_step_accepts_user_message(self):
+        r = client.post("/api/wizard-step", json={
+            "spec": self._spec(), "step": "materials",
+            "message": "weathered bronze pole",
+        })
+        assert r.status_code == 200
+
+    def test_rejects_unknown_step(self):
+        r = client.post("/api/wizard-step", json={"spec": self._spec(), "step": "vibes"})
+        assert r.status_code == 422  # pattern rejects it
+
+    def test_step_stream(self):
+        r = client.post("/api/wizard-step-stream",
+                        json={"spec": self._spec(), "step": "connections"})
+        payload = stream_payload(r)
+        assert payload["ok"] is True
+        assert payload["result"]["spec"]["asset_type"] == "street_light"
+
+    def test_directive_reaches_the_prompt(self):
+        """The scoped directive must actually steer the model call."""
+        from backend.app.spec_ai import _wizard_user, _WIZARD_DIRECTIVES
+
+        user = _wizard_user(self._spec(), "connections", "no anchor bolts")
+        assert _WIZARD_DIRECTIVES["connections"][:40] in user
+        assert "no anchor bolts" in user
+        # empty message adds no user-note section
+        assert "reviewed this step" not in _wizard_user(self._spec(), "materials", "")
+
+
 def test_update_standards_stream(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     r = client.post("/api/update-standards-stream")
