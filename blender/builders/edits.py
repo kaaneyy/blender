@@ -21,7 +21,7 @@ from dataclasses import replace
 from typing import Dict, List, Sequence, Tuple
 
 from .base import Primitive
-from .hardware import _aabb
+from .hardware import _aabb, _euler_xyz_matrix  # noqa: F401  (re-exported for tests)
 
 Vec3 = Tuple[float, float, float]
 _ZERO: Vec3 = (0.0, 0.0, 0.0)
@@ -46,19 +46,7 @@ def component_pivot(prims: Sequence[Primitive]) -> Vec3:
     return ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
 
 
-# ── rotation math (Three.js Euler-XYZ parity) ─────────────────────────────
-
-def _euler_xyz_matrix(rot: Sequence[float]) -> List[List[float]]:
-    x, y, z = rot
-    c1, s1 = math.cos(x), math.sin(x)
-    c2, s2 = math.cos(y), math.sin(y)
-    c3, s3 = math.cos(z), math.sin(z)
-    return [
-        [c2 * c3, -c2 * s3, s2],
-        [c1 * s3 + c3 * s1 * s2, c1 * c3 - s1 * s2 * s3, -c2 * s1],
-        [s1 * s3 - c1 * c3 * s2, c3 * s1 + c1 * s2 * s3, c1 * c2],
-    ]
-
+# ── rotation math (Three.js Euler-XYZ parity; matrix lives in hardware.py) ──
 
 def _mat_vec(m: List[List[float]], v: Sequence[float]) -> Vec3:
     return (

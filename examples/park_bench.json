@@ -22,6 +22,12 @@
     { "slot": "slats", "preset": "wood_slat", "uv_scale": 2.5 }
   ],
   "components": ["frame", "seat", "backrest", "armrests"],
+  "connections": [
+    { "a": "seat", "b": "frame", "type": "carriage_bolt" },
+    { "a": "backrest", "b": "frame", "type": "through_bolt" },
+    { "a": "armrests", "b": "seat", "type": "through_bolt" },
+    { "a": "frame", "b": "ground", "type": "none" }
+  ],
   "primitives": [
     { "kind": "box", "name": "leg_fl", "component": "frame", "material_slot": "frame",
       "location": ["bench_width/2 - 0.1", "-(seat_depth/2 - 0.05)", "seat_height/2"],

@@ -255,6 +255,25 @@
         "items": { "type": "number" }
       }
     },
+    "connections": {
+      "type": "array",
+      "description": "Declared joint intent — the fabrication connection between two components (or 'component/part' paths; b may be the reserved word 'ground'). The hardware generator honors the declared type at matching contacts; geometric inference remains the fallback for undeclared joints. Unmatched declarations degrade to warnings, never errors.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["a", "b", "type"],
+        "properties": {
+          "a": { "type": "string", "description": "Component name or 'component/part' path." },
+          "b": { "type": "string", "description": "Component name, 'component/part' path, or 'ground' for grade anchorage." },
+          "type": {
+            "enum": ["anchor_base", "through_bolt", "flange_splice", "band_clamp", "slip_fit", "weld", "carriage_bolt", "lag_screw", "none"],
+            "description": "anchor_base: base plate + anchor-bolt circle at grade (b='ground'). through_bolt: shaft + washers + hex head/nut. flange_splice: two mating discs + bolt circle (collinear members). band_clamp: split saddle band with ear bolts (arm on pole). slip_fit: collar + set screws (post-top telescoping fit). weld: fillet ring, no bolts (shop-welded). carriage_bolt: dome head on the timber face (wood on metal). lag_screw: hex head one side, embedded shank. none: concealed joinery / cast-integral — no visible hardware."
+          },
+          "load": { "enum": ["light", "standard", "heavy"], "description": "Optional load tier override for fastener sizing." },
+          "count": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Optional fastener count override." }
+        }
+      }
+    },
     "edits": {
       "type": "object",
       "additionalProperties": false,

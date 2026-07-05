@@ -27,6 +27,10 @@ from standards.validator import (  # noqa: E402
     validate_standards_db,
 )
 from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: E402
+from blender.builders.connectivity import (  # noqa: E402
+    buildability_errors,
+    check_buildability,
+)
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
 from .llm import LLMError, complete, complete_stream, strip_reasoning  # noqa: E402
@@ -59,6 +63,9 @@ class SpecGenerationError(RuntimeError):
 def _system_prompt(code_mode: str) -> str:
     standards = load_standards()
     standards.pop("_meta", None)
+    # fastener tables are for the hardware generator, not the LLM — don't
+    # spend prompt tokens on them
+    standards.pop("_connections", None)
     return f"""You convert user requests into AssetSpec JSON for a parametric 3D asset generator (street furniture, lighting, signage, props of any kind).
 
 OUTPUT RULES
@@ -85,14 +92,25 @@ TILT, SLOPE, CURVE (the model is not limited to upright boxes)
 FORM, PROPORTION & ARCHETYPES (make it read as the real fixture, not a box)
 - Map the request to a known archetype and use its characteristic forms: cobra-head street light (tapered swept mast arm + lofted teardrop head); acorn/teardrop post-top lamp (lathe globe on a fluted post with a finial); shoebox area light (thin lofted housing); bishop's-crook lamp (curved swept arm); bollard (tube with a lathe dome cap); planter/urn (lathe vase profile); bench (slats on rails on legs). Prefer lathe/sweep/loft for anything round, curved, or decorative.
 - Give members REAL structural proportions, not equal sticks: express relationships as ratios in expressions — a pole base diameter ≈ 1.8× its top (taper), a cantilevered arm tapering to ~60% at the tip (sweep radius_end ≈ 0.6× radius), a post-top globe ≈ 1.2–1.6× the post diameter. Slender vertical members read as engineered; chunky uniform ones read as toy.
-- For each component, pick the connection type to its neighbor (welded / bolted-flange / slip-fit / cast-integral) and model its visible detail accordingly (weld collar, flange + bolt ring, telescoping sleeve). This drives the joint hardware.
+- For each component, pick the connection type to its neighbor and RECORD it in the top-level "connections" array (see CONNECTION RULES) — that declaration drives the joint hardware the app generates. Model larger visible details (telescoping sleeves, brackets) as primitives where a real one would be seen.
 
 CONNECTION RULES (think like a fabricator — every joint must be buildable in real life)
 - Every part must be physically supported through a real load path down to the ground. Before finishing, walk through your primitives joint by joint and ask: what holds this part, and how would a crew actually fasten it on site?
-- Parts that join MUST interpenetrate by 10-20 mm at the joint (e.g. a leg whose top is inside the rail it supports, a rail whose top is inside the slats it carries). Never leave parts floating or merely touching at a zero-thickness face — the app detects real overlaps to place bolts, washers, and nuts exactly there.
-- Choose the realistic connection for each joint and model its visible parts as their own primitives/components where a real one would be seen: base plates + anchor-bolt pads where a vertical member meets the ground; cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets, gussets, or collars where members meet at right angles; sleeves/sockets for post-in-tube fits. A slat can NOT attach to a leg it never touches — add the rail.
-- Round vertical poles receive horizontal members via band clamps (the app adds the clamp when a horizontal round member overlaps an upright pole) — make the arm/bracket actually reach into the pole's surface.
-- Nothing may extend below z=0; ground attachment is expressed with a plate or footing collar AT z=0.
+- Parts that join MUST interpenetrate by 10-20 mm at the joint (e.g. a leg whose top is inside the rail it supports, a rail whose top is inside the slats it carries). Never leave parts floating or merely touching at a zero-thickness face — the app places hardware exactly where parts truly overlap.
+- DECLARE every real joint in the top-level "connections" array: {{"a": "component" (or "component/part"), "b": "component" (or "ground"), "type": ...}}. Types and when to use them:
+  * "anchor_base" — a vertical STRUCTURAL member landing at grade (pole, sign post, heavy frame leg): the app generates the full base plate + anchor-bolt circle + grout + gussets there. Use b: "ground".
+  * "band_clamp" — a horizontal arm/bracket clamping a round pole (split saddle band, bolted ears).
+  * "slip_fit" — round-over-round telescoping fits (post-top luminaire over a pole tenon): collar + set screws.
+  * "carriage_bolt" — wood decking/slats on a metal frame: dome heads proud of the timber, nuts below the steel.
+  * "through_bolt" — the general bolted lap joint (washers + hex head/nut).
+  * "flange_splice" — collinear members joined end-to-end (two mating discs + a bolt circle).
+  * "weld" — shop-welded steel: a weld bead is shown and NO bolts appear.
+  * "lag_screw" — a metal fitting screwed into timber (hex head one side, no nut).
+  * "none" — concealed joinery or cast-integral (wood-to-wood furniture joints, decorative caps): no visible hardware.
+  Undeclared joints get inferred hardware from geometry, so declare intent wherever inference could guess wrong — especially welded joints and anything that must NOT show bolts.
+- Light non-structural furniture must NOT get industrial anchors: declare {{"a": "<leg component>", "b": "ground", "type": "none"}}. Only structural verticals at grade get "anchor_base".
+- Still model load-path geometry as primitives: cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets or collars where members meet at right angles. A slat can NOT attach to a leg it never touches — add the rail.
+- Nothing may extend below z=0; grade-level anchorage comes from an "anchor_base" connection (or a modeled plate/footing AT z=0).
 
 MATERIALS
 - Presets: {", ".join(MATERIAL_PRESETS)}.
@@ -130,8 +148,10 @@ ENHANCE_SYSTEM = (
     "request names several parts or features ('a car roof with slanted solar "
     "panels'), the brief MUST explicitly cover every one of them, with tilt/"
     "slope angles in degrees for slanted or curved elements and how each part "
-    "mounts to the others. Plain prose, at most 120 words, no JSON, no lists, "
-    "no preamble."
+    "mounts to the others — name the fabrication connection per joint (anchor "
+    "base at grade, band clamp on the pole, slip-fit tenon, weld, carriage "
+    "bolts into timber, through-bolts). Plain prose, at most 120 words, no "
+    "JSON, no lists, no preamble."
 )
 
 
@@ -200,8 +220,13 @@ def _strip_fences(raw: str) -> str:
     return text
 
 
-def _postprocess(raw: str, code_mode: str) -> dict:
-    """Parse, schema-validate (T7.4), geometry-check, and code-clamp (T2.3)."""
+def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
+    """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3), and
+    buildability-check (contact graph: floating parts, below-grade geometry,
+    dead declarations). Floating parts raise — the deterministic findings
+    feed the retry — unless ``lenient_buildability`` (the retry itself), in
+    which case they're accepted and surfaced as violations instead, so a
+    stubborn generation never bricks."""
     try:
         spec = json.loads(_strip_fences(raw))
     except json.JSONDecodeError as exc:
@@ -222,11 +247,24 @@ def _postprocess(raw: str, code_mode: str) -> dict:
     result = validate_spec(spec)
 
     try:  # prove the spec actually builds (catches bad expressions/params)
-        compute_primitives(result.spec)
+        prims = compute_primitives(result.spec)
     except Exception as exc:
         raise SpecGenerationError(f"Spec does not build: {exc}") from None
 
-    return result.to_dict()
+    findings = check_buildability(prims, result.spec)
+    errors = buildability_errors(findings)
+    if errors and not lenient_buildability:
+        raise SpecGenerationError(
+            "Buildability check failed: "
+            + " ".join(f["message"] for f in errors[:4])
+        )
+
+    out = result.to_dict()
+    if findings:
+        out["violations"] = out["violations"] + findings
+        if errors:
+            out["ok"] = False
+    return out
 
 
 def _run(system: str, user: str, code_mode: str, model: str | None = None) -> dict:
@@ -234,14 +272,16 @@ def _run(system: str, user: str, code_mode: str, model: str | None = None) -> di
     try:
         return _postprocess(raw, code_mode)
     except SpecGenerationError as first_error:
-        # T2.6: one retry with the error appended
+        # T2.6: one retry with the error appended. The retry is lenient about
+        # buildability: a still-floating spec ships with warning violations
+        # instead of failing the whole generation.
         retry_user = (
             f"{user}\n\nYour previous answer failed validation with this error:\n"
             f"{first_error}\n\nPrevious answer:\n{raw[:4000]}\n\n"
             f"Return the corrected AssetSpec JSON only."
         )
         raw = complete(system, retry_user, model=model)
-        return _postprocess(raw, code_mode)
+        return _postprocess(raw, code_mode, lenient_buildability=True)
 
 
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None) -> dict:
@@ -294,8 +334,14 @@ def focus_spec(spec: dict, area: str, code_mode: str = "strict",
 # ---------------------------------------------------------------------------
 
 def _install_guide_prompts(spec: dict) -> tuple:
+    """(system, user, joint_schedule): the user message embeds the generated
+    joint schedule so the guide documents the REAL fasteners — the fix for
+    guides that invented bolt sizes the geometry never had."""
+    from blender.builders.schedule import joint_schedule
+
     standards = load_standards()
     relevant = standards.get(spec.get("asset_type", ""), {})
+    schedule = joint_schedule(spec)
     system = (
         "You are a licensed site-furnishing installation specialist writing for a "
         "homeowner/contractor audience. Produce a clear, numbered installation guide "
@@ -303,27 +349,35 @@ def _install_guide_prompts(spec: dict) -> tuple:
         "Structure: ## Overview (what it is, overall dimensions in ft/in AND meters), "
         "## Tools & materials, ## Site preparation (foundation/footing sizing guidance), "
         "## Assembly sequence (reference the spec's component names in order, with "
-        "hardware: anchor bolts, nuts, washers, torque ranges), ## Connections "
-        "(enumerate EVERY joint: which two components meet, the fastener type and "
-        "size class, and exactly how it is executed on site — drilled, through-"
-        "bolted, band-clamped, torqued, embedded), ## Code compliance "
+        "hardware: anchor bolts, nuts, washers, torque ranges), ## Joint schedule "
+        "(a Markdown table of the generated joint schedule you were given: joint id, "
+        "connection type, the two members, fastener, count, torque), ## Connections "
+        "(walk through EVERY joint in that schedule: which two components meet, the "
+        "exact fastener from the schedule, and exactly how it is executed on site — "
+        "drilled, through-bolted, band-clamped, slip-fitted, welded, torqued, "
+        "embedded), ## Code compliance "
         "checklist (cite the code_refs from the spec/standards, with the actual limits), "
-        "## Inspection & maintenance. Use ONLY dimensions derivable from the spec; do "
-        "not invent sizes. Include a short safety disclaimer that a licensed engineer "
-        "must approve structural anchoring for public installations."
+        "## Inspection & maintenance. Use ONLY dimensions derivable from the spec and "
+        "ONLY the fasteners in the joint schedule; do not invent sizes. Include a "
+        "short safety disclaimer that a licensed engineer must approve structural "
+        "anchoring for public installations."
     )
     user = (
         f"INSTALL GUIDE request.\nAssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
-        f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}"
+        f"Applicable standards entry:\n{json.dumps(relevant, separators=(',', ':'))}\n\n"
+        f"Joint schedule (the hardware the app actually generated — cite EXACTLY "
+        f"these fasteners, counts, and torque values):\n"
+        f"{json.dumps(schedule, separators=(',', ':'))}"
     )
-    return system, user
+    return system, user, schedule
 
 
-def generate_install_guide(spec: dict) -> str:
-    """Plain-language installation instructions for the current asset,
-    grounded in its actual dimensions, components, and code citations."""
-    system, user = _install_guide_prompts(spec)
-    return complete(system, user, temperature=0.3).strip()
+def generate_install_guide(spec: dict) -> tuple:
+    """(guide_markdown, joint_schedule): plain-language installation
+    instructions grounded in the asset's actual dimensions, components, code
+    citations, and the generated connection hardware."""
+    system, user, schedule = _install_guide_prompts(spec)
+    return complete(system, user, temperature=0.3).strip(), schedule
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +425,8 @@ def _standards_prompts() -> tuple:
         "'source' and 'parameters'; each parameter rule has min, max (number or "
         "null), default, unit (ft|in|m|cm|mm), code_ref, and optionally note. "
         "Cite real, specific sections in code_ref/source. Bump _meta.version by 1 "
-        "and keep the _meta.disclaimer. Return ONLY the complete updated JSON."
+        "and keep the _meta.disclaimer. Keep any '_connections' section EXACTLY "
+        "as-is (it is maintained by hand). Return ONLY the complete updated JSON."
     )
     user = f"STANDARDS UPDATE request.\nCurrent database:\n{json.dumps(current, indent=1)}"
     return system, user
@@ -385,6 +440,12 @@ def _standards_finalize(raw: str) -> dict:
     problems = validate_standards_db(proposal)
     if problems:
         raise SpecGenerationError("Structural problems: " + "; ".join(problems[:8]))
+    # the fastener tables are maintained by hand, not the AI refresh — carry
+    # them over verbatim if the proposal dropped them
+    if isinstance(proposal, dict) and "_connections" not in proposal:
+        current = load_standards().get("_connections")
+        if current:
+            proposal["_connections"] = current
     return {
         "proposal": proposal,
         "changes": _diff_standards(load_standards(), proposal),
@@ -417,6 +478,9 @@ def propose_standards_update() -> dict:
 # ---------------------------------------------------------------------------
 
 def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
+    """``finalize(raw, lenient=False)`` turns the streamed text into the
+    result payload; the retry pass calls it leniently so a spec that still
+    fails only the buildability check ships with warnings instead of dying."""
     payload = None
     try:
         parts = []
@@ -439,7 +503,7 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
                     parts.append(chunk)
                     yield chunk
                 try:
-                    payload = {"ok": True, "result": finalize("".join(parts))}
+                    payload = {"ok": True, "result": finalize("".join(parts), True)}
                 except SpecGenerationError as err2:
                     payload = {"ok": False, "error": str(err2)}
     except LLMError as exc:
@@ -465,8 +529,8 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
         brief = "".join(parts).strip() or prompt
         yield "\n\n[designing the asset from the brief]\n\n"
 
-        def finalize(raw: str) -> dict:
-            result = _postprocess(raw, code_mode)
+        def finalize(raw: str, lenient: bool = False) -> dict:
+            result = _postprocess(raw, code_mode, lenient_buildability=lenient)
             result["brief"] = brief
             return result
 
@@ -485,7 +549,8 @@ def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict",
         f"(keep everything else identical, including ids):\n{message}"
     )
     return _stream_pipeline(
-        _system_prompt(code_mode), user, lambda raw: _postprocess(raw, code_mode),
+        _system_prompt(code_mode), user,
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
         model=model,
     )
 
@@ -494,14 +559,18 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
                       model: str | None = None):
     return _stream_pipeline(
         _system_prompt(code_mode), _focus_user(spec, area),
-        lambda raw: _postprocess(raw, code_mode), model=model,
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        model=model,
     )
 
 
 def stream_install_guide(spec: dict):
-    system, user = _install_guide_prompts(spec)
+    system, user, schedule = _install_guide_prompts(spec)
     return _stream_pipeline(
-        system, user, lambda raw: {"guide": strip_reasoning(raw).strip()}, retry=False,
+        system, user,
+        lambda raw, lenient=False: {"guide": strip_reasoning(raw).strip(),
+                                    "joint_schedule": schedule},
+        retry=False,
     )
 
 
@@ -509,7 +578,7 @@ def stream_update_standards(commit_fn):
     """``commit_fn(proposal_dict) -> dict`` merges commit status into the result."""
     system, user = _standards_prompts()
 
-    def finalize(raw: str) -> dict:
+    def finalize(raw: str, lenient: bool = False) -> dict:
         result = _standards_finalize(raw)
         result.update(commit_fn(result["proposal"]))
         return result

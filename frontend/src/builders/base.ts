@@ -27,35 +27,33 @@ export function register(assetType: string, fn: BuilderFn): void {
   BUILDERS[assetType] = fn;
 }
 
-/** Build the curated/custom primitives plus connection hardware, before any
- * user edit overlay. */
+/** Build the curated/custom primitives, before hardware and edit overlays. */
 function buildBase(spec: AssetSpec): Primitive[] {
   const fn = BUILDERS[spec.asset_type];
-  let prims: Primitive[];
-  if (fn) {
-    prims = fn(spec);
-  } else if (spec.primitives?.length) {
+  if (fn) return fn(spec);
+  if (spec.primitives?.length) {
     // lazy import avoided: generic.ts imports helpers from this module, so
     // the dependency is wired in builders/index.ts instead
-    prims = customBuilder!(spec);
-  } else {
-    throw new Error(
-      `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
-        `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
-    );
+    return customBuilder!(spec);
   }
+  throw new Error(
+    `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
+      `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,
+  );
+}
 
+/** Primitives with the structural overlay (duplicate/delete) applied and
+ * connection hardware generated, but NOT the move/rotate/scale transform —
+ * the viewport gizmo renders these and applies the transform live, then
+ * bakes it back into the spec. The structural overlay runs BEFORE hardware
+ * so duplicated components get their own joints and deleted parts don't
+ * attract bolts. */
+export function preEditPrimitives(spec: AssetSpec): Primitive[] {
+  let prims = applyStructure(buildBase(spec), spec);
   if (specToggles(spec).connection_hardware && hardwareFn) {
     prims = prims.concat(hardwareFn(prims, spec));
   }
   return prims;
-}
-
-/** Primitives with the structural overlay (duplicate/delete) applied but NOT
- * the move/rotate/scale transform — the viewport gizmo renders these and
- * applies the transform live, then bakes it back into the spec. */
-export function preEditPrimitives(spec: AssetSpec): Primitive[] {
-  return applyStructure(buildBase(spec), spec);
 }
 
 export function computePrimitives(spec: AssetSpec): Primitive[] {

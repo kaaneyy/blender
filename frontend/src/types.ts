@@ -24,6 +24,28 @@ export interface SpecToggle {
   value: boolean;
 }
 
+export type ConnectionType =
+  | "anchor_base"
+  | "through_bolt"
+  | "flange_splice"
+  | "band_clamp"
+  | "slip_fit"
+  | "weld"
+  | "carriage_bolt"
+  | "lag_screw"
+  | "none";
+
+/** Declared joint intent between two components (or 'component/part' paths;
+ * b may be 'ground'). Honored by the hardware generator at matching
+ * contacts; geometric inference remains the fallback. */
+export interface SpecConnection {
+  a: string;
+  b: string;
+  type: ConnectionType;
+  load?: "light" | "standard" | "heavy";
+  count?: number;
+}
+
 export interface SpecMaterial {
   slot: string;
   preset: string;
@@ -95,6 +117,8 @@ export interface AssetSpec {
   components?: string[];
   /** Custom parametric geometry — the "generate anything" path. */
   primitives?: SpecPrimitive[];
+  /** Declared fabrication connections between components (see SpecConnection). */
+  connections?: SpecConnection[];
   /** Per-component/part position nudges in meters ('pole' or 'pole/shaft'). */
   offsets?: Record<string, [number, number, number]>;
   /** Direct-manipulation edits from the viewport toolbar (rotate / stretch /
@@ -128,6 +152,8 @@ export interface Primitive {
   materialSlot: string;
   /** negative space — not rendered in the preview, subtracted in Blender */
   cut?: boolean;
+  /** generator metadata (e.g. the joint record on a hardware anchor prim) */
+  meta?: Record<string, unknown>;
   params: {
     radius?: number;
     depth?: number;

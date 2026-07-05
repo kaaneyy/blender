@@ -28,5 +28,11 @@
     { "slot": "lens", "preset": "lamp_lens" }
   ],
   "components": ["base_plate", "pole", "arm", "luminaire"],
+  "connections": [
+    { "a": "pole", "b": "ground", "type": "anchor_base" },
+    { "a": "arm/slipfitter", "b": "pole", "type": "slip_fit" },
+    { "a": "arm", "b": "pole", "type": "band_clamp" },
+    { "a": "luminaire", "b": "arm", "type": "through_bolt" }
+  ],
   "seed": 42
 }

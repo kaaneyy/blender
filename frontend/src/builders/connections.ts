@@ -1,9 +1,25 @@
 /** Mirror of blender/builders/connections.py — standard fabrication
- * connections (Part C). Keep in exact lockstep. */
-import type { Primitive } from "../types";
+ * connections: the pure primitive emitter library the hardware orchestrator
+ * dispatches to (through-bolts, carriage bolts, lag screws, slip fitters,
+ * split band clamps, flange splices, weld fillets, ground packages).
+ * Keep in exact lockstep with the Python implementation. */
+import type { Primitive, Vec3 } from "../types";
 
 const BOLT_COUNT: Record<string, number> = { light: 4, standard: 4, heavy: 6 };
 const BOLT_R: Record<string, number> = { light: 0.008, standard: 0.011, heavy: 0.014 };
+
+/** bolt axis -> rotation that maps a Z-axis cylinder onto that axis */
+export const AXIS_ROT: Record<number, Vec3> = {
+  0: [0, Math.PI / 2, 0],
+  1: [Math.PI / 2, 0, 0],
+  2: [0, 0, 0],
+};
+
+function pos(center: readonly number[], axis: number, along: number): Vec3 {
+  const out = [...center] as Vec3;
+  out[axis] = along;
+  return out;
+}
 
 export function weldFillet(
   radius: number,
@@ -12,12 +28,13 @@ export function weldFillet(
   component: string,
   slot: string,
   name = "weld_bead",
+  center: [number, number] = [0, 0],
 ): Primitive {
   return {
     kind: "lathe",
     name,
     component,
-    location: [0, 0, z],
+    location: [center[0], center[1], z],
     rotation: [0, 0, 0],
     materialSlot: slot,
     params: {
@@ -30,20 +47,313 @@ export function weldFillet(
   };
 }
 
+/** Through-bolt: washer+hex head at spanHi, washer+hex nut at spanLo. */
+export function throughBoltAssembly(
+  joint: number,
+  idx: number,
+  center: readonly number[],
+  axis: number,
+  shaftR: number,
+  spanLo: number,
+  spanHi: number,
+): Primitive[] {
+  const rot = AXIS_ROT[axis];
+  const headR = 1.8 * shaftR;
+  const headH = Math.max(1.2 * shaftR, 0.004);
+  const nutR = 1.6 * shaftR;
+  const nutH = Math.max(shaftR, 0.003);
+  const wR = 2.2 * shaftR;
+  const wH = 0.002;
+  const depth = Math.max(spanHi - spanLo, 0.012) + 2 * wH;
+  const mid = (spanLo + spanHi) / 2;
+  const name = `joint${joint}_bolt${idx}`;
+
+  const prim = (
+    kindName: string,
+    along: number,
+    radius: number,
+    d: number,
+    segments?: number,
+  ): Primitive => ({
+    kind: "cylinder",
+    name: `${name}_${kindName}`,
+    component: "hardware",
+    location: pos(center, axis, along),
+    rotation: rot,
+    materialSlot: "hardware",
+    params: segments ? { radius, depth: d, segments } : { radius, depth: d },
+  });
+
+  return [
+    prim("shaft", mid, shaftR, depth),
+    prim("washer_h", spanHi + wH / 2, wR, wH),
+    prim("head", spanHi + wH + headH / 2, headR, headH, 6),
+    prim("washer_n", spanLo - wH / 2, wR, wH),
+    prim("nut", spanLo - wH - nutH / 2, nutR, nutH, 6),
+  ];
+}
+
+/** Carriage bolt: smooth dome head half-proud of the timber face (no washer
+ * under it), flat washer + hex nut on the opposite (steel) face. */
+export function carriageBoltAssembly(
+  joint: number,
+  idx: number,
+  center: readonly number[],
+  axis: number,
+  shaftR: number,
+  spanLo: number,
+  spanHi: number,
+  domeAtHi = true,
+): Primitive[] {
+  const rot = AXIS_ROT[axis];
+  const domeR = 1.6 * shaftR;
+  const nutR = 1.6 * shaftR;
+  const nutH = Math.max(shaftR, 0.003);
+  const wR = 2.2 * shaftR;
+  const wH = 0.002;
+  const depth = Math.max(spanHi - spanLo, 0.012);
+  const mid = (spanLo + spanHi) / 2;
+  const name = `joint${joint}_bolt${idx}`;
+  const [domeEnd, nutEnd, nutDir] = domeAtHi
+    ? [spanHi, spanLo, -1]
+    : [spanLo, spanHi, 1];
+
+  const cyl = (
+    kindName: string,
+    along: number,
+    radius: number,
+    d: number,
+    segments?: number,
+  ): Primitive => ({
+    kind: "cylinder",
+    name: `${name}_${kindName}`,
+    component: "hardware",
+    location: pos(center, axis, along),
+    rotation: rot,
+    materialSlot: "hardware",
+    params: segments ? { radius, depth: d, segments } : { radius, depth: d },
+  });
+
+  return [
+    cyl("shaft", mid, shaftR, depth),
+    {
+      kind: "sphere",
+      name: `${name}_dome`,
+      component: "hardware",
+      location: pos(center, axis, domeEnd),
+      rotation: rot,
+      materialSlot: "hardware",
+      params: { radius: domeR },
+    },
+    cyl("washer_n", nutEnd + nutDir * (wH / 2), wR, wH),
+    cyl("nut", nutEnd + nutDir * (wH + nutH / 2), nutR, nutH, 6),
+  ];
+}
+
+/** Lag screw: hex head + washer at spanHi, shank embedded — no nut. */
+export function lagScrewAssembly(
+  joint: number,
+  idx: number,
+  center: readonly number[],
+  axis: number,
+  shaftR: number,
+  spanLo: number,
+  spanHi: number,
+): Primitive[] {
+  const rot = AXIS_ROT[axis];
+  const headR = 1.8 * shaftR;
+  const headH = Math.max(1.2 * shaftR, 0.004);
+  const wR = 2.2 * shaftR;
+  const wH = 0.002;
+  const depth = Math.max(spanHi - spanLo, 0.012);
+  const mid = (spanLo + spanHi) / 2;
+  const name = `joint${joint}_bolt${idx}`;
+
+  const cyl = (
+    kindName: string,
+    along: number,
+    radius: number,
+    d: number,
+    segments?: number,
+  ): Primitive => ({
+    kind: "cylinder",
+    name: `${name}_${kindName}`,
+    component: "hardware",
+    location: pos(center, axis, along),
+    rotation: rot,
+    materialSlot: "hardware",
+    params: segments ? { radius, depth: d, segments } : { radius, depth: d },
+  });
+
+  return [
+    cyl("shaft", mid, shaftR, depth),
+    cyl("washer_h", spanHi + wH / 2, wR, wH),
+    cyl("head", spanHi + wH + headH / 2, headR, headH, 6),
+  ];
+}
+
+/** Slip-fitter: a collar gripping a round-over-round telescoping fit with
+ * 3 radial set screws at 120°. outerR is the outer member's fit radius. */
+export function slipFitter(
+  joint: number,
+  outerR: number,
+  centerXY: [number, number],
+  centerZ: number,
+): Primitive[] {
+  const [cx, cy] = centerXY;
+  const collarR = outerR + 0.004;
+  const collarD = Math.min(Math.max(1.2 * outerR, 0.04), 0.12);
+  const prims: Primitive[] = [
+    {
+      kind: "tube",
+      name: `joint${joint}_fitter`,
+      component: "hardware",
+      location: [cx, cy, centerZ],
+      rotation: [0, 0, 0],
+      materialSlot: "hardware",
+      params: { radius: collarR, wall: 0.004, depth: collarD },
+    },
+  ];
+  const screwLen = 0.03;
+  for (let i = 0; i < 3; i++) {
+    const a = (2 * Math.PI * i) / 3;
+    const midR = collarR + screwLen / 2 - 0.012;
+    prims.push({
+      kind: "cylinder",
+      name: `joint${joint}_setscrew${i + 1}`,
+      component: "hardware",
+      location: [cx + midR * Math.cos(a), cy + midR * Math.sin(a), centerZ],
+      rotation: [0, Math.PI / 2, a],
+      materialSlot: "hardware",
+      params: { radius: 0.004, depth: screwLen },
+    });
+    const headRDist = collarR + screwLen - 0.012 + 0.0025;
+    prims.push({
+      kind: "cylinder",
+      name: `joint${joint}_setscrew${i + 1}_head`,
+      component: "hardware",
+      location: [cx + headRDist * Math.cos(a), cy + headRDist * Math.sin(a), centerZ],
+      rotation: [0, Math.PI / 2, a],
+      materialSlot: "hardware",
+      params: { radius: 0.007, depth: 0.005, segments: 6 },
+    });
+  }
+  return prims;
+}
+
+/** Two-piece saddle band: split band + ear tabs, bolted through the EARS. */
+export function splitBandClamp(
+  joint: number,
+  poleR: number,
+  centerXY: [number, number],
+  centerZ: number,
+  axisH: number,
+  armR: number,
+): Primitive[] {
+  const [cx, cy] = centerXY;
+  const bandR = poleR + 0.006;
+  const bandW = Math.min(Math.max(3 * armR, 0.03), 0.08);
+  const prims: Primitive[] = [
+    {
+      kind: "tube",
+      name: `joint${joint}_band`,
+      component: "hardware",
+      location: [cx, cy, centerZ],
+      rotation: [0, 0, 0],
+      materialSlot: "hardware",
+      params: { radius: bandR, wall: 0.003, depth: bandW },
+    },
+  ];
+  const perpH = 1 - axisH;
+  const earLen = 0.025;
+  const earThick = 0.024;
+  const shaftR = Math.min(Math.max(0.4 * armR, 0.004), 0.008);
+  [1, -1].forEach((side, i) => {
+    const earCenter: Vec3 = [cx, cy, centerZ];
+    earCenter[perpH] += side * (bandR + earLen / 2);
+    const size: Vec3 = [0, 0, 0];
+    size[axisH] = earThick;
+    size[perpH] = earLen;
+    size[2] = bandW * 0.8;
+    prims.push({
+      kind: "box",
+      name: `joint${joint}_ear${i + 1}`,
+      component: "hardware",
+      location: earCenter,
+      rotation: [0, 0, 0],
+      materialSlot: "hardware",
+      params: { size },
+    });
+    const spanLo = earCenter[axisH] - earThick / 2 - 0.002;
+    const spanHi = earCenter[axisH] + earThick / 2 + 0.002;
+    prims.push(
+      ...throughBoltAssembly(joint, i + 1, earCenter, axisH, shaftR, spanLo, spanHi),
+    );
+  });
+  return prims;
+}
+
+/** Bolted flange splice: two mating discs + a bolt circle through both. */
+export function flangeSplice(
+  joint: number,
+  center: readonly number[],
+  axis: number,
+  memberR: number,
+  nBolts = 6,
+): Primitive[] {
+  const rot = AXIS_ROT[axis];
+  const discR = Math.max(memberR * 1.6, memberR + 0.03);
+  const discT = 0.01;
+  const bcr = (memberR + discR) / 2;
+  const shaftR = Math.min(Math.max(0.35 * memberR, 0.005), 0.012);
+  const prims: Primitive[] = [];
+  [-1, 1].forEach((side, i) => {
+    prims.push({
+      kind: "cylinder",
+      name: `joint${joint}_flange${i + 1}`,
+      component: "hardware",
+      location: pos(center, axis, center[axis] + (side * discT) / 2),
+      rotation: rot,
+      materialSlot: "hardware",
+      params: { radius: discR, depth: discT },
+    });
+  });
+  const perp = [0, 1, 2].filter((k) => k !== axis);
+  for (let i = 0; i < nBolts; i++) {
+    const a = (2 * Math.PI * i) / nBolts;
+    const c = [...center] as Vec3;
+    c[perp[0]] += bcr * Math.cos(a);
+    c[perp[1]] += bcr * Math.sin(a);
+    const spanLo = center[axis] - discT - 0.002;
+    const spanHi = center[axis] + discT + 0.002;
+    prims.push(...throughBoltAssembly(joint, i + 1, c, axis, shaftR, spanLo, spanHi));
+  }
+  return prims;
+}
+
+/** Ground connection for a vertical member at grade. center is the member's
+ * (x, y); shape "square" swaps the round flange for a box plate with corner
+ * anchor bolts (no weld ring). Defaults reproduce the original street_light
+ * flange byte-for-byte. */
 export function groundConnection(
   poleRadius: number,
   mount = "flange",
   loadClass = "standard",
   component = "base_plate",
   slot = "base",
+  center: [number, number] = [0, 0],
+  shape: "round" | "square" = "round",
+  namePrefix = "",
 ): Primitive[] {
+  const [cx, cy] = center;
+  const n = namePrefix;
   if (mount === "burial") {
     return [
       {
         kind: "lathe",
-        name: "backfill_collar",
+        name: `${n}backfill_collar`,
         component,
-        location: [0, 0, 0],
+        location: [cx, cy, 0],
         rotation: [0, 0, 0],
         materialSlot: slot,
         params: {
@@ -60,14 +370,14 @@ export function groundConnection(
     return [
       {
         kind: "cylinder",
-        name: "concrete_pier",
+        name: `${n}concrete_pier`,
         component,
-        location: [0, 0, pierH / 2],
+        location: [cx, cy, pierH / 2],
         rotation: [0, 0, 0],
         materialSlot: slot,
         params: { radius: pierR, depth: pierH },
       },
-      weldFillet(poleRadius, poleRadius * 0.35, pierH, component, slot, "grout_ring"),
+      weldFillet(poleRadius, poleRadius * 0.35, pierH, component, slot, `${n}grout_ring`, center),
     ];
   }
 
@@ -78,42 +388,90 @@ export function groundConnection(
   const flangeT = 0.028;
   const groutT = 0.024;
   const flangeTop = groutT + flangeT;
-  const boltCircleR = (poleRadius + flangeR) / 2 + 0.01;
+  const square = shape === "square";
 
-  const prims: Primitive[] = [
-    {
-      kind: "cylinder",
-      name: "grout_pad",
-      component,
-      location: [0, 0, groutT / 2],
-      rotation: [0, 0, 0],
-      materialSlot: slot,
-      params: { radius: flangeR * 1.12, depth: groutT },
-    },
-    {
-      kind: "cylinder",
-      name: "flange",
-      component,
-      location: [0, 0, groutT + flangeT / 2],
-      rotation: [0, 0, 0],
-      materialSlot: slot,
-      params: { radius: flangeR, depth: flangeT },
-    },
-    weldFillet(poleRadius, Math.max(0.012, poleRadius * 0.18), flangeTop, component, slot),
-  ];
+  const prims: Primitive[] = [];
+  if (square) {
+    const side = 2 * flangeR;
+    prims.push(
+      {
+        kind: "box",
+        name: `${n}grout_pad`,
+        component,
+        location: [cx, cy, groutT / 2],
+        rotation: [0, 0, 0],
+        materialSlot: slot,
+        params: { size: [side * 1.12, side * 1.12, groutT] },
+      },
+      {
+        kind: "box",
+        name: `${n}flange`,
+        component,
+        location: [cx, cy, groutT + flangeT / 2],
+        rotation: [0, 0, 0],
+        materialSlot: slot,
+        params: { size: [side, side, flangeT] },
+      },
+    );
+  } else {
+    prims.push(
+      {
+        kind: "cylinder",
+        name: `${n}grout_pad`,
+        component,
+        location: [cx, cy, groutT / 2],
+        rotation: [0, 0, 0],
+        materialSlot: slot,
+        params: { radius: flangeR * 1.12, depth: groutT },
+      },
+      {
+        kind: "cylinder",
+        name: `${n}flange`,
+        component,
+        location: [cx, cy, groutT + flangeT / 2],
+        rotation: [0, 0, 0],
+        materialSlot: slot,
+        params: { radius: flangeR, depth: flangeT },
+      },
+      weldFillet(
+        poleRadius,
+        Math.max(0.012, poleRadius * 0.18),
+        flangeTop,
+        component,
+        slot,
+        `${n}weld_bead`,
+        center,
+      ),
+    );
+  }
 
+  // anchor bolts: circle on a real BCD for round; corner pattern for square
   const washerT = 0.003;
   const nutH = boltR * 1.1;
-  for (let i = 0; i < nBolts; i++) {
-    const a = (2 * Math.PI * i) / nBolts;
-    const x = boltCircleR * Math.cos(a);
-    const y = boltCircleR * Math.sin(a);
+  let anchorXY: Array<[number, number]>;
+  if (square) {
+    const inset = Math.max(0.02, 3 * boltR);
+    const d = flangeR - inset;
+    anchorXY = [
+      [cx + d, cy + d],
+      [cx - d, cy + d],
+      [cx - d, cy - d],
+      [cx + d, cy - d],
+    ];
+  } else {
+    const boltCircleR = (poleRadius + flangeR) / 2 + 0.01;
+    anchorXY = Array.from({ length: nBolts }, (_, i) => {
+      const a = (2 * Math.PI * i) / nBolts;
+      return [cx + boltCircleR * Math.cos(a), cy + boltCircleR * Math.sin(a)];
+    });
+  }
+  anchorXY.forEach(([x, y], i) => {
     const proj = 0.03;
     const shaftDepth = flangeTop + proj;
     prims.push(
       {
         kind: "cylinder",
-        name: `anchor_bolt_${i + 1}`,
+        name: `${n}anchor_bolt_${i + 1}`,
         component,
         location: [x, y, shaftDepth / 2],
         rotation: [0, 0, 0],
@@ -122,7 +480,7 @@ export function groundConnection(
       },
       {
         kind: "cylinder",
-        name: `anchor_washer_${i + 1}`,
+        name: `${n}anchor_washer_${i + 1}`,
         component,
         location: [x, y, flangeTop + washerT / 2],
         rotation: [0, 0, 0],
@@ -131,7 +489,7 @@ export function groundConnection(
       },
       {
         kind: "cylinder",
-        name: `anchor_nut_${i + 1}`,
+        name: `${n}anchor_nut_${i + 1}`,
         component,
         location: [x, y, flangeTop + washerT + nutH / 2],
         rotation: [0, 0, 0],
@@ -139,18 +497,20 @@ export function groundConnection(
         params: { radius: boltR * 1.7, depth: nutH, segments: 6 },
       },
     );
-  }
+  });
 
   const gussetH = Math.max(0.08, poleRadius * 1.1);
   const gussetLen = flangeR - poleRadius - 0.006;
   const midR = poleRadius + gussetLen / 2;
-  for (let i = 0; i < nBolts; i++) {
-    const a = (2 * Math.PI * (i + 0.5)) / nBolts;
+  const gussetAngles = square
+    ? [0, 1, 2, 3].map((i) => (2 * Math.PI * i) / 4)
+    : Array.from({ length: nBolts }, (_, i) => (2 * Math.PI * (i + 0.5)) / nBolts);
+  gussetAngles.forEach((a, i) => {
     prims.push({
       kind: "loft",
-      name: `gusset_${i + 1}`,
+      name: `${n}gusset_${i + 1}`,
       component,
-      location: [midR * Math.cos(a), midR * Math.sin(a), flangeTop + gussetH / 2],
+      location: [cx + midR * Math.cos(a), cy + midR * Math.sin(a), flangeTop + gussetH / 2],
       rotation: [0, Math.PI / 2, a],
       materialSlot: slot,
       params: {
@@ -159,6 +519,6 @@ export function groundConnection(
         profile_end: { shape: "rect", w: 0.016, h: 0.008 },
       },
     });
-  }
+  });
   return prims;
 }

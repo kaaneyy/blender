@@ -4,6 +4,24 @@
     "disclaimer": "Design-reference values compiled from public standards (AASHTO, MUTCD, ADA, IBC) and typical DOT drawings. Verify against the governing local code before construction use.",
     "version": 1
   },
+  "_connections": {
+    "note": "Heuristic fabrication reference for generated connection hardware — fastener classes, torque values, and anchor tiers the generator sizes against. NOT engineering design: a licensed engineer must verify structural connections and anchorage.",
+    "bolt_catalog": [
+      { "name": "M6",  "shaft_mm": 6,  "clearance_hole_mm": 7,  "grade": "8.8 / A325", "torque_nm": 10,  "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M8",  "shaft_mm": 8,  "clearance_hole_mm": 9,  "grade": "8.8 / A325", "torque_nm": 25,  "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M10", "shaft_mm": 10, "clearance_hole_mm": 11, "grade": "8.8 / A325", "torque_nm": 50,  "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M12", "shaft_mm": 12, "clearance_hole_mm": 14, "grade": "8.8 / A325", "torque_nm": 85,  "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M16", "shaft_mm": 16, "clearance_hole_mm": 18, "grade": "8.8 / A325", "torque_nm": 210, "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M20", "shaft_mm": 20, "clearance_hole_mm": 22, "grade": "8.8 / A325", "torque_nm": 425, "code_ref": "AISC J3 / RCSC Table 8.1" },
+      { "name": "M24", "shaft_mm": 24, "clearance_hole_mm": 26, "grade": "8.8 / A325", "torque_nm": 730, "code_ref": "AISC J3 / RCSC Table 8.1" }
+    ],
+    "anchor_tiers": {
+      "light":    { "dia_mm": 16, "count": 4, "embedment_min_mm": 200, "projection_mm": 30, "torque_nm": 100, "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17" },
+      "standard": { "dia_mm": 22, "count": 4, "embedment_min_mm": 300, "projection_mm": 30, "torque_nm": 220, "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17" },
+      "heavy":    { "dia_mm": 28, "count": 6, "embedment_min_mm": 400, "projection_mm": 30, "torque_nm": 400, "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17" }
+    },
+    "edge_distance": { "rule": "1.5d minimum from bolt center to member edge", "code_ref": "AISC J3.4" }
+  },
   "street_light": {
     "source": "AASHTO Roadway Lighting Design Guide; local DOT typical drawings",
     "parameters": {

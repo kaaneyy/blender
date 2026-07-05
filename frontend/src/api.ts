@@ -76,6 +76,21 @@ export async function updateStandards(): Promise<StandardsUpdateResult> {
   return (await post("/update-standards", {})) as unknown as StandardsUpdateResult;
 }
 
+/** Server-side buildability findings (floating parts, below-grade geometry,
+ * declared connections with no contact) for the current spec. Best-effort:
+ * returns [] when the backend is unreachable so callers can proceed. */
+export async function buildabilityFindings(spec: AssetSpec): Promise<string[]> {
+  try {
+    const data = await post("/validate-spec", spec);
+    const violations = (data?.violations ?? []) as Array<Record<string, unknown>>;
+    return violations
+      .filter((v) => v.parameter_id === "__buildability__")
+      .map((v) => String(v.message));
+  } catch {
+    return [];
+  }
+}
+
 /* ------------------------------------------------------------------------
  * Streaming variants: the backend streams the raw LLM text, then a sentinel
  * followed by a JSON payload {ok, result|error}. onChunk receives the

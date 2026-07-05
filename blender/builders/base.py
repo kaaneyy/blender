@@ -67,6 +67,9 @@ class Primitive:
     #: negative space — boolean-subtracted from its component, never rendered
     cut: bool = False
     params: dict = field(default_factory=dict)
+    #: generator metadata (e.g. the joint record on a hardware anchor prim) —
+    #: carried through transforms, ignored by realization
+    meta: dict | None = None
 
     def __post_init__(self):
         required = PRIMITIVE_KINDS.get(self.kind)
@@ -120,6 +123,8 @@ def spec_selects(spec: dict) -> Dict[str, str]:
 def apply_offsets(prims: List[Primitive], offsets: dict) -> List[Primitive]:
     """Apply user position nudges: 'Component' and 'Component/Part' keys
     stack, values are (dx, dy, dz) in meters."""
+    from dataclasses import replace
+
     out = []
     for p in prims:
         dc = offsets.get(p.component, (0.0, 0.0, 0.0))
@@ -128,14 +133,12 @@ def apply_offsets(prims: List[Primitive], offsets: dict) -> List[Primitive]:
             out.append(p)
             continue
         x, y, z = p.location
-        out.append(
-            Primitive(
-                kind=p.kind, name=p.name, component=p.component,
-                location=(x + dc[0] + dp[0], y + dc[1] + dp[1], z + dc[2] + dp[2]),
-                rotation=p.rotation, material_slot=p.material_slot,
-                params=dict(p.params),
-            )
-        )
+        # replace() keeps every other field (cut, meta) intact
+        out.append(replace(
+            p,
+            location=(x + dc[0] + dp[0], y + dc[1] + dp[1], z + dc[2] + dp[2]),
+            params=dict(p.params),
+        ))
     return out
 
 
@@ -159,16 +162,19 @@ def compute_primitives(spec: dict) -> List[Primitive]:
             f"'primitives' array; curated builders: {known}"
         )
 
+    # SketchUp-style edit overlay, structural half (duplicate/delete) BEFORE
+    # hardware so duplicated components get their own joints and deleted
+    # parts don't attract bolts; transforms come after hardware so joint ids
+    # stay put while the user drags.
+    from .edits import apply_structure, apply_transforms
+
+    prims = apply_structure(prims, spec)
+
     if spec_toggles(spec).get("connection_hardware"):
         from .hardware import compute_hardware
 
         prims = prims + compute_hardware(prims, spec)
 
-    # SketchUp-style edit overlay: structural (duplicate/delete) then the
-    # move/rotate/scale transform, baked so the export matches the viewport.
-    from .edits import apply_structure, apply_transforms
-
-    prims = apply_structure(prims, spec)
     prims = apply_transforms(prims, spec)
     return prims
 

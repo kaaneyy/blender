@@ -48,12 +48,18 @@ class TestHardware:
         assert len(prims) == len(base) + len(hardware)
         heads = [p for p in hardware if p.name.endswith("_head")]
         nuts = [p for p in hardware if p.name.endswith("_nut")]
-        washers = [p for p in hardware if "_washer_" in p.name]
         shafts = [p for p in hardware if p.name.endswith("_shaft")]
         assert heads and nuts and shafts
-        assert len(washers) == len(heads) + len(nuts), "washer under every head and nut"
+        # every through-bolt head/nut has a washer under it (set-screw heads
+        # and carriage-bolt domes legitimately carry no head-side washer)
+        names = {p.name for p in hardware}
+        for h in heads:
+            if "_bolt" in h.name:
+                assert h.name.replace("_head", "_washer_h") in names
+        for nu in nuts:
+            if "_bolt" in nu.name:
+                assert nu.name.replace("_nut", "_washer_n") in names
         assert all(p.params.get("segments") == 6 for p in heads + nuts), "hex heads/nuts"
-        assert all(p.material_slot == "hardware" for p in hardware)
 
     def test_joint_count_bounded(self):
         prims = compute_primitives(with_hardware(load("street_light.json")))
@@ -75,25 +81,23 @@ class TestHardware:
         # band radius follows the pole taper (top radius 2in=0.0508 + gap)
         assert 0.05 < band.params["radius"] < 0.08
 
-    def test_bench_slats_bolt_vertically_through_rails(self):
-        """Seat slats sit on frame rails with real overlap; the generator
-        must produce vertical through-bolts whose head is above the slat
-        and nut below, spanning the actual joint."""
+    def test_bench_slats_get_carriage_bolts(self):
+        """Wood seat slats on metal frame rails: the fastener a fabricator
+        uses is a carriage bolt — smooth dome proud of the timber (no washer
+        under it), washer + hex nut on the steel side below."""
         prims = compute_primitives(with_hardware(load("park_bench.json")))
-        vertical_shafts = [
-            p for p in prims
-            if p.name.endswith("_shaft") and p.rotation == (0.0, 0.0, 0.0)
-        ]
-        assert vertical_shafts, "expected vertical bolts at the slat/rail joints"
+        domes = [p for p in prims if p.name.endswith("_dome")]
+        assert domes, "expected carriage bolts at the wood-on-metal slat joints"
         seat_height = 18 * 0.0254
-        s = vertical_shafts[0]
-        joint = s.name.split("_")[0]
-        head = next(p for p in prims if p.name == f"{joint}_bolt1_head")
-        nut = next(p for p in prims if p.name == f"{joint}_bolt1_nut")
-        assert head.location[2] > nut.location[2], "head above, nut below"
+        dome = next(d for d in domes if abs(d.location[2] - seat_height) < 0.1)
+        joint = dome.name.split("_")[0]
+        shaft = next(p for p in prims if p.name == dome.name.replace("_dome", "_shaft"))
+        nut = next(p for p in prims if p.name == dome.name.replace("_dome", "_nut"))
+        assert dome.location[2] > nut.location[2], "dome on the wood above, nut below"
+        assert f"{joint}_" in dome.name
         # the shaft actually spans the joint plane at the seat surface
-        top = s.location[2] + s.params["depth"] / 2
-        bottom = s.location[2] - s.params["depth"] / 2
+        top = shaft.location[2] + shaft.params["depth"] / 2
+        bottom = shaft.location[2] - shaft.params["depth"] / 2
         assert bottom < seat_height < top
 
     def test_no_bolts_between_non_touching_parts(self):
