@@ -1,35 +1,56 @@
-"""Connection-hardware generator v2: engineered joints, not decorations.
+"""Connection-hardware orchestrator v3: declared intent + engineered joints.
 
 For every place two *different* components genuinely intersect, this emits
-hardware the way a fabricator would detail it:
+hardware the way a fabricator would detail it. The spec's optional
+``connections`` array declares joint intent (welded / slip-fit / carriage
+bolts / flange splice / band clamp / through-bolt / anchor base / none) and
+is honored at matching contacts; geometric inference remains the fallback:
 
 * **Through-bolt assemblies** — shaft spans the actual joint (overlap depth
   plus up to 25 mm of embedment into each member), hex head + flat washer on
-  one face, flat washer + hex nut on the opposite face. Bolt diameter scales
-  with the smaller face dimension of the joint (M8–M22 territory), and wide
-  joints get 2- or 4-bolt patterns with realistic edge distances instead of
-  one center bolt.
-* **Band clamps** — when a horizontal round member meets a vertical pole
-  (mast arms, banner brackets), a saddle band wraps the pole at the joint
-  height (radius follows the pole's taper) with two side through-bolts,
-  matching how pole fittings clamp in the field.
+  one face, flat washer + hex nut on the opposite face; diameter scales with
+  the joint face; wide joints get 2-/4-bolt patterns with edge distances.
+* **Split band clamps** — horizontal round member meeting a vertical pole:
+  a two-piece saddle band with ear tabs, bolted through the ears.
+* **Slip fitters** — round-over-round vertical fits (post-top luminaires):
+  collar + 3 radial set screws instead of a nonsense vertical through-bolt.
+* **Carriage bolts** — wood decking on metal frames (vertical axis): dome
+  head proud of the timber, washer + hex nut on the steel side.
+* **Anchor bases** — vertical structural members landing at grade with no
+  modeled base get the full ground package (plate + anchor circle + grout +
+  gussets) from :mod:`connections`.
+* Declared-only: **weld** fillet rings (and no bolts), **flange splices**,
+  **lag screws**.
 
-Accuracy notes: rotated cylinders/cones use their true oriented bounding box
-(axis from the Euler rotation), so bolts only appear where parts really
-touch; joints with a face too thin to drill (<10 mm) are skipped; joint
-count is capped. Mirrored 1:1 in frontend/src/builders/hardware.ts.
+Joints are collected first, then ordered deterministically (anchor bases,
+declared joints, inferred joints; position-stable within each rank) so ids
+survive slider nudges and the ``MAX_JOINTS`` budget keeps structural joints.
+Rotated primitives use exact rotated-corner bounding boxes (oriented axis
+for cylinders/cones), so bolts only appear where parts really touch; joints
+with a face too thin to drill (<10 mm) are skipped.
 
-Enabled by the spec toggle ``connection_hardware``.
+Mirrored 1:1 in frontend/src/builders/hardware.ts. Enabled by the spec
+toggle ``connection_hardware``.
 """
 from __future__ import annotations
 
 import math
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .base import Primitive
+from .connections import (
+    carriage_bolt_assembly,
+    flange_splice,
+    ground_connection,
+    lag_screw_assembly,
+    slip_fitter,
+    split_band_clamp,
+    through_bolt_assembly,
+    weld_fillet,
+)
 from .shapes import profile_bounds, resolve_profile
 
-#: kinds treated as round members for band-clamp detection
+#: kinds treated as round members for band-clamp/slip-fit detection
 ROUND_KINDS = ("cylinder", "cone", "sweep", "tube")
 
 MAX_JOINTS = 24
@@ -37,12 +58,24 @@ EMBED = 0.025      # max bolt embedment into each member beyond the joint, m
 MIN_FACE = 0.010   # skip joints whose bolt face is thinner than this, m
 GRID = 0.06        # joint dedupe grid, m
 
-#: bolt axis -> rotation that maps a Z-axis cylinder onto that axis
-_AXIS_ROT = {
-    0: (0.0, math.pi / 2, 0.0),  # X
-    1: (math.pi / 2, 0.0, 0.0),  # Y
-    2: (0.0, 0.0, 0.0),          # Z
-}
+#: connection types a spec's ``connections`` array may declare
+CONNECTION_TYPES = (
+    "anchor_base", "through_bolt", "flange_splice", "band_clamp",
+    "slip_fit", "weld", "carriage_bolt", "lag_screw", "none",
+)
+
+
+def _euler_xyz_matrix(rot: Sequence[float]) -> List[List[float]]:
+    """Three.js-parity Euler XYZ rotation matrix (shared with edits.py)."""
+    x, y, z = rot
+    c1, s1 = math.cos(x), math.sin(x)
+    c2, s2 = math.cos(y), math.sin(y)
+    c3, s3 = math.cos(z), math.sin(z)
+    return [
+        [c2 * c3, -c2 * s3, s2],
+        [c1 * s3 + c3 * s1 * s2, c1 * c3 - s1 * s2 * s3, -c2 * s1],
+        [s1 * s3 - c1 * c3 * s2, c3 * s1 + c1 * s2 * s3, c1 * c2],
+    ]
 
 
 def _cylinder_axis(rotation: Sequence[float]) -> Tuple[float, float, float]:
@@ -54,22 +87,40 @@ def _cylinder_axis(rotation: Sequence[float]) -> Tuple[float, float, float]:
     return (x, y, z)
 
 
+def _rotated_aabb(loc: Sequence[float], center_off: Sequence[float],
+                  h: Sequence[float], rotation: Sequence[float]):
+    """World AABB of a rotated local box: rotate its 8 corners and take the
+    extremes. Tight (unlike the old max-extent cube), still axis-aligned."""
+    m = _euler_xyz_matrix(rotation)
+    lo = [math.inf] * 3
+    hi = [-math.inf] * 3
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                v = (center_off[0] + sx * h[0], center_off[1] + sy * h[1],
+                     center_off[2] + sz * h[2])
+                for k in range(3):
+                    w = m[k][0] * v[0] + m[k][1] * v[1] + m[k][2] * v[2]
+                    lo[k] = min(lo[k], w)
+                    hi[k] = max(hi[k], w)
+    center = tuple(loc[k] + (lo[k] + hi[k]) / 2 for k in range(3))
+    half = tuple((hi[k] - lo[k]) / 2 for k in range(3))
+    return (center, half)
+
+
 def _aabb(p: Primitive) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """(center, half_extents) of the primitive's world AABB. Exact for
     boxes/spheres/tubes and arbitrarily rotated cylinders/cones
     (oriented-cylinder AABB); path/profile-based for sweeps and lathes;
-    conservative cube for rotated constructed kinds."""
+    rotated constructed kinds use tight rotated-corner boxes."""
     loc = p.location
-
-    def rotated_cube(h):
-        m = max(h)
-        return (loc, (m, m, m))
+    rotated = any(abs(a) > 1e-6 for a in p.rotation)
 
     if p.kind == "box":
         sx, sy, sz = p.params["size"]
         h = (sx / 2, sy / 2, sz / 2)
-        if any(abs(a) > 1e-6 for a in p.rotation):
-            return rotated_cube(h)
+        if rotated:
+            return _rotated_aabb(loc, (0.0, 0.0, 0.0), h, p.rotation)
         return (loc, h)
     if p.kind == "sphere":
         r = p.params["radius"]
@@ -81,10 +132,10 @@ def _aabb(p: Primitive) -> Tuple[Tuple[float, float, float], Tuple[float, float,
         )
         max_r, z0, z1 = profile_bounds(pts)
         h = (max_r, max_r, (z1 - z0) / 2)
-        center = (loc[0], loc[1], loc[2] + (z0 + z1) / 2)
-        if any(abs(a) > 1e-6 for a in p.rotation):
-            return rotated_cube(h)
-        return (center, h)
+        off = (0.0, 0.0, (z0 + z1) / 2)
+        if rotated:
+            return _rotated_aabb(loc, off, h, p.rotation)
+        return ((loc[0], loc[1], loc[2] + off[2]), h)
     if p.kind == "sweep":
         r = max(p.params["radius"], p.params.get("radius_end", 0.0))
         xs = [pt[0] for pt in p.params["path"]]
@@ -95,14 +146,11 @@ def _aabb(p: Primitive) -> Tuple[Tuple[float, float, float], Tuple[float, float,
             (max(ys) - min(ys)) / 2 + r,
             (max(zs) - min(zs)) / 2 + r,
         )
-        center = (
-            loc[0] + (max(xs) + min(xs)) / 2,
-            loc[1] + (max(ys) + min(ys)) / 2,
-            loc[2] + (max(zs) + min(zs)) / 2,
-        )
-        if any(abs(a) > 1e-6 for a in p.rotation):
-            return rotated_cube(h)
-        return (center, h)
+        off = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2,
+               (max(zs) + min(zs)) / 2)
+        if rotated:
+            return _rotated_aabb(loc, off, h, p.rotation)
+        return ((loc[0] + off[0], loc[1] + off[1], loc[2] + off[2]), h)
     if p.kind == "loft":
         ps, pe = p.params["profile_start"], p.params["profile_end"]
         h = (
@@ -110,8 +158,8 @@ def _aabb(p: Primitive) -> Tuple[Tuple[float, float, float], Tuple[float, float,
             max(ps["h"], pe["h"]) / 2,
             p.params["depth"] / 2,
         )
-        if any(abs(a) > 1e-6 for a in p.rotation):
-            return rotated_cube(h)
+        if rotated:
+            return _rotated_aabb(loc, (0.0, 0.0, 0.0), h, p.rotation)
         return (loc, h)
     # cylinder / cone / tube
     r = p.params.get("radius") or max(
@@ -144,72 +192,28 @@ def _radius_at_z(prim: Primitive, z: float) -> float:
     return rb + (rt - rb) * min(1.0, max(0.0, t))
 
 
+def _round_radius(prim: Primitive) -> float:
+    """Nominal radius of a round-kind member."""
+    return prim.params.get("radius") or max(
+        prim.params.get("radius_bottom", 0.0), prim.params.get("radius_top", 0.0)
+    )
+
+
 def _is_upright_round(p: Primitive) -> bool:
     return p.kind in ("cylinder", "cone", "tube") and all(
         abs(a) < 1e-3 for a in p.rotation
     )
 
 
-def _pos(center: Sequence[float], axis: int, along: float) -> Tuple[float, float, float]:
-    out = list(center)
-    out[axis] = along
-    return tuple(out)
-
-
-def _bolt(joint: int, idx: int, center: Sequence[float], axis: int,
-          shaft_r: float, span_lo: float, span_hi: float) -> List[Primitive]:
-    """Through-bolt: washer+hex head at span_hi, washer+hex nut at span_lo."""
-    rot = _AXIS_ROT[axis]
-    head_r = 1.8 * shaft_r
-    head_h = max(1.2 * shaft_r, 0.004)
-    nut_r = 1.6 * shaft_r
-    nut_h = max(shaft_r, 0.003)
-    w_r = 2.2 * shaft_r
-    w_h = 0.002
-    depth = max(span_hi - span_lo, 0.012) + 2 * w_h
-    mid = (span_lo + span_hi) / 2
-    name = f"joint{joint}_bolt{idx}"
-
-    def prim(kind_name: str, along: float, radius: float, d: float, segments=None):
-        params = {"radius": radius, "depth": d}
-        if segments:
-            params["segments"] = segments
-        return Primitive(
-            kind="cylinder", name=f"{name}_{kind_name}", component="hardware",
-            location=_pos(center, axis, along), rotation=rot,
-            material_slot="hardware", params=params,
-        )
-
-    return [
-        prim("shaft", mid, shaft_r, depth),
-        prim("washer_h", span_hi + w_h / 2, w_r, w_h),
-        prim("head", span_hi + w_h + head_h / 2, head_r, head_h, segments=6),
-        prim("washer_n", span_lo - w_h / 2, w_r, w_h),
-        prim("nut", span_lo - w_h - nut_h / 2, nut_r, nut_h, segments=6),
-    ]
-
-
-def _band_clamp(joint: int, vert: Primitive, center_z: float, axis_h: int) -> List[Primitive]:
-    """Saddle band around a vertical pole with two side through-bolts —
-    how mast arms / banner brackets attach to poles in the field."""
-    r = _radius_at_z(vert, center_z) + 0.006
-    cx, cy = vert.location[0], vert.location[1]
-    prims = [
-        Primitive(
-            kind="cylinder", name=f"joint{joint}_band", component="hardware",
-            location=(cx, cy, center_z), material_slot="hardware",
-            params={"radius": r, "depth": 0.05},
-        )
-    ]
-    perp_h = 1 - axis_h  # the other horizontal axis
-    shaft_r = 0.005
-    for i, side in enumerate((1.0, -1.0), start=1):
-        center = [cx, cy, center_z]
-        center[perp_h] += side * r * 0.85
-        span_lo = center[axis_h] - r * 0.8
-        span_hi = center[axis_h] + r * 0.8
-        prims.extend(_bolt(joint, i, center, axis_h, shaft_r, span_lo, span_hi))
-    return prims
+def _is_vertical_structural(p: Primitive) -> bool:
+    """A member that carries load down to grade: an upright round, or an
+    unrotated box clearly taller than it is wide."""
+    if _is_upright_round(p):
+        return True
+    if p.kind == "box" and all(abs(a) < 1e-3 for a in p.rotation):
+        sx, sy, sz = p.params["size"]
+        return sz >= 2.0 * max(sx, sy)
+    return False
 
 
 #: C6: fastener sizing scales with the connection's tributary load tier —
@@ -218,12 +222,13 @@ def _band_clamp(joint: int, vert: Primitive, center_z: float, axis_h: int) -> Li
 LOAD_FACTOR = {"light": 0.75, "standard": 1.0, "heavy": 1.35}
 
 
-def _load_class(pa: Primitive, pb: Primitive) -> str:
-    def volume(p: Primitive) -> float:
-        _, h = _aabb(p)
-        return 8.0 * h[0] * h[1] * h[2]
+def _volume(p: Primitive) -> float:
+    _, h = _aabb(p)
+    return 8.0 * h[0] * h[1] * h[2]
 
-    v = max(volume(pa), volume(pb))
+
+def _load_class(pa: Primitive, pb: Primitive) -> str:
+    v = max(_volume(pa), _volume(pb))
     if v > 0.15:
         return "heavy"
     if v < 0.01:
@@ -231,20 +236,36 @@ def _load_class(pa: Primitive, pb: Primitive) -> str:
     return "standard"
 
 
-def _bolt_pattern(d1: float, d2: float, head_r: float) -> List[Tuple[float, float]]:
+def _bolt_pattern(d1: float, d2: float, head_r: float,
+                  round_face: bool = False,
+                  count: Optional[int] = None) -> List[Tuple[float, float]]:
     """Bolt offsets on the joint face: 1 center bolt for small faces, a
     2-bolt row along a long face, a 4-bolt pattern for plate-like faces —
-    all with real edge distances (>= 1.5d from the overlap edge)."""
+    all with real edge distances (>= 1.5d from the overlap edge). On a round
+    face the offsets shrink so corner bolts stay inside the circle. An
+    explicit ``count`` overrides the pattern with an evenly spaced row along
+    the longer face axis."""
+    scale = 0.7 if round_face else 1.0
+    if count:
+        if count == 1:
+            return [(0.0, 0.0)]
+        along_1 = d1 >= d2
+        span = 0.6 * (d1 if along_1 else d2) * scale
+        out = []
+        for i in range(count):
+            o = -span / 2 + span * i / (count - 1)
+            out.append((o, 0.0) if along_1 else (0.0, o))
+        return out
     edge = 1.5 * head_r
     big1 = d1 >= 0.22 and d1 / 2 - 0.3 * d1 >= edge
     big2 = d2 >= 0.22 and d2 / 2 - 0.3 * d2 >= edge
+    o1, o2 = 0.3 * d1 * scale, 0.3 * d2 * scale
     if big1 and big2:
-        return [(-0.3 * d1, -0.3 * d2), (0.3 * d1, -0.3 * d2),
-                (-0.3 * d1, 0.3 * d2), (0.3 * d1, 0.3 * d2)]
+        return [(-o1, -o2), (o1, -o2), (-o1, o2), (o1, o2)]
     if big1:
-        return [(-0.3 * d1, 0.0), (0.3 * d1, 0.0)]
+        return [(-o1, 0.0), (o1, 0.0)]
     if big2:
-        return [(0.0, -0.3 * d2), (0.0, 0.3 * d2)]
+        return [(0.0, -o2), (0.0, o2)]
     return [(0.0, 0.0)]
 
 
@@ -254,34 +275,143 @@ METAL_PRESETS = {
     "powder_coat_black", "powder_coat_green",
 }
 
+#: preset names treated as timber (carriage-bolt territory)
+WOOD_PRESETS = {"wood_slat"}
+
+
+def _preset_name(slot: str, spec) -> Optional[str]:
+    if spec is None:
+        return None
+    from .base import material_preset_name
+
+    return material_preset_name(spec, slot)
+
 
 def _is_soft(slot: str, spec) -> bool:
     """True when a member's material is non-metal (wood/concrete/lens). With
     no spec (direct test calls) everything is treated as metal, preserving
     the pre-material-awareness behavior."""
-    if spec is None:
+    preset = _preset_name(slot, spec)
+    return preset is not None and preset not in METAL_PRESETS
+
+
+def _is_wood(slot: str, spec) -> bool:
+    preset = _preset_name(slot, spec)
+    return preset is not None and preset in WOOD_PRESETS
+
+
+# ---------------------------------------------------------------------------
+# Declared connections (the spec's `connections` array)
+# ---------------------------------------------------------------------------
+
+def _spec_connections(spec) -> List[dict]:
+    if not isinstance(spec, dict):
+        return []
+    out = []
+    for c in spec.get("connections") or []:
+        if (
+            isinstance(c, dict)
+            and isinstance(c.get("a"), str)
+            and isinstance(c.get("b"), str)
+            and c.get("type") in CONNECTION_TYPES
+        ):
+            out.append(c)
+    return out
+
+
+def _side_matches(ref: str, p: Primitive) -> bool:
+    return ref == p.component or ref == f"{p.component}/{p.name}"
+
+
+def _find_declaration(decls: List[dict], pa: Primitive, pb: Primitive) -> Optional[dict]:
+    """First declaration whose {a, b} matches this prim pair (unordered;
+    component or component/part paths)."""
+    for d in decls:
+        a, b = d["a"], d["b"]
+        if b == "ground":
+            continue  # ground declarations are handled by the anchor pass
+        if (_side_matches(a, pa) and _side_matches(b, pb)) or (
+            _side_matches(a, pb) and _side_matches(b, pa)
+        ):
+            return d
+    return None
+
+
+def _ground_declaration(decls: List[dict], p: Primitive) -> Optional[dict]:
+    for d in decls:
+        if d["b"] == "ground" and _side_matches(d["a"], p):
+            return d
+        if d["a"] == "ground" and _side_matches(d["b"], p):
+            return d
+    return None
+
+
+def _round_about_axis(p: Primitive, axis: int) -> bool:
+    """True when the member is round and its cylinder axis is the bolt axis —
+    its joint face is a circle, so bolt offsets must stay inside it."""
+    if p.kind not in ("cylinder", "cone", "tube"):
         return False
-    from .base import material_preset_name
+    u = _cylinder_axis(p.rotation)
+    return abs(u[axis]) > 0.9
 
-    return material_preset_name(spec, slot) not in METAL_PRESETS
 
+def _member_direction(p: Primitive) -> Tuple[float, float, float]:
+    """Unit direction a member runs along: the cylinder axis for round kinds,
+    the path chord for sweeps, +Z otherwise."""
+    if p.kind == "sweep":
+        path = p.params.get("path") or []
+        if len(path) >= 2:
+            dx = path[-1][0] - path[0][0]
+            dy = path[-1][1] - path[0][1]
+            dz = path[-1][2] - path[0][2]
+            n = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+            return (dx / n, dy / n, dz / n)
+    if p.kind in ("cylinder", "cone", "tube"):
+        return _cylinder_axis(p.rotation)
+    return (0.0, 0.0, 1.0)
+
+
+def _is_telescoping_fit(pa: Primitive, pb: Primitive, center) -> bool:
+    """Post-top slip fit: two coaxial upright pipe-like members (each much
+    longer than wide) telescoping vertically with meaningfully different
+    radii — a luminaire fitter over a pole tenon, not a pole on a flange
+    disc (a disc's depth fails the pipe-like test)."""
+    if not (_is_upright_round(pa) and _is_upright_round(pb)):
+        return False
+    for p in (pa, pb):
+        if p.params["depth"] < 2.0 * _round_radius(p):
+            return False  # disc/flange, not a pipe
+    ra, rb = _radius_at_z(pa, center[2]), _radius_at_z(pb, center[2])
+    big, small = max(ra, rb), min(ra, rb)
+    if small <= 0 or (big - small) / big < 0.15:
+        return False
+    dx = pa.location[0] - pb.location[0]
+    dy = pa.location[1] - pb.location[1]
+    return math.hypot(dx, dy) <= 0.3 * big  # coaxial
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
 
 def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
-    """Emit visible connection hardware at inter-component joints. Joints
-    between two non-metal members (wood↔wood, wood↔concrete) get no bolts —
-    real furniture uses concealed joinery, so a wooden table never sprouts
-    the industrial anchor bolts a steel pole needs. Metal↔metal and
-    metal↔wood joints (e.g. a bench's wood slat bolted to its steel frame)
-    keep their fasteners."""
+    """Emit visible connection hardware. Candidates are collected first
+    (inter-component contacts + anchor bases), ordered deterministically
+    (anchor bases, then declared joints, then inferred; position-stable), and
+    dispatched to the emitter matching the declared or inferred connection
+    type. Joints between two non-metal members with no declaration get no
+    bolts — real furniture uses concealed joinery."""
+    decls = _spec_connections(spec)
     boxes = [
         (p, *_aabb(p))
         for p in prims
         if p.component != "hardware" and not p.cut
     ]
-    out: List[Primitive] = []
-    seen: set = set()
-    joint = 0
 
+    candidates: List[dict] = []
+    seen: set = set()
+
+    # -------------------------------------------------- pair contacts
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
             pa, ca, ha = boxes[i]
@@ -294,7 +424,10 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             if any(hi[k] <= lo[k] for k in range(3)):
                 continue  # parts don't actually touch
 
-            if _is_soft(pa.material_slot, spec) and _is_soft(pb.material_slot, spec):
+            decl = _find_declaration(decls, pa, pb)
+            if decl is not None and decl["type"] == "none":
+                continue  # explicitly no visible hardware
+            if decl is None and _is_soft(pa.material_slot, spec) and _is_soft(pb.material_slot, spec):
                 continue  # non-structural joint — concealed joinery, no bolts
 
             center = [(lo[k] + hi[k]) / 2 for k in range(3)]
@@ -310,33 +443,190 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             if min(d1, d2) < MIN_FACE:
                 continue  # face too thin to drill — not a real joint
 
+            candidates.append({
+                "kind": "pair", "rank": 1 if decl else 2, "key": key,
+                "pa": pa, "pb": pb, "ca": ca, "ha": ha, "cb": cb, "hb": hb,
+                "lo": lo, "hi": hi, "center": center,
+                "axis": axis, "perp": perp, "d1": d1, "d2": d2, "decl": decl,
+            })
+
+    # -------------------------------------------------- anchor bases
+    anchor_seen: set = set()
+    for p, c, h in boxes:
+        if not _is_vertical_structural(p):
+            continue
+        if c[2] - h[2] > 0.01:  # bottom must land at grade
+            continue
+        gdecl = _ground_declaration(decls, p)
+        if gdecl is not None and gdecl["type"] == "none":
+            continue
+        forced = gdecl is not None and gdecl["type"] == "anchor_base"
+        if not forced:
+            if _is_soft(p.material_slot, spec):
+                continue  # timber posts don't get anchor flanges uninvited
+            if _volume(p) < 0.01:
+                continue  # light member — leveling feet territory, not anchors
+        # a modeled base (any other component at this member's foot) wins
+        foot_r = max(h[0], h[1])
+        has_base = any(
+            q.component != p.component
+            and qc[2] + qh[2] <= 0.15
+            and abs(qc[0] - c[0]) < foot_r + qh[0]
+            and abs(qc[1] - c[1]) < foot_r + qh[1]
+            for q, qc, qh in boxes
+        )
+        if has_base:
+            continue
+        key = (p.component, round(c[0] / 0.1), round(c[1] / 0.1))
+        if key in anchor_seen:
+            continue
+        anchor_seen.add(key)
+        if p.kind == "box":
+            member_r = max(p.params["size"][0], p.params["size"][1]) / 2
+            shape = "square"
+        else:
+            member_r = _radius_at_z(p, 0.0)
+            shape = "round"
+        load = gdecl.get("load") if gdecl else None
+        candidates.append({
+            "kind": "anchor", "rank": 0,
+            "key": (round(c[0] / GRID), round(c[1] / GRID), 0),
+            "center_xy": (c[0], c[1]), "member_r": member_r, "shape": shape,
+            "slot": p.material_slot,
+            "load": load or ("heavy" if _volume(p) > 0.15 else "standard"),
+        })
+
+    # -------------------------------------------------- deterministic order
+    candidates.sort(key=lambda cand: (cand["rank"], cand["key"]))
+
+    out: List[Primitive] = []
+    joint = 0
+    for cand in candidates:
+        if joint >= MAX_JOINTS:
+            break
+        emitted = _dispatch(joint + 1, cand, spec)
+        if emitted:
             joint += 1
+            out.extend(emitted)
+    return out
 
-            # horizontal round member meeting an upright pole -> band clamp
-            upright = pa if _is_upright_round(pa) else pb if _is_upright_round(pb) else None
-            other = pb if upright is pa else pa
-            if (
-                axis != 2
-                and upright is not None
-                and not _is_upright_round(other)
-                and other.kind in ROUND_KINDS
-            ):
-                out.extend(_band_clamp(joint, upright, center[2], axis))
-            else:
-                factor = LOAD_FACTOR[_load_class(pa, pb)]
-                shaft_r = min(max(0.22 * min(d1, d2) * factor, 0.004), 0.014)
-                above = max(ca[axis] + ha[axis], cb[axis] + hb[axis]) - hi[axis]
-                below = lo[axis] - min(ca[axis] - ha[axis], cb[axis] - hb[axis])
-                span_hi = hi[axis] + min(above, EMBED)
-                span_lo = lo[axis] - min(below, EMBED)
-                for idx, (o1, o2) in enumerate(
-                    _bolt_pattern(d1, d2, 1.8 * shaft_r), start=1
-                ):
-                    c = list(center)
-                    c[perp[0]] += o1
-                    c[perp[1]] += o2
-                    out.extend(_bolt(joint, idx, c, axis, shaft_r, span_lo, span_hi))
 
-            if joint >= MAX_JOINTS:
-                return out
+def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
+    """Emit one joint's hardware from a candidate record."""
+    if cand["kind"] == "anchor":
+        return ground_connection(
+            cand["member_r"], mount="flange", load_class=cand["load"],
+            component="hardware", slot=cand["slot"],
+            center=cand["center_xy"], shape=cand["shape"],
+            name_prefix=f"joint{joint}_",
+        )
+
+    pa, pb = cand["pa"], cand["pb"]
+    lo, hi, center = cand["lo"], cand["hi"], cand["center"]
+    axis, perp, d1, d2 = cand["axis"], cand["perp"], cand["d1"], cand["d2"]
+    decl = cand["decl"]
+    ca, ha, cb, hb = cand["ca"], cand["ha"], cand["cb"], cand["hb"]
+
+    upright = pa if _is_upright_round(pa) else pb if _is_upright_round(pb) else None
+    other = pb if upright is pa else pa
+
+    # ------------------------------------------------ pick the joint type
+    ctype = decl["type"] if decl else None
+    if ctype is None:
+        if _is_telescoping_fit(pa, pb, center):
+            ctype = "slip_fit"
+        elif (
+            axis != 2
+            and upright is not None
+            and not _is_upright_round(other)
+            and other.kind in ROUND_KINDS
+        ):
+            ctype = "band_clamp"
+        elif axis == 2 and (_is_wood(pa.material_slot, spec) != _is_wood(pb.material_slot, spec)):
+            ctype = "carriage_bolt"
+        else:
+            ctype = "through_bolt"
+
+    # declared types that need geometry they don't have fall back to bolts
+    if ctype == "band_clamp" and upright is None:
+        ctype = "through_bolt"
+    if ctype == "slip_fit" and not (
+        pa.kind in ("cylinder", "cone", "tube") or pb.kind in ("cylinder", "cone", "tube")
+    ):
+        ctype = "through_bolt"
+    if ctype == "anchor_base":  # pair-declared anchor_base has no grade side
+        ctype = "through_bolt"
+
+    # ------------------------------------------------ emit
+    if ctype == "weld":
+        round_m = upright or (pa if pa.kind in ROUND_KINDS else pb if pb.kind in ROUND_KINDS else None)
+        if round_m is None:
+            return []  # shop weld with no round member: nothing visible
+        r = (
+            _radius_at_z(round_m, center[2])
+            if round_m.kind in ("cylinder", "cone", "tube") and _is_upright_round(round_m)
+            else _round_radius(round_m)
+        )
+        return [weld_fillet(
+            r, max(0.008, r * 0.2), center[2], "hardware", "hardware",
+            name=f"joint{joint}_weld",
+            center=(round_m.location[0], round_m.location[1]),
+        )]
+
+    if ctype == "band_clamp":
+        arm_r = _round_radius(other) if other.kind in ROUND_KINDS else min(d1, d2) / 2
+        # ear bolts run along the ARM's horizontal direction (ears sit on the
+        # pole's flanks, clear of the arm), not the overlap box's thin axis
+        direction = _member_direction(other)
+        axis_h = 0 if abs(direction[0]) >= abs(direction[1]) else 1
+        return split_band_clamp(
+            joint, _radius_at_z(upright, center[2]),
+            (upright.location[0], upright.location[1]), center[2],
+            axis_h, arm_r,
+        )
+
+    if ctype == "slip_fit":
+        round_prims = [p for p in (pa, pb) if p.kind in ("cylinder", "cone", "tube")]
+        outer = max(round_prims, key=lambda p: _round_radius(p))
+        outer_r = (
+            _radius_at_z(outer, center[2]) if _is_upright_round(outer)
+            else _round_radius(outer)
+        )
+        return slip_fitter(joint, outer_r, (outer.location[0], outer.location[1]),
+                           center[2])
+
+    if ctype == "flange_splice":
+        member_r = min(d1, d2) / 2
+        return flange_splice(joint, center, axis, member_r,
+                             n_bolts=(decl or {}).get("count") or 6)
+
+    # bolted family: through / carriage / lag
+    load = (decl or {}).get("load") or _load_class(pa, pb)
+    factor = LOAD_FACTOR.get(load, 1.0)
+    shaft_r = min(max(0.22 * min(d1, d2) * factor, 0.004), 0.014)
+    above = max(ca[axis] + ha[axis], cb[axis] + hb[axis]) - hi[axis]
+    below = lo[axis] - min(ca[axis] - ha[axis], cb[axis] - hb[axis])
+    span_hi = hi[axis] + min(above, EMBED)
+    span_lo = lo[axis] - min(below, EMBED)
+    round_face = _round_about_axis(pa, axis) or _round_about_axis(pb, axis)
+    pattern = _bolt_pattern(d1, d2, 1.8 * shaft_r, round_face,
+                            (decl or {}).get("count"))
+
+    out: List[Primitive] = []
+    for idx, (o1, o2) in enumerate(pattern, start=1):
+        c = list(center)
+        c[perp[0]] += o1
+        c[perp[1]] += o2
+        if ctype == "carriage_bolt":
+            # dome goes on the timber face
+            wood = pa if _is_wood(pa.material_slot, spec) else pb
+            dome_at_hi = True if spec is None else wood.location[axis] >= center[axis]
+            out.extend(carriage_bolt_assembly(joint, idx, c, axis, shaft_r,
+                                              span_lo, span_hi, dome_at_hi))
+        elif ctype == "lag_screw":
+            out.extend(lag_screw_assembly(joint, idx, c, axis, shaft_r,
+                                          span_lo, span_hi))
+        else:
+            out.extend(through_bolt_assembly(joint, idx, c, axis, shaft_r,
+                                             span_lo, span_hi))
     return out

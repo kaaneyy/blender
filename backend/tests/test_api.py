@@ -75,6 +75,21 @@ class TestPostprocess:
         with pytest.raises(SpecGenerationError, match="Schema violation"):
             _postprocess(json.dumps(spec), "strict")
 
+    def test_accepts_declared_connections(self):
+        spec = self._spec()
+        spec["connections"] = [
+            {"a": "pole", "b": "ground", "type": "anchor_base"},
+            {"a": "arm", "b": "pole", "type": "band_clamp", "load": "heavy", "count": 2},
+        ]
+        out = _postprocess(json.dumps(spec), "strict")
+        assert out["spec"]["connections"][0]["type"] == "anchor_base"
+
+    def test_rejects_unknown_connection_type(self):
+        spec = self._spec()
+        spec["connections"] = [{"a": "pole", "b": "ground", "type": "duct_tape"}]
+        with pytest.raises(SpecGenerationError, match="Schema violation"):
+            _postprocess(json.dumps(spec), "strict")
+
     def test_rejects_unbuildable_geometry(self):
         spec = self._spec()
         spec["asset_type"] = "mystery_prop"  # no builder, no primitives

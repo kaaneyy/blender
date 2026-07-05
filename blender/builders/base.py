@@ -159,16 +159,19 @@ def compute_primitives(spec: dict) -> List[Primitive]:
             f"'primitives' array; curated builders: {known}"
         )
 
+    # SketchUp-style edit overlay, structural half (duplicate/delete) BEFORE
+    # hardware so duplicated components get their own joints and deleted
+    # parts don't attract bolts; transforms come after hardware so joint ids
+    # stay put while the user drags.
+    from .edits import apply_structure, apply_transforms
+
+    prims = apply_structure(prims, spec)
+
     if spec_toggles(spec).get("connection_hardware"):
         from .hardware import compute_hardware
 
         prims = prims + compute_hardware(prims, spec)
 
-    # SketchUp-style edit overlay: structural (duplicate/delete) then the
-    # move/rotate/scale transform, baked so the export matches the viewport.
-    from .edits import apply_structure, apply_transforms
-
-    prims = apply_structure(prims, spec)
     prims = apply_transforms(prims, spec)
     return prims
 

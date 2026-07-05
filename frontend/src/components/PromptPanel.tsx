@@ -42,9 +42,10 @@ const QUICK_FIXES: Array<{ label: string; title: string; message: string }> = [
     title: "Audit every joint: real load path, parts actually touch, fasteners appropriate to the material",
     message:
       "Audit and fix EVERY connection in this asset, then return the FULL updated AssetSpec JSON (keep ids/values stable where unchanged). " +
-      "1) Load path: every part must be supported down to the ground (z=0); add base plates, rails, aprons, stretchers, brackets or collars where a part has nothing to attach to. " +
+      "1) Load path: every part must be supported down to the ground (z=0); add rails, aprons, stretchers, brackets or collars where a part has nothing to attach to. " +
       "2) Contact: joined parts must interpenetrate 10-20 mm — fix any parts that float or merely touch at a zero-thickness face so the app can place hardware where they truly overlap. " +
-      "3) Appropriateness: match the fastening to the asset and its materials. Light-duty or non-structural items (a basic table, wooden furniture, decorative props) must NOT show industrial anchor bolts — set the connection_hardware toggle OFF for them and rely on integral/joinery connections. Reserve visible bolted hardware for structural metal assets (poles, signs, heavy frames), and keep members sized so hardware is not oversized. Nothing below z=0.",
+      "3) Intent: declare every real joint in the top-level connections array with the fabrication type a crew would use — anchor_base (structural vertical at grade, b:'ground'), band_clamp (arm on round pole), slip_fit (post-top telescoping fit), carriage_bolt (wood on metal frame), through_bolt, flange_splice, weld (welded steel, no bolts), lag_screw, or none (concealed joinery/cast-integral). " +
+      "4) Appropriateness: light-duty or non-structural items (a basic table, wooden furniture, decorative props) must NOT show industrial anchors — declare their legs {a, b:'ground', type:'none'} and use joinery. Reserve anchor bases for structural metal verticals (poles, signs, heavy frames). Nothing below z=0.",
   },
   {
     label: "⚖️ Fix proportions",

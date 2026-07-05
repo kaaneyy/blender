@@ -85,14 +85,25 @@ TILT, SLOPE, CURVE (the model is not limited to upright boxes)
 FORM, PROPORTION & ARCHETYPES (make it read as the real fixture, not a box)
 - Map the request to a known archetype and use its characteristic forms: cobra-head street light (tapered swept mast arm + lofted teardrop head); acorn/teardrop post-top lamp (lathe globe on a fluted post with a finial); shoebox area light (thin lofted housing); bishop's-crook lamp (curved swept arm); bollard (tube with a lathe dome cap); planter/urn (lathe vase profile); bench (slats on rails on legs). Prefer lathe/sweep/loft for anything round, curved, or decorative.
 - Give members REAL structural proportions, not equal sticks: express relationships as ratios in expressions — a pole base diameter ≈ 1.8× its top (taper), a cantilevered arm tapering to ~60% at the tip (sweep radius_end ≈ 0.6× radius), a post-top globe ≈ 1.2–1.6× the post diameter. Slender vertical members read as engineered; chunky uniform ones read as toy.
-- For each component, pick the connection type to its neighbor (welded / bolted-flange / slip-fit / cast-integral) and model its visible detail accordingly (weld collar, flange + bolt ring, telescoping sleeve). This drives the joint hardware.
+- For each component, pick the connection type to its neighbor and RECORD it in the top-level "connections" array (see CONNECTION RULES) — that declaration drives the joint hardware the app generates. Model larger visible details (telescoping sleeves, brackets) as primitives where a real one would be seen.
 
 CONNECTION RULES (think like a fabricator — every joint must be buildable in real life)
 - Every part must be physically supported through a real load path down to the ground. Before finishing, walk through your primitives joint by joint and ask: what holds this part, and how would a crew actually fasten it on site?
-- Parts that join MUST interpenetrate by 10-20 mm at the joint (e.g. a leg whose top is inside the rail it supports, a rail whose top is inside the slats it carries). Never leave parts floating or merely touching at a zero-thickness face — the app detects real overlaps to place bolts, washers, and nuts exactly there.
-- Choose the realistic connection for each joint and model its visible parts as their own primitives/components where a real one would be seen: base plates + anchor-bolt pads where a vertical member meets the ground; cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets, gussets, or collars where members meet at right angles; sleeves/sockets for post-in-tube fits. A slat can NOT attach to a leg it never touches — add the rail.
-- Round vertical poles receive horizontal members via band clamps (the app adds the clamp when a horizontal round member overlaps an upright pole) — make the arm/bracket actually reach into the pole's surface.
-- Nothing may extend below z=0; ground attachment is expressed with a plate or footing collar AT z=0.
+- Parts that join MUST interpenetrate by 10-20 mm at the joint (e.g. a leg whose top is inside the rail it supports, a rail whose top is inside the slats it carries). Never leave parts floating or merely touching at a zero-thickness face — the app places hardware exactly where parts truly overlap.
+- DECLARE every real joint in the top-level "connections" array: {{"a": "component" (or "component/part"), "b": "component" (or "ground"), "type": ...}}. Types and when to use them:
+  * "anchor_base" — a vertical STRUCTURAL member landing at grade (pole, sign post, heavy frame leg): the app generates the full base plate + anchor-bolt circle + grout + gussets there. Use b: "ground".
+  * "band_clamp" — a horizontal arm/bracket clamping a round pole (split saddle band, bolted ears).
+  * "slip_fit" — round-over-round telescoping fits (post-top luminaire over a pole tenon): collar + set screws.
+  * "carriage_bolt" — wood decking/slats on a metal frame: dome heads proud of the timber, nuts below the steel.
+  * "through_bolt" — the general bolted lap joint (washers + hex head/nut).
+  * "flange_splice" — collinear members joined end-to-end (two mating discs + a bolt circle).
+  * "weld" — shop-welded steel: a weld bead is shown and NO bolts appear.
+  * "lag_screw" — a metal fitting screwed into timber (hex head one side, no nut).
+  * "none" — concealed joinery or cast-integral (wood-to-wood furniture joints, decorative caps): no visible hardware.
+  Undeclared joints get inferred hardware from geometry, so declare intent wherever inference could guess wrong — especially welded joints and anything that must NOT show bolts.
+- Light non-structural furniture must NOT get industrial anchors: declare {{"a": "<leg component>", "b": "ground", "type": "none"}}. Only structural verticals at grade get "anchor_base".
+- Still model load-path geometry as primitives: cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets or collars where members meet at right angles. A slat can NOT attach to a leg it never touches — add the rail.
+- Nothing may extend below z=0; grade-level anchorage comes from an "anchor_base" connection (or a modeled plate/footing AT z=0).
 
 MATERIALS
 - Presets: {", ".join(MATERIAL_PRESETS)}.
@@ -130,8 +141,10 @@ ENHANCE_SYSTEM = (
     "request names several parts or features ('a car roof with slanted solar "
     "panels'), the brief MUST explicitly cover every one of them, with tilt/"
     "slope angles in degrees for slanted or curved elements and how each part "
-    "mounts to the others. Plain prose, at most 120 words, no JSON, no lists, "
-    "no preamble."
+    "mounts to the others — name the fabrication connection per joint (anchor "
+    "base at grade, band clamp on the pole, slip-fit tenon, weld, carriage "
+    "bolts into timber, through-bolts). Plain prose, at most 120 words, no "
+    "JSON, no lists, no preamble."
 )
 
 
