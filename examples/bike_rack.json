@@ -1,0 +1,56 @@
+{
+  "asset_type": "bike_rack",
+  "name": "LoopRack5",
+  "units": "imperial",
+  "code_mode": "strict",
+  "parameters": [
+    { "id": "hoop_height", "label": "Hoop Height", "type": "slider",
+      "min": 30, "max": 36, "step": 0.5, "value": 34, "unit": "in",
+      "code_ref": "APBP-bike-parking" },
+    { "id": "hoop_width", "label": "Hoop Width", "type": "slider",
+      "min": 22, "max": 30, "step": 0.5, "value": 24, "unit": "in" },
+    { "id": "tube_diameter", "label": "Tube Diameter", "type": "slider",
+      "min": 1.5, "max": 3, "step": 0.25, "value": 2.375, "unit": "in" },
+    { "id": "hoop_count", "label": "Number of Hoops", "type": "slider",
+      "min": 2, "max": 6, "step": 1, "value": 3 },
+    { "id": "hoop_spacing", "label": "Hoop Spacing", "type": "slider",
+      "min": 24, "max": 48, "step": 1, "value": 36, "unit": "in" }
+  ],
+  "toggles": [
+    { "id": "base_plates", "label": "Surface-Mount Base Plates", "value": true }
+  ],
+  "materials": [
+    { "slot": "loops", "preset": "galvanized_steel", "finish": "rough" },
+    { "slot": "base", "preset": "galvanized_steel", "finish": "sheet" }
+  ],
+  "components": ["hoops", "base"],
+  "connections": [
+    { "a": "hoops", "b": "base", "type": "weld" },
+    { "a": "hoops", "b": "ground", "type": "anchor_base" }
+  ],
+  "primitives": [
+    { "kind": "sweep", "name": "hoop", "component": "hoops", "material_slot": "loops",
+      "location": ["-((hoop_count - 1) * hoop_spacing) / 2", 0, 0],
+      "array": { "count": "hoop_count", "step": ["hoop_spacing", 0, 0] },
+      "params": {
+        "radius": "tube_diameter / 2",
+        "path": [
+          ["-hoop_width / 2", 0, "tube_diameter / 2"],
+          ["-hoop_width / 2", 0, "hoop_height * 0.7"],
+          ["-hoop_width * 0.32", 0, "hoop_height * 0.97"],
+          [0, 0, "hoop_height"],
+          ["hoop_width * 0.32", 0, "hoop_height * 0.97"],
+          ["hoop_width / 2", 0, "hoop_height * 0.7"],
+          ["hoop_width / 2", 0, "tube_diameter / 2"]
+        ]
+      }
+    },
+    { "kind": "box", "name": "base_channel", "component": "base", "material_slot": "base",
+      "visible_if": "base_plates",
+      "location": ["-((hoop_count - 1) * hoop_spacing) / 2", 0, 0.008],
+      "array": { "count": "hoop_count", "step": ["hoop_spacing", 0, 0] },
+      "params": { "size": ["hoop_width + 0.12", 0.1, 0.016] }
+    }
+  ],
+  "seed": 11
+}

@@ -1,0 +1,56 @@
+{
+  "asset_type": "planter",
+  "name": "UrnPlanter28",
+  "units": "imperial",
+  "code_mode": "advisory",
+  "parameters": [
+    { "id": "planter_height", "label": "Planter Height", "type": "slider",
+      "min": 20, "max": 36, "step": 0.5, "value": 28, "unit": "in" },
+    { "id": "rim_diameter", "label": "Rim Diameter", "type": "slider",
+      "min": 18, "max": 30, "step": 0.5, "value": 24, "unit": "in" },
+    { "id": "belly_diameter", "label": "Belly Diameter", "type": "slider",
+      "min": 22, "max": 34, "step": 0.5, "value": 30, "unit": "in" },
+    { "id": "base_diameter", "label": "Base Diameter", "type": "slider",
+      "min": 12, "max": 22, "step": 0.5, "value": 16, "unit": "in" }
+  ],
+  "toggles": [
+    { "id": "planting", "label": "Show Soil & Planting", "value": true }
+  ],
+  "materials": [
+    { "slot": "urn", "preset": "cast_iron", "color": "#6e5b3f", "finish": "cast",
+      "weathering": 0.55 },
+    { "slot": "soil", "preset": "concrete", "color": "#2c2318", "roughness": 0.95,
+      "weathering": 0.4 }
+  ],
+  "components": ["urn", "planting"],
+  "connections": [
+    { "a": "urn", "b": "ground", "type": "none" },
+    { "a": "planting", "b": "urn", "type": "none" }
+  ],
+  "primitives": [
+    { "kind": "lathe", "name": "vessel", "component": "urn", "material_slot": "urn",
+      "location": [0, 0, 0],
+      "params": {
+        "profile": [
+          ["base_diameter * 0.42", 0],
+          ["base_diameter / 2", 0.03],
+          ["base_diameter * 0.34", "planter_height * 0.16"],
+          ["belly_diameter / 2", "planter_height * 0.45"],
+          ["rim_diameter / 2", "planter_height * 0.9"],
+          ["rim_diameter / 2", "planter_height"],
+          ["rim_diameter / 2 - 0.02", "planter_height"],
+          ["belly_diameter / 2 - 0.045", "planter_height * 0.45"],
+          ["base_diameter * 0.3", "planter_height * 0.2"],
+          ["base_diameter * 0.3", "planter_height * 0.17"],
+          [0.002, "planter_height * 0.17"]
+        ]
+      }
+    },
+    { "kind": "cylinder", "name": "soil", "component": "planting", "material_slot": "soil",
+      "visible_if": "planting",
+      "location": [0, 0, "planter_height * 0.72"],
+      "params": { "radius": "rim_diameter / 2 - 0.03", "depth": "planter_height * 0.1" }
+    }
+  ],
+  "seed": 23
+}
