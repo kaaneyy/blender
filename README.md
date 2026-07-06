@@ -239,6 +239,121 @@ settable by prompt ("matte black, slightly rough, glowing lens"):
 These live in the spec JSON, so they survive download/export: the Blender
 build assigns the same values to Principled BSDF materials.
 
+## Examples & how to make your own
+
+`examples/` holds ready-to-build specs that double as the app's demo assets
+and the AI's few-shot references. There are two kinds:
+
+- **Curated** (`street_light.json`) — `asset_type` matches a Python builder in
+  `blender/builders/`, so it carries **no `primitives`**; the builder generates
+  the geometry from the parameters/toggles.
+- **Custom** (`park_bench.json`, `bike_rack.json`, `planter.json`) — the
+  "generate anything" path: the spec carries its own `primitives` array with
+  dimensions written as **expressions** over the slider parameters. No Python
+  needed; the generic builder (Python + its 1:1 TS mirror) realizes them.
+
+`bike_rack.json` (arrayed inverted-U hoops, welded to a surface channel,
+anchored at grade) and `planter.json` (a single revolved-`lathe` urn in aged
+cast-iron) are custom examples added to show the arrayed-structure and
+lathe/vase paths.
+
+### Add an example to the folder
+
+1. Drop a `your_asset.json` file into `examples/`. It must validate against
+   [`schemas/asset_spec.schema.json`](schemas/asset_spec.schema.json) — the
+   root is `additionalProperties: false`, so **unknown fields are rejected**.
+2. Validate it exactly the way the server does — schema, that it actually
+   builds, and that every part has a load path to the ground (nothing floats
+   or dips below `z=0`):
+
+   ```python
+   # from the repo root
+   import json, jsonschema
+   import blender.builders                                   # registers builders
+   from blender.builders.base import compute_primitives
+   from blender.builders.connectivity import check_buildability
+
+   spec = json.load(open("examples/your_asset.json"))
+   jsonschema.validate(spec, json.load(open("schemas/asset_spec.schema.json")))
+   prims = compute_primitives(spec)                          # raises on bad geometry
+   errs = [f for f in check_buildability(prims, spec) if f["severity"] == "error"]
+   assert not errs, errs                                     # no floating / below-grade parts
+   print(f"OK — {len(prims)} primitives")
+   ```
+
+   Or build it headless straight to primitives / a Blender file:
+
+   ```bash
+   python3 blender/build_cli.py examples/your_asset.json out/prims.json   # no Blender
+   blender -b -P blender/build_cli.py -- examples/your_asset.json out/asset.dae
+   ```
+3. Where examples are wired (optional): the default asset loaded on startup is
+   `frontend/src/App.tsx` (`import defaultSpecJson from "../../examples/…"`);
+   the AI's few-shot references are `FEW_SHOT_BUILTIN` / `FEW_SHOT_CUSTOM` in
+   `backend/app/spec_ai.py`. Adding a file to `examples/` does **not** require
+   touching either — do it only if you want your asset to be the startup demo
+   or a teaching example for the model.
+
+### Create specs with another AI (the exact prompts)
+
+The app builds a spec in two AI passes (`backend/app/spec_ai.py`). You can run
+the same passes by hand in any chat model — the prompts are reproduced below.
+
+**Pass 1 — design brief (`ENHANCE_SYSTEM`).** Turns a vague request into a
+precise, buildable brief:
+
+> You are the design-brief writer for a parametric 3D asset generator for
+> street furniture, lighting, signage, and props. Rewrite the user's request
+> into one precise, buildable brief. Name the asset type; a coherent style;
+> overall dimensions WITH units, choosing sensible values within US code limits
+> where they apply (AASHTO/MUTCD/ADA/IBC); per-part materials and finishes; 2–4
+> optional features worth exposing as toggles; and how the parts connect and
+> mount to the ground (base plate, rails, clamps). Keep EVERY explicit detail
+> the user gave — only add what is missing. … Plain prose, at most 120 words,
+> no JSON, no lists, no preamble.
+
+**Pass 2 — spec generation (`_system_prompt`).** Turns that brief into the
+`AssetSpec` JSON. The full runtime prompt is assembled in `_system_prompt()`
+and embeds four things you must paste in for an external AI to match the app:
+
+1. the entire **JSON schema** (`schemas/asset_spec.schema.json`),
+2. the **US-code standards** ranges (`standards/us_codes.json`, minus the
+   `_meta`/`_connections` keys),
+3. the two reference **examples** (`street_light.json`, `park_bench.json`),
+4. the human-authored **rule blocks** — the load-bearing ones are:
+
+   - *Output:* return ONLY the AssetSpec JSON object, no prose or fences; it
+     must validate against the schema (unknown fields rejected).
+   - *Geometry:* dimensions are METERS, `+Z` up, nothing below `z=0`; kinds are
+     `box · cylinder · cone · sphere · lathe · sweep · loft · tube`, with
+     `cut` for negative space and `array {count, step}` for repetition; every
+     tweakable dimension is a slider parameter referenced from expressions
+     (`"seat_height + 0.02"`), optional features are toggles gated by
+     `visible_if`.
+   - *Connections:* declare every real joint in the top-level `connections`
+     array with the fabrication type (`anchor_base` for a structural vertical
+     at grade with `b:"ground"`, `band_clamp`, `slip_fit`, `carriage_bolt`,
+     `through_bolt`, `flange_splice`, `weld`, `lag_screw`, or `none`); every
+     part must reach the ground through parts that interpenetrate 10–20 mm.
+   - *Materials:* pick a preset per slot and override `color/metalness/
+     roughness/uv_scale/emission/weathering/finish` to match the part.
+
+To generate a spec with, say, ChatGPT or Claude: paste the schema file, the
+four rule blocks above, and `end with` → *"Return ONLY the AssetSpec JSON for:
+&lt;your one-line request&gt;."* Then run the validation snippet above on the reply,
+and paste any error back to the model until it's clean (the app does this same
+retry automatically).
+
+**The one-line requests behind the bundled examples** (Pass 1's input — hand
+these to the app's prompt box, or to your own AI after the prompts above):
+
+| Example | Prompt |
+| --- | --- |
+| `street_light.json` | `a 30 ft cobra-head street light, galvanized steel pole with a tapered mast arm and a black powder-coat luminaire, flange-mounted` |
+| `park_bench.json` | `a 6 ft slatted park bench, cast-iron frame with wood seat and back slats, bolted together` |
+| `bike_rack.json` | `a galvanized-steel inverted-U bike rack, three 34-inch loops on surface-mount base plates, spaced 36 inches` |
+| `planter.json` | `a weathered cast-iron urn planter about 28 inches tall with a flared bell profile and soil on top` |
+
 ## Repository layout
 
 | Path | Purpose |
@@ -249,7 +364,7 @@ build assigns the same values to Principled BSDF materials.
 | `backend/` | FastAPI service: spec validation + AI endpoints (`/generate-spec`, `/refine-spec`) with DeepSeek/OpenAI/Anthropic adapters |
 | `api/` | Thin Vercel serverless entrypoint wrapping the backend |
 | `frontend/` | Vite + React + react-three-fiber live preview (mirrors the Python builders 1:1) |
-| `examples/` | Ready-to-build example specs (curated `street_light`, custom-primitive `park_bench`) |
+| `examples/` | Ready-to-build example specs — curated `street_light`, and custom-primitive `park_bench`, `bike_rack`, `planter` (see [Examples & how to make your own](#examples--how-to-make-your-own)) |
 
 ## Architecture rule
 
