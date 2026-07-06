@@ -19,6 +19,7 @@ import {
   type WizardStep,
 } from "../api";
 import Modal from "./Modal";
+import { EXAMPLE_ASSETS } from "../examples";
 
 interface ChatEntry {
   role: "you" | "assetforge";
@@ -318,6 +319,24 @@ export default function PromptPanel({
       setWizardStep(wizardStep + 1);
     });
 
+  /** Load a bundled example asset. Synchronous (no AI) — swaps the spec,
+   * leaves any guided build, and logs it. The <select> resets to its
+   * placeholder so it reads as an action, not a current-asset indicator. */
+  const loadExample = (id: string) => {
+    if (busy) return;
+    const example = EXAMPLE_ASSETS.find((e) => e.id === id);
+    if (!example) return;
+    const problem = onSpec(structuredClone(example.spec));
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError(null);
+    setWizardStep(null);
+    setWizardMsg("");
+    setChat([{ role: "assetforge", text: `Loaded example: ${example.label}. Refine it or tweak the sliders.` }]);
+  };
+
   const runRefine = () =>
     run("refine", async () => {
       const msg = refineMsg.trim();
@@ -409,6 +428,24 @@ export default function PromptPanel({
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
       </div>
+
+      <label className="model-row" title="Load one of the bundled example assets">
+        <span>Examples</span>
+        <select
+          value=""
+          onChange={(e) => loadExample(e.target.value)}
+          disabled={busy !== false}
+        >
+          <option value="" disabled>
+            Load an example asset…
+          </option>
+          {EXAMPLE_ASSETS.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.label}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <h3>Describe any asset</h3>
       <label className="model-row" title="Which DeepSeek model the AI uses for generate, refine, and focus">
