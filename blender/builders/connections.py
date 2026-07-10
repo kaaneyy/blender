@@ -51,6 +51,70 @@ def _pos(center: Sequence[float], axis: int, along: float) -> Tuple[float, float
     return tuple(out)
 
 
+def gusset_plate(
+    name: str,
+    component: str,
+    slot: str,
+    center_xy: Tuple[float, float],
+    angle: float,
+    attach_r: float,
+    reach_r: float,
+    flush_z: float,
+    hug: str = "bottom",
+    height: float = 0.1,
+    tip_ratio: float = 0.35,
+    thickness: float = 0.008,
+) -> List[Primitive]:
+    """A triangular stiffener plate in the vertical plane through ``angle``,
+    radiating from a member of radius ``attach_r`` at ``center_xy`` out to
+    ``reach_r``.
+
+    Lofts bridge two centered cross-sections, so a plain tapered loft is a
+    symmetric wedge whose edges both slope — the "floating arrowhead" look.
+    This helper tilts the wedge by half its taper angle so ONE long edge
+    lies perfectly flat, and shifts it so the raked tall edge is buried
+    inside the member (the visible junction is a clean weld line):
+
+    * ``hug="bottom"`` — bottom edge flat ON ``flush_z`` (base-plate gusset:
+      sits flush on the flange, hypotenuse slopes down toward the rim).
+    * ``hug="top"`` — top edge flat AT ``flush_z`` (knee brace under an arm:
+      hugs the arm's underside, hypotenuse slopes up from the pole).
+
+    Returns [] when the radial run is too short for a plate."""
+    w0 = height
+    w1 = max(tip_ratio * height, 0.012)
+    taper = (w0 - w1) / 2.0
+    run = reach_r - attach_r
+    if run < 0.02 or height <= 0.0:
+        return []
+    # solve the plate run d and tilt t so the far tip lands at reach_r with
+    # the flush edge level (fixed point; 4 rounds converge well under 0.1mm)
+    d = run
+    t = 0.0
+    for _ in range(4):
+        t = math.atan2(taper, d)
+        d = (run + math.sin(t) * taper) / math.cos(t)
+    s = 1.0 if hug == "bottom" else -1.0
+    loc_r = attach_r + math.cos(t) * d / 2 - math.sin(t) * w0 / 2
+    loc_z = flush_z + s * (math.cos(t) * w0 / 2 - math.sin(t) * d / 2)
+    cx, cy = center_xy
+    return [
+        Primitive(
+            kind="loft", name=name, component=component,
+            location=(cx + loc_r * math.cos(angle),
+                      cy + loc_r * math.sin(angle), loc_z),
+            # local Z -> radial (tilted by the half-taper), spun to the angle
+            rotation=(0.0, math.pi / 2 + s * t, angle),
+            material_slot=slot,
+            params={
+                "depth": d,
+                "profile_start": {"shape": "rect", "w": w0, "h": thickness},
+                "profile_end": {"shape": "rect", "w": w1, "h": thickness},
+            },
+        )
+    ]
+
+
 def weld_fillet(radius: float, size: float, z: float, component: str,
                 slot: str, name: str = "weld_bead",
                 center: Tuple[float, float] = (0.0, 0.0)) -> Primitive:
@@ -416,30 +480,18 @@ def ground_connection(
             ),
         ])
 
-    # triangular gusset webs between the member and the plate edge (loft
-    # wedge: tall at the member, thin at the rim), between the bolts for
-    # round plates, at face midpoints for square ones
+    # triangular gusset webs between the member and the plate edge — flat on
+    # the flange, tall edge buried in the member, hypotenuse down to the rim
+    # (between the bolts for round plates, at face midpoints for square ones)
     gusset_h = max(0.08, pole_radius * 1.1)
-    gusset_len = flange_r - pole_radius - 0.006
-    mid_r = pole_radius + gusset_len / 2
     gusset_angles = (
         [2.0 * math.pi * i / 4 for i in range(4)] if square
         else [2.0 * math.pi * (i + 0.5) / n_bolts for i in range(n_bolts)]
     )
     for i, a in enumerate(gusset_angles):
-        prims.append(
-            Primitive(
-                kind="loft", name=f"{n}gusset_{i + 1}", component=component,
-                location=(cx + mid_r * math.cos(a), cy + mid_r * math.sin(a),
-                          flange_top + gusset_h / 2),
-                # local Z -> radial: tilt Z onto X, then spin to the angle
-                rotation=(0.0, math.pi / 2, a),
-                material_slot=slot,
-                params={
-                    "depth": gusset_len,
-                    "profile_start": {"shape": "rect", "w": gusset_h, "h": 0.008},
-                    "profile_end": {"shape": "rect", "w": 0.016, "h": 0.008},
-                },
-            )
-        )
+        prims.extend(gusset_plate(
+            f"{n}gusset_{i + 1}", component, slot, center, a,
+            attach_r=pole_radius, reach_r=flange_r - 0.004,
+            flush_z=flange_top, hug="bottom", height=gusset_h,
+        ))
     return prims

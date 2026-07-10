@@ -8,10 +8,11 @@ Two passes:
     apply_transforms — per-component rotate/scale about the group's center,
                        then position offsets (component + part).
 
-Rotation follows Three.js' Euler-XYZ convention (the order the preview meshes
-render with) so preview and export agree; the matrix below is Three's
-``makeRotationFromEuler`` for order 'XYZ', and the recovery is its
-``setFromRotationMatrix``.
+Rotation follows the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
+first about fixed axes) — the one the Blender realization layer uses for
+``rotation_euler`` and the preview renders with (Three.js Euler order 'ZYX'),
+so preview and export agree. The shared matrix lives in hardware.py; the
+recovery below is Three's ``setFromRotationMatrix`` for order 'ZYX'.
 """
 from __future__ import annotations
 
@@ -46,7 +47,7 @@ def component_pivot(prims: Sequence[Primitive]) -> Vec3:
     return ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
 
 
-# ── rotation math (Three.js Euler-XYZ parity; matrix lives in hardware.py) ──
+# ── rotation math (Blender Euler-XYZ parity; matrix lives in hardware.py) ──
 
 def _mat_vec(m: List[List[float]], v: Sequence[float]) -> Vec3:
     return (
@@ -61,14 +62,16 @@ def _mat_mul(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
 
 
 def _euler_from_matrix(m: List[List[float]]) -> Vec3:
-    m02 = max(-1.0, min(1.0, m[0][2]))
-    y = math.asin(m02)
-    if abs(m02) < 0.9999999:
-        x = math.atan2(-m[1][2], m[2][2])
-        z = math.atan2(-m[0][1], m[0][0])
+    """Recover Blender-XYZ Euler angles from R = Rz·Ry·Rx (Three.js
+    ``setFromRotationMatrix`` for order 'ZYX')."""
+    m20 = max(-1.0, min(1.0, m[2][0]))
+    y = math.asin(-m20)
+    if abs(m20) < 0.9999999:
+        x = math.atan2(m[2][1], m[2][2])
+        z = math.atan2(m[1][0], m[0][0])
     else:
-        x = math.atan2(m[2][1], m[1][1])
-        z = 0.0
+        x = 0.0
+        z = math.atan2(-m[0][1], m[1][1])
     return (x, y, z)
 
 

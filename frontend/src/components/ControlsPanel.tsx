@@ -34,6 +34,7 @@ interface Props {
   onDisplayUnits: (u: UnitSystem) => void;
   onHardware: () => void;
   onTour: () => void;
+  onCheck: () => void;
   /** true = spec/code slider limits enforced; false = free dimensions */
   locked: boolean;
   onLock: () => void;
@@ -212,6 +213,7 @@ export default function ControlsPanel({
   onDisplayUnits,
   onHardware,
   onTour,
+  onCheck,
   locked,
   onLock,
   onReset,
@@ -298,6 +300,13 @@ export default function ControlsPanel({
         title="Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)"
       >
         🎥 Tour the connections
+      </button>
+      <button
+        className="hardware-btn"
+        onClick={onCheck}
+        title="Audit every joint like a fabricator: hardware sticking into thin air, parts that don't really touch, floating members, below-grade geometry. Fixes are proposed, previewed on hover, and applied only when you confirm."
+      >
+        🔍 Check connections
       </button>
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,

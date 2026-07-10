@@ -364,6 +364,8 @@ export default function Viewport({
   onCommitTransform,
   onResetEdits,
   hasEdits,
+  flash,
+  banner = null,
 }: {
   spec: AssetSpec;
   primitives: Primitive[];
@@ -385,6 +387,11 @@ export default function Viewport({
   onResetEdits: () => void;
   /** Whether any manual edits exist (enables the reset button). */
   hasEdits: boolean;
+  /** Component names (or 'joint:N') to highlight — the connection check
+   * uses this for hovered findings and the fix preview. */
+  flash?: Set<string>;
+  /** Status banner over the viewport (e.g. "previewing proposed fixes"). */
+  banner?: string | null;
 }) {
   const colors = THEME_COLORS[theme];
   const p = specParams(spec);
@@ -448,9 +455,11 @@ export default function Viewport({
     const g = gizmoTarget;
     if (!g || !editComponent || !editData) return;
     const p = editData.pivot;
+    // spec rotations are Blender-XYZ Eulers = Three's 'ZYX' order
+    const e = new THREE.Euler().setFromQuaternion(g.quaternion, "ZYX");
     onCommitTransform(editComponent, {
       offset: [g.position.x - p[0], g.position.y - p[1], g.position.z - p[2]],
-      rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
+      rotation: [e.x, e.y, e.z],
       scale: [g.scale.x, g.scale.y, g.scale.z],
     });
   };
@@ -583,6 +592,7 @@ export default function Viewport({
             explode={exploded}
             lightsOn={lightsOn}
             editingComponent={editData ? editComponent : null}
+            flash={flash}
           />
           {editData && editComponent && (
             <group
@@ -593,7 +603,7 @@ export default function Viewport({
                 editData.pivot[1] + curOffset[1],
                 editData.pivot[2] + curOffset[2],
               ]}
-              rotation={curRotation}
+              rotation={new THREE.Euler(curRotation[0], curRotation[1], curRotation[2], "ZYX")}
               scale={curScale}
             >
               {editData.prims.map((prim) => (
@@ -784,6 +794,7 @@ export default function Viewport({
             ? "Edit tools ▸ move · rotate · stretch · duplicate · delete"
             : "click a part to select · drag orbit · WASD move · Q/E down/up"}
       </div>
+      {banner && <div className="tour-hint tour-hint--check">{banner}</div>}
       {touring && <div className="tour-hint">🔩 Touring connection points…</div>}
       {lightsOn && emitters.length > 0 && (
         <div className="tour-hint tour-hint--night">

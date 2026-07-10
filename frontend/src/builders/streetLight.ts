@@ -3,7 +3,7 @@
  * between preview and final export is a hard requirement (T4.3). */
 import type { AssetSpec, Primitive } from "../types";
 import { mirrorX, register, specParams, specSelects, specToggles } from "./base";
-import { groundConnection } from "./connections";
+import { groundConnection, gussetPlate } from "./connections";
 
 const ARM_SEGMENTS = 6;
 const ARM_RADIUS = 0.035;
@@ -38,7 +38,6 @@ function armPrimitives(
   const path = armPoints(armLength, attachZ, rise).map(
     ([x, z]) => [x, 0, z] as [number, number, number],
   );
-  const gussetLen = 0.16;
   return [
     {
       kind: "sweep",
@@ -58,19 +57,12 @@ function armPrimitives(
       materialSlot: "pole",
       params: { radius: poleRAtAttach + 0.012, wall: 0.006, depth: 0.3 },
     },
-    {
-      kind: "loft",
-      name: "arm_gusset",
-      component: "arm",
-      location: [poleRAtAttach + gussetLen / 2, 0, attachZ - 0.1],
-      rotation: [0, Math.PI / 2, 0],
-      materialSlot: "pole",
-      params: {
-        depth: gussetLen,
-        profile_start: { shape: "rect", w: 0.16, h: 0.008 },
-        profile_end: { shape: "rect", w: 0.02, h: 0.008 },
-      },
-    },
+    // C4: knee brace under the cantilever — top edge hugging the arm's
+    // underside, tall edge buried in the pole, hypotenuse below
+    ...gussetPlate(
+      "arm_gusset", "arm", "pole", [0, 0], 0,
+      poleRAtAttach, poleRAtAttach + 0.16, attachZ - 0.02, "top", 0.16,
+    ),
   ];
 }
 

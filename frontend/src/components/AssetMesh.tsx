@@ -148,6 +148,14 @@ function useSlotMaterial(
  * primitive params mean the same thing they do in Blender. */
 const AXIS_FIX: [number, number, number] = [Math.PI / 2, 0, 0];
 
+/** Primitive.rotation is a Blender-convention XYZ Euler (X applied first
+ * about fixed axes). In Three.js that is Euler order 'ZYX' — using it here
+ * keeps the preview identical to the Blender export for multi-axis rotated
+ * parts (base gussets, radial set screws). */
+function blenderEuler(rot: Vec3): THREE.Euler {
+  return new THREE.Euler(rot[0], rot[1], rot[2], "ZYX");
+}
+
 export interface Selection {
   component: string;
   part?: string;
@@ -162,6 +170,7 @@ export function PrimitiveMesh({
   wireframe,
   lightsOn,
   explodeOffset,
+  flash = false,
 }: {
   prim: Primitive;
   spec: AssetSpec;
@@ -171,12 +180,14 @@ export function PrimitiveMesh({
   wireframe: boolean;
   lightsOn: boolean;
   explodeOffset: readonly [number, number, number];
+  /** connection-check emphasis (hovered finding / fix preview changes) */
+  flash?: boolean;
 }) {
   const onTour =
     tourJoint !== null &&
     prim.component === "hardware" &&
     prim.name.startsWith(`joint${tourJoint}_`);
-  const highlight: "none" | "part" | "group" = onTour
+  const highlight: "none" | "part" | "group" = flash || onTour
     ? "part"
     : selected?.component !== prim.component
       ? "none"
@@ -226,7 +237,7 @@ export function PrimitiveMesh({
 
   if (prim.kind === "sweep") {
     return (
-      <group position={pos} rotation={prim.rotation} onClick={handleClick}>
+      <group position={pos} rotation={blenderEuler(prim.rotation)} onClick={handleClick}>
         <SweepMesh prim={prim} material={material} />
       </group>
     );
@@ -269,7 +280,7 @@ export function PrimitiveMesh({
   }
 
   return (
-    <group position={pos} rotation={prim.rotation}>
+    <group position={pos} rotation={blenderEuler(prim.rotation)}>
       <mesh
         rotation={fix}
         castShadow
@@ -312,6 +323,18 @@ function explodeOffsets(primitives: Primitive[]): Record<string, [number, number
   return out;
 }
 
+/** True when the connection check wants this prim emphasized: its component
+ * is flagged, its part path is flagged, or (for hardware) its joint is. */
+function isFlashed(p: Primitive, flash?: Set<string>): boolean {
+  if (!flash || flash.size === 0) return false;
+  if (flash.has(p.component) || flash.has(`${p.component}/${p.name}`)) return true;
+  if (p.component === "hardware") {
+    const m = p.name.match(/^joint(\d+)_/);
+    if (m && flash.has(`joint:${m[1]}`)) return true;
+  }
+  return false;
+}
+
 export default function AssetMesh({
   primitives,
   spec,
@@ -322,6 +345,7 @@ export default function AssetMesh({
   explode = false,
   lightsOn = false,
   editingComponent = null,
+  flash,
 }: {
   primitives: Primitive[];
   spec: AssetSpec;
@@ -334,6 +358,8 @@ export default function AssetMesh({
   /** Component currently held by the transform gizmo — skipped here so the
    * gizmo can render and move it live without a double image. */
   editingComponent?: string | null;
+  /** Component names (or 'joint:N') the connection check highlights. */
+  flash?: Set<string>;
 }) {
   const offsets = useMemo(
     () => (explode ? explodeOffsets(primitives) : {}),
@@ -356,9 +382,10 @@ export default function AssetMesh({
             wireframe={wireframe}
             lightsOn={lightsOn}
             explodeOffset={offsets[p.component] ?? NO_OFFSET}
+            flash={isFlashed(p, flash)}
           />
         )),
-    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets, editingComponent],
+    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets, editingComponent, flash],
   );
   return <>{items}</>;
 }

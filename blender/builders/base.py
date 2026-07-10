@@ -164,18 +164,20 @@ def compute_primitives(spec: dict) -> List[Primitive]:
 
     # SketchUp-style edit overlay, structural half (duplicate/delete) BEFORE
     # hardware so duplicated components get their own joints and deleted
-    # parts don't attract bolts; transforms come after hardware so joint ids
-    # stay put while the user drags.
+    # parts don't attract bolts. Transforms (move/rotate/scale/offsets) run
+    # BEFORE hardware: joints are detected on the geometry as the user
+    # actually placed it, so bolts land where parts really are instead of
+    # where the builder first put them. The generated hardware then gets its
+    # own transform pass so the 'hardware' group itself stays editable.
     from .edits import apply_structure, apply_transforms
 
-    prims = apply_structure(prims, spec)
+    prims = apply_transforms(apply_structure(prims, spec), spec)
 
     if spec_toggles(spec).get("connection_hardware"):
         from .hardware import compute_hardware
 
-        prims = prims + compute_hardware(prims, spec)
+        prims = prims + apply_transforms(compute_hardware(prims, spec), spec)
 
-    prims = apply_transforms(prims, spec)
     return prims
 
 

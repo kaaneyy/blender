@@ -47,13 +47,17 @@ function buildBase(spec: AssetSpec): Primitive[] {
  * the viewport gizmo renders these and applies the transform live, then
  * bakes it back into the spec. The structural overlay runs BEFORE hardware
  * so duplicated components get their own joints and deleted parts don't
- * attract bolts. */
+ * attract bolts. Hardware is generated from the TRANSFORMED members, so
+ * joints land where parts actually are after user edits (a moved component
+ * takes its bolts with it) — the generated hardware itself stays
+ * pre-transform here so the gizmo can drive the 'hardware' group like any
+ * other component. Mirror of base.py compute_primitives ordering. */
 export function preEditPrimitives(spec: AssetSpec): Primitive[] {
-  let prims = applyStructure(buildBase(spec), spec);
+  const base = applyStructure(buildBase(spec), spec);
   if (specToggles(spec).connection_hardware && hardwareFn) {
-    prims = prims.concat(hardwareFn(prims, spec));
+    return base.concat(hardwareFn(applyTransforms(base, spec), spec));
   }
-  return prims;
+  return base;
 }
 
 export function computePrimitives(spec: AssetSpec): Primitive[] {
