@@ -5,6 +5,8 @@ import json
 import math
 from pathlib import Path
 
+import pytest
+
 import blender.builders  # noqa: F401
 from blender.builders.base import compute_primitives
 from blender.builders.edits import (
@@ -103,6 +105,55 @@ class TestTransforms:
         moved = rotated[target.name]
         assert math.isclose(moved.location[0] - pivot[0], -dy, abs_tol=1e-6)
         assert math.isclose(moved.location[1] - pivot[1], dx, abs_tol=1e-6)
+
+
+class TestPartTransforms:
+    """Rotate/stretch keyed by 'component/part' act on that part alone,
+    about its own center — not the whole group."""
+
+    def test_part_rotation_spins_only_that_part_in_place(self):
+        spec = load("park_bench.json")
+        base = {p.name: p for p in compute_primitives(spec) if p.component == "seat"}
+        spec["edits"] = {"rotations": {"seat/slat_mid": [0.0, 0.0, math.pi / 2]}}
+        edited = {p.name: p for p in compute_primitives(spec) if p.component == "seat"}
+        # the part turned about its own center: box center == location, so
+        # the location is unchanged and only the rotation moved
+        for a, b in zip(edited["slat_mid"].location, base["slat_mid"].location):
+            assert math.isclose(a, b, abs_tol=1e-9)
+        assert math.isclose(edited["slat_mid"].rotation[2], math.pi / 2, abs_tol=1e-9)
+        # siblings untouched
+        assert edited["slat_front"].location == base["slat_front"].location
+        assert edited["slat_front"].rotation == base["slat_front"].rotation
+
+    def test_part_scale_resizes_only_that_part_in_place(self):
+        spec = load("park_bench.json")
+        base = {p.name: p for p in compute_primitives(spec) if p.component == "seat"}
+        spec["edits"] = {"scales": {"seat/slat_mid": [1.0, 1.0, 2.0]}}
+        edited = {p.name: p for p in compute_primitives(spec) if p.component == "seat"}
+        assert edited["slat_mid"].params["size"][2] == pytest.approx(
+            base["slat_mid"].params["size"][2] * 2.0)
+        for a, b in zip(edited["slat_mid"].location, base["slat_mid"].location):
+            assert math.isclose(a, b, abs_tol=1e-9)
+        assert edited["slat_front"].params["size"] == base["slat_front"].params["size"]
+
+    def test_part_edit_composes_with_group_edit(self):
+        # part stage first (about its own center), then the group stage maps
+        # it exactly like its siblings — so its location matches the pure
+        # group edit and only its own rotation gains the extra spin
+        spec_group = load("park_bench.json")
+        spec_group["edits"] = {"rotations": {"seat": [0.0, 0.0, math.pi / 2]}}
+        group_only = {p.name: p for p in compute_primitives(spec_group)
+                      if p.component == "seat"}
+        spec_both = load("park_bench.json")
+        spec_both["edits"] = {"rotations": {
+            "seat": [0.0, 0.0, math.pi / 2],
+            "seat/slat_mid": [0.0, 0.0, math.pi / 2],
+        }}
+        both = {p.name: p for p in compute_primitives(spec_both)
+                if p.component == "seat"}
+        for a, b in zip(both["slat_mid"].location, group_only["slat_mid"].location):
+            assert math.isclose(a, b, abs_tol=1e-9)
+        assert math.isclose(abs(both["slat_mid"].rotation[2]), math.pi, abs_tol=1e-9)
 
 
 class TestRotationMath:

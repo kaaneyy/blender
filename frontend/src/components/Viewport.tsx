@@ -382,7 +382,7 @@ export default function Viewport({
   /** Delete the current selection (a whole component or a single part). */
   onDelete: (sel: Selection) => void;
   /** Bake a gizmo transform back into the spec for a component. */
-  onCommitTransform: (component: string, t: CommittedTransform) => void;
+  onCommitTransform: (key: string, t: CommittedTransform) => void;
   /** Clear every manual move/rotate/scale/delete/duplicate edit. */
   onResetEdits: () => void;
   /** Whether any manual edits exist (enables the reset button). */
@@ -434,16 +434,20 @@ export default function Viewport({
   // at scene root so the Z-up rotation isn't applied to it twice
   const [gizmoTarget, setGizmoTarget] = useState<THREE.Group | null>(null);
 
-  // component the transform gizmo is attached to (only when a tool is active)
+  // edit target (only when a tool is active): the drilled-down PART when one
+  // is selected — so rotate/stretch act on just that part — else the group
   const editComponent = tool && selected ? selected.component : null;
-  // pre-edit geometry + pivot for that component; the gizmo renders these and
+  const editPart = tool && selected?.part ? selected.part : null;
+  // pre-edit geometry + pivot for that target; the gizmo renders these and
   // applies the live transform, then bakes it back into the spec
   const editData = useMemo(() => {
     if (!editComponent) return null;
-    const pre = preEditPrimitives(spec).filter((p) => p.component === editComponent);
+    const pre = preEditPrimitives(spec).filter(
+      (p) => p.component === editComponent && (!editPart || p.name === editPart),
+    );
     return pre.length ? { prims: pre, pivot: componentPivot(pre) } : null;
-  }, [editComponent, spec]);
-  const editKey = editComponent ?? "";
+  }, [editComponent, editPart, spec]);
+  const editKey = editComponent ? (editPart ? `${editComponent}/${editPart}` : editComponent) : "";
   const curOffset = (spec.offsets?.[editKey] ?? [0, 0, 0]) as Vec3;
   const curRotation = (spec.edits?.rotations?.[editKey] ?? [0, 0, 0]) as Vec3;
   const curScale = (spec.edits?.scales?.[editKey] ?? [1, 1, 1]) as Vec3;
@@ -453,11 +457,11 @@ export default function Viewport({
   // local position/rotation/scale are already in authored coordinates.
   const commitGizmo = () => {
     const g = gizmoTarget;
-    if (!g || !editComponent || !editData) return;
+    if (!g || !editKey || !editData) return;
     const p = editData.pivot;
     // spec rotations are Blender-XYZ Eulers = Three's 'ZYX' order
     const e = new THREE.Euler().setFromQuaternion(g.quaternion, "ZYX");
-    onCommitTransform(editComponent, {
+    onCommitTransform(editKey, {
       offset: [g.position.x - p[0], g.position.y - p[1], g.position.z - p[2]],
       rotation: [e.x, e.y, e.z],
       scale: [g.scale.x, g.scale.y, g.scale.z],
@@ -591,12 +595,12 @@ export default function Viewport({
             wireframe={wireframe}
             explode={exploded}
             lightsOn={lightsOn}
-            editingComponent={editData ? editComponent : null}
+            editingKey={editData ? editKey : null}
             flash={flash}
           />
-          {editData && editComponent && (
+          {editData && editKey && (
             <group
-              key={`${editComponent}-${tool}`}
+              key={`${editKey}-${tool}`}
               ref={setGizmoTarget}
               position={[
                 editData.pivot[0] + curOffset[0],
@@ -625,7 +629,7 @@ export default function Viewport({
 
         {/* gizmo widget at scene root (outside the Z-up group) so its axes
             aren't rotated twice; it still tracks the proxy's world transform */}
-        {editData && editComponent && gizmoTarget && (
+        {editData && editKey && gizmoTarget && (
           <TransformControls
             object={gizmoTarget}
             mode={tool!}

@@ -281,7 +281,7 @@
       "properties": {
         "rotations": {
           "type": "object",
-          "description": "Added Euler-XYZ rotation (radians) per component group, about its center.",
+          "description": "Added Euler-XYZ rotation (radians) about the target's center, keyed by a whole component ('pole') or a single part ('pole/shaft'). A part edit turns that part about its OWN center and composes with any group edit.",
           "additionalProperties": {
             "type": "array",
             "minItems": 3,
@@ -291,7 +291,7 @@
         },
         "scales": {
           "type": "object",
-          "description": "Multiplicative per-axis scale per component group, about its center.",
+          "description": "Multiplicative per-axis scale about the target's center, keyed by a whole component ('pole') or a single part ('pole/shaft').",
           "additionalProperties": {
             "type": "array",
             "minItems": 3,

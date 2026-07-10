@@ -5,8 +5,12 @@ keep in lockstep.
 
 Two passes:
     apply_structure  — duplicate component groups, then drop deleted keys.
-    apply_transforms — per-component rotate/scale about the group's center,
-                       then position offsets (component + part).
+    apply_transforms — rotate/scale about the target's center, then position
+                       offsets. Every overlay is keyed by a whole component
+                       ('pole') or a single part ('pole/shaft'); a part edit
+                       turns/stretches that part about its OWN center and
+                       composes with any group edit (part first, then group,
+                       then offsets).
 
 Rotation follows the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
 first about fixed axes) — the one the Blender realization layer uses for
@@ -103,8 +107,8 @@ def apply_structure(prims: List[Primitive], spec: dict) -> List[Primitive]:
 
 # ── transform pass (move / rotate / scale) ────────────────────────────────
 
-def _scale_params(p: Primitive, s: Vec3) -> dict:
-    params = dict(p.params)
+def _scale_params(source: dict, s: Vec3) -> dict:
+    params = dict(source)
     rxy = (s[0] + s[1]) / 2
 
     def scl(key: str, f: float) -> None:
@@ -130,6 +134,30 @@ def _scale_params(p: Primitive, s: Vec3) -> dict:
     return params
 
 
+def _apply_stage(location: Vec3, rotation: Vec3, params: dict, pivot: Vec3,
+                 rot, scl) -> Tuple[Vec3, Vec3, dict]:
+    """One rotate/scale stage about a pivot (used for the part-level edit,
+    then again for the component-level edit)."""
+    s = scl if scl is not None else _ONE
+    rel = (
+        (location[0] - pivot[0]) * s[0],
+        (location[1] - pivot[1]) * s[1],
+        (location[2] - pivot[2]) * s[2],
+    )
+    if rot is not None:
+        r_mat = _euler_xyz_matrix(rot)
+        rel = _mat_vec(r_mat, rel)
+        composed = _mat_mul(r_mat, _euler_xyz_matrix(rotation))
+        rotation = _euler_from_matrix(composed)
+    if scl is not None:
+        params = _scale_params(params, s)
+    return (
+        (pivot[0] + rel[0], pivot[1] + rel[1], pivot[2] + rel[2]),
+        rotation,
+        params,
+    )
+
+
 def apply_transforms(prims: List[Primitive], spec: dict) -> List[Primitive]:
     edits = spec.get("edits") or {}
     rotations: Dict[str, Vec3] = {k: tuple(v) for k, v in (edits.get("rotations") or {}).items()}
@@ -139,43 +167,43 @@ def apply_transforms(prims: List[Primitive], spec: dict) -> List[Primitive]:
     if not rotations and not scales and not offsets:
         return prims
 
+    # pivots per edit key, from the pre-transform prims: a component key
+    # turns about the group's center, a 'component/part' key about that
+    # part's own center
     pivots: Dict[str, Vec3] = {}
-    if rotations or scales:
-        by_comp: Dict[str, List[Primitive]] = {}
-        for p in prims:
-            by_comp.setdefault(p.component, []).append(p)
-        for comp, arr in by_comp.items():
-            if comp in rotations or comp in scales:
-                pivots[comp] = component_pivot(arr)
+    for key in set(rotations) | set(scales):
+        if "/" in key:
+            match = [p for p in prims if f"{p.component}/{p.name}" == key]
+        else:
+            match = [p for p in prims if p.component == key]
+        if match:
+            pivots[key] = component_pivot(match)
 
     out: List[Primitive] = []
     for p in prims:
-        rot = rotations.get(p.component)
-        scl = scales.get(p.component)
+        part_key = f"{p.component}/{p.name}"
+        rot_p, scl_p = rotations.get(part_key), scales.get(part_key)
+        rot_c, scl_c = rotations.get(p.component), scales.get(p.component)
         oc = offsets.get(p.component, _ZERO)
-        op = offsets.get(f"{p.component}/{p.name}", _ZERO)
-        if rot is None and scl is None and oc == _ZERO and op == _ZERO:
+        op = offsets.get(part_key, _ZERO)
+        if (rot_p is None and scl_p is None and rot_c is None and scl_c is None
+                and oc == _ZERO and op == _ZERO):
             out.append(p)
             continue
 
-        c = pivots.get(p.component, _ZERO)
-        s = scl if scl is not None else _ONE
-        rel = (
-            (p.location[0] - c[0]) * s[0],
-            (p.location[1] - c[1]) * s[1],
-            (p.location[2] - c[2]) * s[2],
-        )
-        rotation = p.rotation
-        if rot is not None:
-            r_mat = _euler_xyz_matrix(rot)
-            rel = _mat_vec(r_mat, rel)
-            composed = _mat_mul(r_mat, _euler_xyz_matrix(p.rotation))
-            rotation = _euler_from_matrix(composed)
+        location, rotation, params = p.location, p.rotation, dict(p.params)
+        if rot_p is not None or scl_p is not None:
+            location, rotation, params = _apply_stage(
+                location, rotation, params, pivots.get(part_key, _ZERO),
+                rot_p, scl_p)
+        if rot_c is not None or scl_c is not None:
+            location, rotation, params = _apply_stage(
+                location, rotation, params, pivots.get(p.component, _ZERO),
+                rot_c, scl_c)
         location = (
-            c[0] + rel[0] + oc[0] + op[0],
-            c[1] + rel[1] + oc[1] + op[1],
-            c[2] + rel[2] + oc[2] + op[2],
+            location[0] + oc[0] + op[0],
+            location[1] + oc[1] + op[1],
+            location[2] + oc[2] + op[2],
         )
-        params = _scale_params(p, s) if scl is not None else dict(p.params)
         out.append(replace(p, location=location, rotation=rotation, params=params))
     return out
