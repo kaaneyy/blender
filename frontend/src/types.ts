@@ -128,11 +128,13 @@ export interface AssetSpec {
   seed?: number;
 }
 
-/** SketchUp-style edit overlay keyed by component name. */
+/** SketchUp-style edit overlay. Keys are a whole component ('pole') or a
+ * single part ('pole/shaft'); part edits act about the part's own center
+ * and compose with any group edit. */
 export interface SpecEdits {
-  /** Added Euler XYZ rotation (radians) per component group, about its center. */
+  /** Added Euler XYZ rotation (radians), about the target's center. */
   rotations?: Record<string, [number, number, number]>;
-  /** Multiplicative per-axis scale per component group, about its center. */
+  /** Multiplicative per-axis scale, about the target's center. */
   scales?: Record<string, [number, number, number]>;
   /** Deleted keys: a whole component ('pole') or one part ('pole/shaft'). */
   hidden?: string[];

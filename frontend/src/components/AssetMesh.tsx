@@ -344,7 +344,7 @@ export default function AssetMesh({
   wireframe = false,
   explode = false,
   lightsOn = false,
-  editingComponent = null,
+  editingKey = null,
   flash,
 }: {
   primitives: Primitive[];
@@ -355,9 +355,10 @@ export default function AssetMesh({
   wireframe?: boolean;
   explode?: boolean;
   lightsOn?: boolean;
-  /** Component currently held by the transform gizmo — skipped here so the
-   * gizmo can render and move it live without a double image. */
-  editingComponent?: string | null;
+  /** Edit target currently held by the transform gizmo — a component
+   * ('pole') or a single part ('pole/shaft') — skipped here so the gizmo
+   * can render and move it live without a double image. */
+  editingKey?: string | null;
   /** Component names (or 'joint:N') the connection check highlights. */
   flash?: Set<string>;
 }) {
@@ -370,7 +371,9 @@ export default function AssetMesh({
   const items = useMemo(
     () =>
       primitives
-        .filter((p) => p.component !== editingComponent)
+        .filter(
+          (p) => p.component !== editingKey && `${p.component}/${p.name}` !== editingKey,
+        )
         .map((p) => (
           <PrimitiveMesh
             key={`${p.component}/${p.name}`}
@@ -385,7 +388,7 @@ export default function AssetMesh({
             flash={isFlashed(p, flash)}
           />
         )),
-    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets, editingComponent, flash],
+    [primitives, spec, selected, onSelect, tourJoint, wireframe, lightsOn, offsets, editingKey, flash],
   );
   return <>{items}</>;
 }

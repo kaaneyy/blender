@@ -4,8 +4,12 @@
  *
  * Two passes:
  *   applyStructure — duplicate component groups, then drop deleted keys.
- *   applyTransforms — per-component rotate/scale about the group's center,
- *                     then position offsets (component + part), plus moves.
+ *   applyTransforms — rotate/scale about the target's center, then position
+ *                     offsets. Every overlay is keyed by a whole component
+ *                     ('pole') or a single part ('pole/shaft'); a part edit
+ *                     turns/stretches that part about its OWN center and
+ *                     composes with any group edit (part first, then group,
+ *                     then offsets).
  *
  * Rotation uses the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
  * first about fixed axes) — Three's Euler order 'ZYX', the same one the
@@ -82,8 +86,8 @@ export function applyStructure(prims: Primitive[], spec: AssetSpec): Primitive[]
  * axis-aligned boxes; round parts scale radius by the mean of the two
  * in-plane axes and length by the third (an ellipse can't be represented, so
  * this is a faithful-enough preview/export). */
-function scaleParams(p: Primitive, s: Vec3): Primitive["params"] {
-  const params = { ...p.params };
+function scaleParams(source: Primitive["params"], s: Vec3): Primitive["params"] {
+  const params = { ...source };
   const rxy = (s[0] + s[1]) / 2;
   if (params.size) {
     params.size = [params.size[0] * s[0], params.size[1] * s[1], params.size[2] * s[2]];
@@ -117,63 +121,93 @@ function scaleParams(p: Primitive, s: Vec3): Primitive["params"] {
   return params;
 }
 
-/** Move/rotate/scale pass. Group rotate/scale turn about the component's
- * center; offsets (component + part) translate afterward. */
+interface Staged {
+  location: Vec3;
+  rotation: Vec3;
+  params: Primitive["params"];
+}
+
+/** One rotate/scale stage about a pivot (used for the part-level edit, then
+ * again for the component-level edit). Mirror of edits.py _apply_stage. */
+function applyStage(
+  st: Staged,
+  pivot: Vec3,
+  rot: Vec3 | undefined,
+  scl: Vec3 | undefined,
+): Staged {
+  const s = scl ?? ONE;
+  let rel: Vec3 = [
+    (st.location[0] - pivot[0]) * s[0],
+    (st.location[1] - pivot[1]) * s[1],
+    (st.location[2] - pivot[2]) * s[2],
+  ];
+  let rotation = st.rotation;
+  if (rot) {
+    const rMat = new THREE.Matrix4().makeRotationFromEuler(
+      new THREE.Euler(rot[0], rot[1], rot[2], "ZYX"),
+    );
+    const v = new THREE.Vector3(rel[0], rel[1], rel[2]).applyMatrix4(rMat);
+    rel = [v.x, v.y, v.z];
+    const rp = new THREE.Matrix4().makeRotationFromEuler(
+      new THREE.Euler(st.rotation[0], st.rotation[1], st.rotation[2], "ZYX"),
+    );
+    const composed = new THREE.Euler().setFromRotationMatrix(rMat.multiply(rp), "ZYX");
+    rotation = [composed.x, composed.y, composed.z];
+  }
+  return {
+    location: [pivot[0] + rel[0], pivot[1] + rel[1], pivot[2] + rel[2]],
+    rotation,
+    params: scl ? scaleParams(st.params, s) : st.params,
+  };
+}
+
+/** Move/rotate/scale pass. Rotate/scale turn about the target's center —
+ * the whole group for a 'component' key, the single part for a
+ * 'component/part' key (part stage first, then group stage) — and offsets
+ * (component + part) translate afterward. */
 export function applyTransforms(prims: Primitive[], spec: AssetSpec): Primitive[] {
   const edits: SpecEdits = spec.edits ?? {};
-  const rotations = edits.rotations ?? {};
-  const scales = edits.scales ?? {};
+  const rotations = (edits.rotations ?? {}) as Record<string, Vec3>;
+  const scales = (edits.scales ?? {}) as Record<string, Vec3>;
   const offsets = (spec.offsets ?? {}) as Record<string, Vec3>;
 
   const hasGroupEdits = Object.keys(rotations).length || Object.keys(scales).length;
   const hasOffsets = Object.keys(offsets).length;
   if (!hasGroupEdits && !hasOffsets) return prims;
 
-  // pivots from the pre-transform prims of each component
+  // pivots per edit key, from the pre-transform prims: a component key
+  // turns about the group's center, a 'component/part' key about that
+  // part's own center
   const pivots = new Map<string, Vec3>();
-  if (hasGroupEdits) {
-    const byComp = new Map<string, Primitive[]>();
-    for (const p of prims) {
-      const arr = byComp.get(p.component);
-      if (arr) arr.push(p);
-      else byComp.set(p.component, [p]);
-    }
-    for (const [comp, arr] of byComp) {
-      if (rotations[comp] || scales[comp]) pivots.set(comp, componentPivot(arr));
-    }
+  for (const key of new Set([...Object.keys(rotations), ...Object.keys(scales)])) {
+    const match = key.includes("/")
+      ? prims.filter((p) => `${p.component}/${p.name}` === key)
+      : prims.filter((p) => p.component === key);
+    if (match.length) pivots.set(key, componentPivot(match));
   }
 
   return prims.map((p) => {
-    const rot = rotations[p.component];
-    const scl = scales[p.component];
+    const partKey = `${p.component}/${p.name}`;
+    const rotP = rotations[partKey];
+    const sclP = scales[partKey];
+    const rotC = rotations[p.component];
+    const sclC = scales[p.component];
     const oc = offsets[p.component] ?? ZERO;
-    const op = offsets[`${p.component}/${p.name}`] ?? ZERO;
-    if (!rot && !scl && !isMoved(oc) && !isMoved(op)) return p;
+    const op = offsets[partKey] ?? ZERO;
+    if (!rotP && !sclP && !rotC && !sclC && !isMoved(oc) && !isMoved(op)) return p;
 
-    const c = pivots.get(p.component) ?? ZERO;
-    const s = scl ?? ONE;
-    let rel: Vec3 = [
-      (p.location[0] - c[0]) * s[0],
-      (p.location[1] - c[1]) * s[1],
-      (p.location[2] - c[2]) * s[2],
-    ];
-    let rotation = p.rotation;
-    if (rot) {
-      const groupEuler = new THREE.Euler(rot[0], rot[1], rot[2], "ZYX");
-      const rMat = new THREE.Matrix4().makeRotationFromEuler(groupEuler);
-      const v = new THREE.Vector3(rel[0], rel[1], rel[2]).applyMatrix4(rMat);
-      rel = [v.x, v.y, v.z];
-      const rp = new THREE.Matrix4().makeRotationFromEuler(
-        new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], "ZYX"),
-      );
-      const composed = new THREE.Euler().setFromRotationMatrix(rMat.multiply(rp), "ZYX");
-      rotation = [composed.x, composed.y, composed.z];
-    }
-    const location: Vec3 = [
-      c[0] + rel[0] + oc[0] + op[0],
-      c[1] + rel[1] + oc[1] + op[1],
-      c[2] + rel[2] + oc[2] + op[2],
-    ];
-    return { ...p, location, rotation, params: scl ? scaleParams(p, s) : p.params };
+    let st: Staged = { location: p.location, rotation: p.rotation, params: p.params };
+    if (rotP || sclP) st = applyStage(st, pivots.get(partKey) ?? ZERO, rotP, sclP);
+    if (rotC || sclC) st = applyStage(st, pivots.get(p.component) ?? ZERO, rotC, sclC);
+    return {
+      ...p,
+      location: [
+        st.location[0] + oc[0] + op[0],
+        st.location[1] + oc[1] + op[1],
+        st.location[2] + oc[2] + op[2],
+      ] as Vec3,
+      rotation: st.rotation,
+      params: st.params,
+    };
   });
 }

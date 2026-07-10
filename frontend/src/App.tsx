@@ -271,20 +271,22 @@ export default function App() {
     setSelected(null);
   };
 
-  /** Bake a gizmo transform: moves → offsets, rotate/scale → edits. Values at
-   * the identity are cleared so the overlay stays minimal. */
-  const commitTransform = (component: string, t: CommittedTransform) =>
+  /** Bake a gizmo transform: moves → offsets, rotate/scale → edits. The key
+   * is the edit target — a whole component ('pole') or a single part
+   * ('pole/shaft') when the user drilled down before grabbing the tool.
+   * Values at the identity are cleared so the overlay stays minimal. */
+  const commitTransform = (key: string, t: CommittedTransform) =>
     setSpec((s) => {
       const eps = 1e-6;
       const rotations = { ...(s.edits?.rotations ?? {}) };
       const scales = { ...(s.edits?.scales ?? {}) };
       const offsets = { ...(s.offsets ?? {}) };
-      if (t.rotation.some((v) => Math.abs(v) > eps)) rotations[component] = t.rotation;
-      else delete rotations[component];
-      if (t.scale.some((v) => Math.abs(v - 1) > eps)) scales[component] = t.scale;
-      else delete scales[component];
-      if (t.offset.some((v) => Math.abs(v) > eps)) offsets[component] = t.offset;
-      else delete offsets[component];
+      if (t.rotation.some((v) => Math.abs(v) > eps)) rotations[key] = t.rotation;
+      else delete rotations[key];
+      if (t.scale.some((v) => Math.abs(v - 1) > eps)) scales[key] = t.scale;
+      else delete scales[key];
+      if (t.offset.some((v) => Math.abs(v) > eps)) offsets[key] = t.offset;
+      else delete offsets[key];
       return { ...s, edits: { ...(s.edits ?? {}), rotations, scales }, offsets };
     });
 
