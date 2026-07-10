@@ -21,6 +21,67 @@ function pos(center: readonly number[], axis: number, along: number): Vec3 {
   return out;
 }
 
+/** A triangular stiffener plate in the vertical plane through `angle`,
+ * radiating from a member of radius `attachR` at `centerXY` out to `reachR`
+ * (mirror of connections.py gusset_plate).
+ *
+ * Lofts bridge two centered cross-sections, so a plain tapered loft is a
+ * symmetric wedge whose edges both slope — the "floating arrowhead" look.
+ * This helper tilts the wedge by half its taper angle so ONE long edge lies
+ * perfectly flat, and shifts it so the raked tall edge is buried inside the
+ * member (the visible junction is a clean weld line):
+ * hug="bottom" — bottom edge flat ON flushZ (base-plate gusset);
+ * hug="top" — top edge flat AT flushZ (knee brace under an arm).
+ * Returns [] when the radial run is too short for a plate. */
+export function gussetPlate(
+  name: string,
+  component: string,
+  slot: string,
+  centerXY: [number, number],
+  angle: number,
+  attachR: number,
+  reachR: number,
+  flushZ: number,
+  hug: "bottom" | "top" = "bottom",
+  height = 0.1,
+  tipRatio = 0.35,
+  thickness = 0.008,
+): Primitive[] {
+  const w0 = height;
+  const w1 = Math.max(tipRatio * height, 0.012);
+  const taper = (w0 - w1) / 2;
+  const run = reachR - attachR;
+  if (run < 0.02 || height <= 0) return [];
+  // solve the plate run d and tilt t so the far tip lands at reachR with
+  // the flush edge level (fixed point; 4 rounds converge well under 0.1mm)
+  let d = run;
+  let t = 0;
+  for (let i = 0; i < 4; i++) {
+    t = Math.atan2(taper, d);
+    d = (run + Math.sin(t) * taper) / Math.cos(t);
+  }
+  const s = hug === "bottom" ? 1 : -1;
+  const locR = attachR + (Math.cos(t) * d) / 2 - (Math.sin(t) * w0) / 2;
+  const locZ = flushZ + s * ((Math.cos(t) * w0) / 2 - (Math.sin(t) * d) / 2);
+  const [cx, cy] = centerXY;
+  return [
+    {
+      kind: "loft",
+      name,
+      component,
+      location: [cx + locR * Math.cos(angle), cy + locR * Math.sin(angle), locZ],
+      // local Z -> radial (tilted by the half-taper), spun to the angle
+      rotation: [0, Math.PI / 2 + s * t, angle],
+      materialSlot: slot,
+      params: {
+        depth: d,
+        profile_start: { shape: "rect", w: w0, h: thickness },
+        profile_end: { shape: "rect", w: w1, h: thickness },
+      },
+    },
+  ];
+}
+
 export function weldFillet(
   radius: number,
   size: number,
@@ -499,26 +560,19 @@ export function groundConnection(
     );
   });
 
+  // triangular gusset webs between the member and the plate edge — flat on
+  // the flange, tall edge buried in the member, hypotenuse down to the rim
   const gussetH = Math.max(0.08, poleRadius * 1.1);
-  const gussetLen = flangeR - poleRadius - 0.006;
-  const midR = poleRadius + gussetLen / 2;
   const gussetAngles = square
     ? [0, 1, 2, 3].map((i) => (2 * Math.PI * i) / 4)
     : Array.from({ length: nBolts }, (_, i) => (2 * Math.PI * (i + 0.5)) / nBolts);
   gussetAngles.forEach((a, i) => {
-    prims.push({
-      kind: "loft",
-      name: `${n}gusset_${i + 1}`,
-      component,
-      location: [cx + midR * Math.cos(a), cy + midR * Math.sin(a), flangeTop + gussetH / 2],
-      rotation: [0, Math.PI / 2, a],
-      materialSlot: slot,
-      params: {
-        depth: gussetLen,
-        profile_start: { shape: "rect", w: gussetH, h: 0.008 },
-        profile_end: { shape: "rect", w: 0.016, h: 0.008 },
-      },
-    });
+    prims.push(
+      ...gussetPlate(
+        `${n}gusset_${i + 1}`, component, slot, center, a,
+        poleRadius, flangeR - 0.004, flangeTop, "bottom", gussetH,
+      ),
+    );
   });
   return prims;
 }

@@ -20,3 +20,5 @@ export type { ResolvedMaterial, ShadedMaterial } from "./base";
 export { aabb, halfExtents } from "./hardware";
 export type { Aabb } from "./hardware";
 export { componentPivot } from "./edits";
+export { auditConnections, applyAuditFixes } from "./audit";
+export type { AuditFinding, AuditFix, AuditReport, FixOp } from "./audit";

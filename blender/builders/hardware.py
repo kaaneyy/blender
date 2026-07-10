@@ -1,4 +1,5 @@
-"""Connection-hardware orchestrator v3: declared intent + engineered joints.
+"""Connection-hardware orchestrator v4: declared intent + engineered joints,
+one joint per physical junction.
 
 For every place two *different* components genuinely intersect, this emits
 hardware the way a fabricator would detail it. The spec's optional
@@ -22,12 +23,20 @@ is honored at matching contacts; geometric inference remains the fallback:
 * Declared-only: **weld** fillet rings (and no bolts), **flange splices**,
   **lag screws**.
 
-Joints are collected first, then ordered deterministically (anchor bases,
-declared joints, inferred joints; position-stable within each rank) so ids
-survive slider nudges and the ``MAX_JOINTS`` budget keeps structural joints.
-Rotated primitives use exact rotated-corner bounding boxes (oriented axis
-for cylinders/cones), so bolts only appear where parts really touch; joints
-with a face too thin to drill (<10 mm) are skipped.
+Joints are collected first, then contact regions belonging to the same
+component pair and declaration are MERGED when their boxes touch — a pole
+meeting its base plate's grout pad, flange, and gussets is one junction to
+a fabricator, not six bolted joints (see :func:`_merge_pair_candidates`).
+A standing pipe on a modeled base plate at grade infers a WELD at the seam
+where it exits the plate, never a bolt down its own axis. Survivors are
+ordered deterministically (anchor bases, declared joints, inferred joints;
+position-stable within each rank) so ids survive slider nudges and the
+``MAX_JOINTS`` budget keeps structural joints. Rotated primitives use exact
+rotated-corner bounding boxes (oriented axis for cylinders/cones), so bolts
+only appear where parts really touch; joints with a face too thin to drill
+(<10 mm) are skipped. The orchestrator runs on TRANSFORMED geometry (see
+base.compute_primitives), so joints land where the user actually placed the
+parts and moved components take their hardware with them.
 
 Mirrored 1:1 in frontend/src/builders/hardware.ts. Enabled by the spec
 toggle ``connection_hardware``.
@@ -66,15 +75,20 @@ CONNECTION_TYPES = (
 
 
 def _euler_xyz_matrix(rot: Sequence[float]) -> List[List[float]]:
-    """Three.js-parity Euler XYZ rotation matrix (shared with edits.py)."""
+    """Blender-parity Euler XYZ rotation matrix (shared with edits.py):
+    R = Rz·Ry·Rx, X applied first about fixed axes — exactly how the Blender
+    realization layer interprets ``obj.rotation_euler`` and how the preview
+    renders (Three.js Euler order 'ZYX'). One convention everywhere is what
+    keeps multi-axis-rotated parts (base gussets, set screws) in the same
+    place in the preview, the AABB math, and the export."""
     x, y, z = rot
     c1, s1 = math.cos(x), math.sin(x)
     c2, s2 = math.cos(y), math.sin(y)
     c3, s3 = math.cos(z), math.sin(z)
     return [
-        [c2 * c3, -c2 * s3, s2],
-        [c1 * s3 + c3 * s1 * s2, c1 * c3 - s1 * s2 * s3, -c2 * s1],
-        [s1 * s3 - c1 * c3 * s2, c3 * s1 + c1 * s2 * s3, c1 * c2],
+        [c3 * c2, c3 * s2 * s1 - s3 * c1, c3 * s2 * c1 + s3 * s1],
+        [s3 * c2, s3 * s2 * s1 + c3 * c1, s3 * s2 * c1 - c3 * s1],
+        [-s2, c2 * s1, c2 * c1],
     ]
 
 
@@ -203,6 +217,12 @@ def _is_upright_round(p: Primitive) -> bool:
     return p.kind in ("cylinder", "cone", "tube") and all(
         abs(a) < 1e-3 for a in p.rotation
     )
+
+
+def _is_pipe_like(p: Primitive) -> bool:
+    """An upright round member meaningfully taller than wide — a pole/post,
+    not a flange disc or a grout pad."""
+    return _is_upright_round(p) and p.params["depth"] >= 2.0 * _round_radius(p)
 
 
 def _is_vertical_structural(p: Primitive) -> bool:
@@ -432,6 +452,76 @@ def _is_telescoping_fit(pa: Primitive, pb: Primitive, center) -> bool:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+#: contact regions closer than this (m) belong to the same physical junction
+MERGE_TOL = 0.005
+
+
+def _contact_gap(a: dict, b: dict) -> float:
+    """Euclidean gap between two candidates' contact boxes (0 = touching)."""
+    d2 = 0.0
+    for k in range(3):
+        g = max(a["lo"][k] - b["hi"][k], b["lo"][k] - a["hi"][k], 0.0)
+        if g > 0:
+            d2 += g * g
+    return math.sqrt(d2)
+
+
+def _better_candidate(c1: dict, c2: dict) -> bool:
+    """Which contact represents a merged junction: larger joint face, then
+    deeper overlap, then the smaller (stable) grid key."""
+    a1, a2 = c1["d1"] * c1["d2"], c2["d1"] * c2["d2"]
+    if a1 != a2:
+        return a1 > a2
+    o1 = c1["hi"][c1["axis"]] - c1["lo"][c1["axis"]]
+    o2 = c2["hi"][c2["axis"]] - c2["lo"][c2["axis"]]
+    if o1 != o2:
+        return o1 > o2
+    return c1["key"] < c2["key"]
+
+
+def _merge_pair_candidates(cands: List[dict]) -> List[dict]:
+    """One physical junction -> one joint. A pole meeting its base plate
+    touches the grout pad, the flange, AND every gusset — six AABB contacts
+    that are ONE junction to a fabricator (the old code bolted each of them,
+    which is where horizontal bolts through poles came from). Candidates for
+    the same component pair and same declaration whose contact boxes touch
+    collapse into the best-faced one; genuinely separate contact regions
+    (three bench slats along a rail) keep their own joints."""
+    groups: Dict[tuple, List[dict]] = {}
+    for c in cands:
+        key = (tuple(sorted((c["pa"].component, c["pb"].component))), c["decl_idx"])
+        groups.setdefault(key, []).append(c)
+    out: List[dict] = []
+    for arr in groups.values():
+        remaining = list(range(len(arr)))
+        while remaining:
+            blob = [remaining.pop(0)]
+            grew = True
+            while grew:
+                grew = False
+                for i in list(remaining):
+                    if any(_contact_gap(arr[i], arr[j]) <= MERGE_TOL for j in blob):
+                        remaining.remove(i)
+                        blob.append(i)
+                        grew = True
+            best = blob[0]
+            for i in blob[1:]:
+                if _better_candidate(arr[i], arr[best]):
+                    best = i
+            winner = arr[best]
+            # where the junction's full-face contact tops out — a pipe welded
+            # into a stack of base discs carries its bead at the seam where
+            # it exits the TOPMOST disc, not the first one it touches (small
+            # side contacts like gusset slivers don't count)
+            face = winner["d1"] * winner["d2"]
+            winner["junction_top"] = max(
+                arr[i]["hi"][2] for i in blob
+                if arr[i]["d1"] * arr[i]["d2"] >= 0.8 * face
+            )
+            out.append(winner)
+    return out
+
+
 def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
     """Emit visible connection hardware. Candidates are collected first
     (inter-component contacts + anchor bases), ordered deterministically
@@ -446,7 +536,7 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
         if p.component != "hardware" and not p.cut
     ]
 
-    candidates: List[dict] = []
+    pair_cands: List[dict] = []
     seen: set = set()
 
     # -------------------------------------------------- pair contacts
@@ -485,12 +575,16 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             # the MAX_JOINTS budget never drops a mast arm for a trim strip
             moment = _moment(pa, pb, center, spec)
             rank = 1 if decl else (2 if moment >= 0.01 else 3)
-            candidates.append({
+            pair_cands.append({
                 "kind": "pair", "rank": rank, "key": key, "moment": moment,
                 "pa": pa, "pb": pb, "ca": ca, "ha": ha, "cb": cb, "hb": hb,
                 "lo": lo, "hi": hi, "center": center,
                 "axis": axis, "perp": perp, "d1": d1, "d2": d2, "decl": decl,
+                "decl_idx": decls.index(decl) if decl else -1,
             })
+
+    # one joint per physical junction (see _merge_pair_candidates)
+    candidates: List[dict] = _merge_pair_candidates(pair_cands)
 
     # -------------------------------------------------- anchor bases
     anchor_seen: set = set()
@@ -591,7 +685,8 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
              "a": cand["component"], "b": "ground",
              "fastener": f"{dia_mm}mm anchor bolt", "count": n_bolts,
              "grade": "F1554 Gr.55", "torque_nm": ANCHOR_TORQUE[cand["load"]],
-             "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17"},
+             "code_ref": "AASHTO LTS-6 / ACI 318-19 Ch.17",
+             "center": (cand["center_xy"][0], cand["center_xy"][1], 0.0)},
         )
 
     pa, pb = cand["pa"], cand["pb"]
@@ -604,8 +699,10 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
     other = pb if upright is pa else pa
 
     # ------------------------------------------------ pick the joint type
+    pipe = pa if _is_pipe_like(pa) else pb if _is_pipe_like(pb) else None
     ctype = decl["type"] if decl else None
     if ctype is None:
+        base_c, base_h = (cb, hb) if pipe is pa else (ca, ha)
         if _is_telescoping_fit(pa, pb, center):
             ctype = "slip_fit"
         elif (
@@ -615,6 +712,10 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
             and other.kind in ROUND_KINDS
         ):
             ctype = "band_clamp"
+        elif axis == 2 and pipe is not None and base_c[2] + base_h[2] <= 0.15:
+            # a standing pipe on a modeled base plate at grade is shop-welded
+            # into it — never bolted down its own axis
+            ctype = "weld"
         elif axis == 2 and (_is_wood(pa.material_slot, spec) != _is_wood(pb.material_slot, spec)):
             ctype = "carriage_bolt"
         else:
@@ -632,23 +733,36 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
 
     def record(fastener: str, count: int, grade: str = "", torque=None,
                code_ref: str = "") -> dict:
+        # geometric context (center, bolt axis, overlap depth, face size)
+        # rides along so the connection auditor can verify the joint without
+        # re-deriving contact detection
         return {"id": joint, "type": ctype, "a": pa.component, "b": pb.component,
                 "fastener": fastener, "count": count, "grade": grade,
-                "torque_nm": torque, "code_ref": code_ref}
+                "torque_nm": torque, "code_ref": code_ref,
+                "center": tuple(center), "axis": axis,
+                "overlap": hi[axis] - lo[axis], "face": (d1, d2)}
 
     # ------------------------------------------------ emit
     if ctype == "weld":
         round_m = upright or (pa if pa.kind in ROUND_KINDS else pb if pb.kind in ROUND_KINDS else None)
         if round_m is None:
             return []  # shop weld with no round member: nothing visible
+        # a vertical member welded into a lower part carries the bead at the
+        # seam where it exits that part, not at the overlap's midpoint
+        weld_z = center[2]
+        if axis == 2 and round_m is not None:
+            seam = cand.get("junction_top", hi[2])
+            rc, rh = (ca, ha) if round_m is pa else (cb, hb)
+            if rc[2] + rh[2] > seam + 0.01:
+                weld_z = seam
         r = (
-            _radius_at_z(round_m, center[2])
+            _radius_at_z(round_m, weld_z)
             if round_m.kind in ("cylinder", "cone", "tube") and _is_upright_round(round_m)
             else _round_radius(round_m)
         )
         return _with_joint_meta(
             [weld_fillet(
-                r, max(0.008, r * 0.2), center[2], "hardware", "hardware",
+                r, max(0.008, r * 0.2), weld_z, "hardware", "hardware",
                 name=f"joint{joint}_weld",
                 center=(round_m.location[0], round_m.location[1]),
             )],

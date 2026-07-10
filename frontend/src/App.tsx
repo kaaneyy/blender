@@ -5,9 +5,11 @@
  * on every change — the preview never waits on the server (T4.6). */
 import { useEffect, useMemo, useState } from "react";
 import defaultSpecJson from "../../examples/street_light.json";
-import type { AssetSpec, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
-import { computePrimitives } from "./builders";
+import type { AssetSpec, Primitive, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
+import { applyAuditFixes, auditConnections, computePrimitives } from "./builders";
+import type { AuditFinding } from "./builders";
 import { checkSpec } from "./standards";
+import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import PromptPanel from "./components/PromptPanel";
 import SelectionPanel from "./components/SelectionPanel";
@@ -25,6 +27,23 @@ function initialTheme(): Theme {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+/** Components whose parts moved, appeared, or vanished between two builds —
+ * what the fix preview highlights so the user sees exactly what changes. */
+function changedComponents(before: Primitive[], after: Primitive[]): Set<string> {
+  const key = (p: Primitive) => `${p.component}/${p.name}`;
+  const prev = new Map(before.map((p) => [key(p), p]));
+  const out = new Set<string>();
+  for (const p of after) {
+    const q = prev.get(key(p));
+    if (!q || q.location.some((v, k) => Math.abs(v - p.location[k]) > 1e-9)) {
+      out.add(p.component);
+    }
+    prev.delete(key(p));
+  }
+  for (const p of prev.values()) out.add(p.component); // removed parts
+  return out;
+}
+
 export default function App() {
   const [spec, setSpec] = useState<AssetSpec>(() => structuredClone(defaultSpec));
   const [displayUnits, setDisplayUnits] = useState<UnitSystem>(defaultSpec.units);
@@ -33,6 +52,13 @@ export default function App() {
   const [tourId, setTourId] = useState(0);
   const [homeId, setHomeId] = useState(0);
 
+  // ── connection check: report, per-finding selection, hover preview ──
+  const [checkOpen, setCheckOpen] = useState(false);
+  /** finding ids the user UNchecked (default = every fixable finding on) */
+  const [excludedFixes, setExcludedFixes] = useState<Set<string>>(new Set());
+  const [previewFixes, setPreviewFixes] = useState(false);
+  const [hoverFinding, setHoverFinding] = useState<AuditFinding | null>(null);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("af-theme", theme);
@@ -40,6 +66,62 @@ export default function App() {
 
   const primitives = useMemo(() => computePrimitives(spec), [spec]);
   const violations = useMemo(() => checkSpec(spec), [spec]);
+
+  // the audit re-runs live while the panel is open, so the report always
+  // matches the current sliders/edits — applying is still click-only
+  const report = useMemo(
+    () => (checkOpen ? auditConnections(spec) : null),
+    [checkOpen, spec],
+  );
+  const fixable = useMemo(
+    () => (report ? report.findings.filter((f) => f.fix && !excludedFixes.has(f.id)) : []),
+    [report, excludedFixes],
+  );
+  const fixedSpec = useMemo(
+    () => (fixable.length ? applyAuditFixes(spec, fixable) : null),
+    [spec, fixable],
+  );
+  const fixedPrimitives = useMemo(
+    () => (fixedSpec ? computePrimitives(fixedSpec) : null),
+    [fixedSpec],
+  );
+  const previewing = previewFixes && fixedSpec !== null && fixedPrimitives !== null;
+  // highlight what the hovered fix preview changes, or the hovered finding
+  const flash = useMemo(() => {
+    if (previewing) return changedComponents(primitives, fixedPrimitives!);
+    const out = new Set<string>();
+    if (hoverFinding?.component) out.add(hoverFinding.component);
+    if (hoverFinding?.joint != null) out.add(`joint:${hoverFinding.joint}`);
+    return out;
+  }, [previewing, primitives, fixedPrimitives, hoverFinding]);
+
+  /** Open the connection check: make hardware visible (the audit inspects
+   * it, so the user should see it too), then show the report panel. */
+  const startCheck = () => {
+    setSpec((s) => {
+      const toggles = [...(s.toggles ?? [])];
+      const i = toggles.findIndex((t) => t.id === "connection_hardware");
+      if (i === -1) {
+        toggles.push({ id: "connection_hardware", label: "Connection Hardware", value: true });
+      } else if (!toggles[i].value) {
+        toggles[i] = { ...toggles[i], value: true };
+      }
+      return { ...s, toggles };
+    });
+    setExcludedFixes(new Set());
+    setPreviewFixes(false);
+    setCheckOpen(true);
+  };
+
+  /** The confirmed apply — the ONLY place audit fixes reach the spec. The
+   * report then recomputes on the fixed spec, so remaining findings (and
+   * any deferred fixes) surface for the next round. */
+  const applyFixes = () => {
+    if (!fixedSpec) return;
+    setSpec(fixedSpec);
+    setExcludedFixes(new Set());
+    setPreviewFixes(false);
+  };
 
   const updateParam = (id: string, value: number | string) =>
     setSpec((s) => ({
@@ -260,8 +342,8 @@ export default function App() {
       </aside>
       <main className="viewport">
         <Viewport
-          spec={spec}
-          primitives={primitives}
+          spec={previewing ? fixedSpec! : spec}
+          primitives={previewing ? fixedPrimitives! : primitives}
           displayUnits={displayUnits}
           theme={theme}
           selected={selected}
@@ -273,10 +355,34 @@ export default function App() {
           onCommitTransform={commitTransform}
           onResetEdits={resetEdits}
           hasEdits={hasEdits}
+          flash={flash}
+          banner={previewing ? "🔍 Previewing the proposed fixes — nothing applied yet" : null}
         />
       </main>
       <aside className="sidebar sidebar--right">
-        {selected && primitives.some((p) => p.component === selected.component) ? (
+        {checkOpen && report ? (
+          <CheckPanel
+            report={report}
+            isChecked={(f) => !excludedFixes.has(f.id)}
+            onToggleFinding={(f) =>
+              setExcludedFixes((prev) => {
+                const next = new Set(prev);
+                if (next.has(f.id)) next.delete(f.id);
+                else next.add(f.id);
+                return next;
+              })
+            }
+            onHoverFinding={setHoverFinding}
+            onPreview={setPreviewFixes}
+            onApply={applyFixes}
+            onClose={() => {
+              setCheckOpen(false);
+              setPreviewFixes(false);
+              setHoverFinding(null);
+            }}
+            fixable={fixable}
+          />
+        ) : selected && primitives.some((p) => p.component === selected.component) ? (
           <SelectionPanel
             spec={spec}
             primitives={primitives}
@@ -300,6 +406,7 @@ export default function App() {
             onDisplayUnits={setDisplayUnits}
             onHardware={toggleHardware}
             onTour={startTour}
+            onCheck={startCheck}
             locked={locked}
             onLock={toggleLock}
             onReset={() => {

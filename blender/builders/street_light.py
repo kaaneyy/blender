@@ -12,7 +12,7 @@ import math
 from typing import List
 
 from .base import Primitive, mirror_x, register, spec_params, spec_selects, spec_toggles
-from .connections import ground_connection
+from .connections import ground_connection, gusset_plate
 
 ARM_SEGMENTS = 6
 ARM_RADIUS = 0.035  # m, mast-arm tube radius
@@ -45,7 +45,6 @@ def _arm_primitives(arm_length: float, pole_height: float,
     rise = min(0.15 * arm_length, 0.75)
     attach_z = pole_height - 0.25 - rise  # arm meets the pole just below the top
     path = tuple((x, 0.0, z) for x, z in _arm_points(arm_length, attach_z, rise))
-    gusset_len = 0.16
     return [
         Primitive(
             kind="sweep",
@@ -63,18 +62,12 @@ def _arm_primitives(arm_length: float, pole_height: float,
             material_slot="pole",
             params={"radius": pole_r_at_attach + 0.012, "wall": 0.006, "depth": 0.30},
         ),
-        Primitive(  # C4: gusset wedge under the cantilever, tall at the pole
-            kind="loft",
-            name="arm_gusset",
-            component="arm",
-            location=(pole_r_at_attach + gusset_len / 2, 0.0, attach_z - 0.10),
-            rotation=(0.0, math.pi / 2, 0.0),  # loft axis -> radial (+X)
-            material_slot="pole",
-            params={
-                "depth": gusset_len,
-                "profile_start": {"shape": "rect", "w": 0.16, "h": 0.008},
-                "profile_end": {"shape": "rect", "w": 0.02, "h": 0.008},
-            },
+        # C4: knee brace under the cantilever — top edge hugging the arm's
+        # underside, tall edge buried in the pole, hypotenuse below
+        *gusset_plate(
+            "arm_gusset", "arm", "pole", (0.0, 0.0), 0.0,
+            attach_r=pole_r_at_attach, reach_r=pole_r_at_attach + 0.16,
+            flush_z=attach_z - 0.02, hug="top", height=0.16,
         ),
     ]
 

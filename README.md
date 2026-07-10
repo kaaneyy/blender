@@ -42,7 +42,21 @@ command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sket
   editable; expression-driven ones stay bound to their sliders.
 - **🔩 Show real bolts & connections** adds representative bolt/nut
   assemblies (hex heads and all) wherever two component groups meet — in the
-  preview *and* in every export, since it's stored as a spec toggle.
+  preview *and* in every export, since it's stored as a spec toggle. Joints
+  are detected **after** your manual edits, so a part you move takes its
+  hardware with it, and each physical junction gets exactly one joint (a
+  pole meeting its base plate is one welded connection, not six bolts).
+- **🔍 Check connections** audits every joint the way a fabricator checks a
+  shop drawing: parts floating with no load path, geometry below grade,
+  declared joints whose parts don't actually touch, bolts clamping a
+  paper-thin sliver, hardware sticking into thin air, and fasteners buried
+  inside unrelated parts where no wrench could reach. Each finding proposes
+  a concrete fix (seat the part 14 mm into its support, raise it to grade,
+  drop the dead declaration…) with a checkbox to include or skip it.
+  **Nothing is applied without confirmation** — and *hovering* the Apply
+  button first shows the result live in the 3D view (changed parts
+  highlighted) plus a before → after list of every change, so you see
+  exactly what you're approving before you click.
 - **📋 Installation guide** has the AI write step-by-step installation
   instructions for the current asset — site prep, anchoring, assembly order
   using the actual component names and dimensions, torque notes, and a code

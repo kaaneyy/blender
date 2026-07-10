@@ -1,12 +1,15 @@
-/** Mirror of blender/builders/hardware.py v3 — connection-hardware
- * orchestrator: detects inter-component contacts, honors the spec's
- * declared `connections` intent (weld / slip_fit / band_clamp / carriage /
- * flange_splice / lag_screw / through_bolt / anchor_base / none), infers a
- * fabrication-correct type for undeclared joints, and dispatches to the
- * emitter library in connections.ts. Joints are collected then ordered
- * deterministically (anchor bases, declared, inferred; position-stable) so
- * ids survive slider nudges. Keep in exact lockstep with the Python
- * implementation. */
+/** Mirror of blender/builders/hardware.py v4 — connection-hardware
+ * orchestrator: detects inter-component contacts on the TRANSFORMED
+ * geometry (moved parts take their hardware with them), merges contact
+ * regions of the same component pair into one joint per physical junction,
+ * honors the spec's declared `connections` intent (weld / slip_fit /
+ * band_clamp / carriage / flange_splice / lag_screw / through_bolt /
+ * anchor_base / none), infers a fabrication-correct type for undeclared
+ * joints (including welds for pipes standing on modeled base plates), and
+ * dispatches to the emitter library in connections.ts. Joints are collected
+ * then ordered deterministically (anchor bases, declared, inferred;
+ * position-stable) so ids survive slider nudges. Keep in exact lockstep
+ * with the Python implementation. */
 import type { AssetSpec, Primitive, SpecConnection, Vec3 } from "../types";
 import { profileBounds, resolveProfile } from "../shapes";
 import { materialPresetName } from "./base";
@@ -58,16 +61,18 @@ const CONNECTION_TYPES = new Set([
   "slip_fit", "weld", "carriage_bolt", "lag_screw", "none",
 ]);
 
-/** Three.js-parity Euler XYZ rotation matrix (mirror of hardware.py). */
+/** Blender-parity Euler XYZ rotation matrix (mirror of hardware.py):
+ * R = Rz·Ry·Rx, X applied first about fixed axes — how Blender interprets
+ * `rotation_euler` and how the preview renders (Three Euler order 'ZYX'). */
 function eulerXyzMatrix(rot: Vec3): number[][] {
   const [x, y, z] = rot;
   const c1 = Math.cos(x), s1 = Math.sin(x);
   const c2 = Math.cos(y), s2 = Math.sin(y);
   const c3 = Math.cos(z), s3 = Math.sin(z);
   return [
-    [c2 * c3, -c2 * s3, s2],
-    [c1 * s3 + c3 * s1 * s2, c1 * c3 - s1 * s2 * s3, -c2 * s1],
-    [s1 * s3 - c1 * c3 * s2, c3 * s1 + c1 * s2 * s3, c1 * c2],
+    [c3 * c2, c3 * s2 * s1 - s3 * c1, c3 * s2 * c1 + s3 * s1],
+    [s3 * c2, s3 * s2 * s1 + c3 * c1, s3 * s2 * c1 - c3 * s1],
+    [-s2, c2 * s1, c2 * c1],
   ];
 }
 
@@ -207,6 +212,12 @@ function isUprightRound(p: Primitive): boolean {
     (p.kind === "cylinder" || p.kind === "cone" || p.kind === "tube") &&
     p.rotation.every((a) => Math.abs(a) < 1e-3)
   );
+}
+
+/** An upright round member meaningfully taller than wide — a pole/post,
+ * not a flange disc or a grout pad. */
+function isPipeLike(p: Primitive): boolean {
+  return isUprightRound(p) && p.params.depth! >= 2 * roundRadius(p);
 }
 
 /** A member that carries load down to grade: an upright round, or an
@@ -419,6 +430,88 @@ interface PairCandidate {
   d1: number;
   d2: number;
   decl: SpecConnection | null;
+  declIdx: number;
+  /** top (z) of the junction's full-face contacts, set by the merge pass */
+  junctionTop?: number;
+}
+
+/** contact regions closer than this (m) belong to the same physical junction */
+const MERGE_TOL = 0.005;
+
+/** Euclidean gap between two candidates' contact boxes (0 = touching). */
+function contactGap(a: PairCandidate, b: PairCandidate): number {
+  let d2 = 0;
+  for (let k = 0; k < 3; k++) {
+    const g = Math.max(a.lo[k] - b.hi[k], b.lo[k] - a.hi[k], 0);
+    if (g > 0) d2 += g * g;
+  }
+  return Math.sqrt(d2);
+}
+
+/** Which contact represents a merged junction: larger joint face, then
+ * deeper overlap, then the smaller (stable) grid key. */
+function betterCandidate(c1: PairCandidate, c2: PairCandidate): boolean {
+  const a1 = c1.d1 * c1.d2;
+  const a2 = c2.d1 * c2.d2;
+  if (a1 !== a2) return a1 > a2;
+  const o1 = c1.hi[c1.axis] - c1.lo[c1.axis];
+  const o2 = c2.hi[c2.axis] - c2.lo[c2.axis];
+  if (o1 !== o2) return o1 > o2;
+  for (let k = 0; k < 3; k++) if (c1.key[k] !== c2.key[k]) return c1.key[k] < c2.key[k];
+  return false;
+}
+
+/** One physical junction -> one joint. A pole meeting its base plate
+ * touches the grout pad, the flange, AND every gusset — six AABB contacts
+ * that are ONE junction to a fabricator (the old code bolted each of them,
+ * which is where horizontal bolts through poles came from). Candidates for
+ * the same component pair and same declaration whose contact boxes touch
+ * collapse into the best-faced one; genuinely separate contact regions
+ * (three bench slats along a rail) keep their own joints. Mirror of
+ * hardware.py _merge_pair_candidates. */
+function mergePairCandidates(cands: PairCandidate[]): PairCandidate[] {
+  const groups = new Map<string, PairCandidate[]>();
+  for (const c of cands) {
+    const key = `${[c.pa.component, c.pb.component].sort().join("~")}#${c.declIdx}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(c);
+    else groups.set(key, [c]);
+  }
+  const out: PairCandidate[] = [];
+  for (const arr of groups.values()) {
+    const remaining = arr.map((_, i) => i);
+    while (remaining.length) {
+      const blob = [remaining.shift()!];
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const i of [...remaining]) {
+          if (blob.some((j) => contactGap(arr[i], arr[j]) <= MERGE_TOL)) {
+            remaining.splice(remaining.indexOf(i), 1);
+            blob.push(i);
+            grew = true;
+          }
+        }
+      }
+      let best = blob[0];
+      for (const i of blob.slice(1)) {
+        if (betterCandidate(arr[i], arr[best])) best = i;
+      }
+      const winner = arr[best];
+      // where the junction's full-face contact tops out — a pipe welded
+      // into a stack of base discs carries its bead at the seam where it
+      // exits the TOPMOST disc, not the first one it touches (small side
+      // contacts like gusset slivers don't count)
+      const face = winner.d1 * winner.d2;
+      winner.junctionTop = Math.max(
+        ...blob
+          .filter((i) => arr[i].d1 * arr[i].d2 >= 0.8 * face)
+          .map((i) => arr[i].hi[2]),
+      );
+      out.push(winner);
+    }
+  }
+  return out;
 }
 
 interface AnchorCandidate {
@@ -444,7 +537,7 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       return { p, c: box.center, h: box.half };
     });
 
-  const candidates: Candidate[] = [];
+  const pairCands: PairCandidate[] = [];
   const seen = new Set<string>();
 
   // -------------------------------------------------- pair contacts
@@ -494,13 +587,17 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       // MAX_JOINTS budget never drops a mast arm for a trim strip
       const moment = jointMoment(a.p, b.p, center, spec);
       const rank = decl ? 1 : moment >= 0.01 ? 2 : 3;
-      candidates.push({
+      pairCands.push({
         kind: "pair", rank, key, moment,
         pa: a.p, pb: b.p, ca: a.c, ha: a.h, cb: b.c, hb: b.h,
         lo, hi, center, axis, perp, d1, d2, decl,
+        declIdx: decl ? decls.indexOf(decl) : -1,
       });
     }
   }
+
+  // one joint per physical junction (see mergePairCandidates)
+  const candidates: Candidate[] = mergePairCandidates(pairCands);
 
   // -------------------------------------------------- anchor bases
   const anchorSeen = new Set<string>();
@@ -602,6 +699,7 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
         fastener: `${diaMm}mm anchor bolt`, count: nBolts,
         grade: "F1554 Gr.55", torque_nm: ANCHOR_TORQUE[cand.load],
         code_ref: "AASHTO LTS-6 / ACI 318-19 Ch.17",
+        center: [cand.centerXY[0], cand.centerXY[1], 0],
       },
     );
   }
@@ -612,8 +710,10 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
   const other = upright === pa ? pb : pa;
 
   // ------------------------------------------------ pick the joint type
+  const pipe = isPipeLike(pa) ? pa : isPipeLike(pb) ? pb : null;
   let ctype: string | null = decl ? decl.type : null;
   if (ctype === null) {
+    const [baseC, baseH] = pipe === pa ? [cb, hb] : [ca, ha];
     if (isTelescopingFit(pa, pb, center)) {
       ctype = "slip_fit";
     } else if (
@@ -623,6 +723,10 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       ROUND_KINDS.has(other.kind)
     ) {
       ctype = "band_clamp";
+    } else if (axis === 2 && pipe !== null && baseC[2] + baseH[2] <= 0.15) {
+      // a standing pipe on a modeled base plate at grade is shop-welded
+      // into it — never bolted down its own axis
+      ctype = "weld";
     } else if (
       axis === 2 &&
       isWood(pa.materialSlot, spec) !== isWood(pb.materialSlot, spec)
@@ -644,6 +748,9 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
   }
   if (ctype === "anchor_base") ctype = "through_bolt"; // pair-declared: no grade side
 
+  // geometric context (center, bolt axis, overlap depth, face size) rides
+  // along so the connection auditor can verify the joint without re-deriving
+  // contact detection
   const record = (
     fastener: string,
     count: number,
@@ -653,6 +760,7 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
   ): Record<string, unknown> => ({
     id: joint, type: ctype, a: pa.component, b: pb.component,
     fastener, count, grade, torque_nm: torque, code_ref: codeRef,
+    center: [...center], axis, overlap: hi[axis] - lo[axis], face: [d1, d2],
   });
 
   // ------------------------------------------------ emit
@@ -661,14 +769,22 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       upright ??
       (ROUND_KINDS.has(pa.kind) ? pa : ROUND_KINDS.has(pb.kind) ? pb : null);
     if (roundM === null) return []; // shop weld, nothing visible
+    // a vertical member welded into a lower part carries the bead at the
+    // seam where it exits that part, not at the overlap's midpoint
+    let weldZ = center[2];
+    if (axis === 2) {
+      const seam = cand.junctionTop ?? hi[2];
+      const [rc, rh] = roundM === pa ? [ca, ha] : [cb, hb];
+      if (rc[2] + rh[2] > seam + 0.01) weldZ = seam;
+    }
     const r =
       ["cylinder", "cone", "tube"].includes(roundM.kind) && isUprightRound(roundM)
-        ? radiusAtZ(roundM, center[2])
+        ? radiusAtZ(roundM, weldZ)
         : roundRadius(roundM);
     return withJointMeta(
       [
         weldFillet(
-          r, Math.max(0.008, r * 0.2), center[2], "hardware", "hardware",
+          r, Math.max(0.008, r * 0.2), weldZ, "hardware", "hardware",
           `joint${joint}_weld`, [roundM.location[0], roundM.location[1]],
         ),
       ],

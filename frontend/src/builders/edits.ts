@@ -7,8 +7,10 @@
  *   applyTransforms — per-component rotate/scale about the group's center,
  *                     then position offsets (component + part), plus moves.
  *
- * Rotation uses Three's Euler-XYZ convention (the same one the meshes render
- * with); the Python mirror replicates that exact matrix so exports match. */
+ * Rotation uses the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
+ * first about fixed axes) — Three's Euler order 'ZYX', the same one the
+ * meshes render with; the Python mirror replicates that exact matrix so
+ * exports match. */
 import * as THREE from "three";
 import type { AssetSpec, Primitive, SpecEdits, Vec3 } from "../types";
 import { aabb } from "./hardware";
@@ -157,14 +159,14 @@ export function applyTransforms(prims: Primitive[], spec: AssetSpec): Primitive[
     ];
     let rotation = p.rotation;
     if (rot) {
-      const groupEuler = new THREE.Euler(rot[0], rot[1], rot[2], "XYZ");
+      const groupEuler = new THREE.Euler(rot[0], rot[1], rot[2], "ZYX");
       const rMat = new THREE.Matrix4().makeRotationFromEuler(groupEuler);
       const v = new THREE.Vector3(rel[0], rel[1], rel[2]).applyMatrix4(rMat);
       rel = [v.x, v.y, v.z];
       const rp = new THREE.Matrix4().makeRotationFromEuler(
-        new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], "XYZ"),
+        new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], "ZYX"),
       );
-      const composed = new THREE.Euler().setFromRotationMatrix(rMat.multiply(rp), "XYZ");
+      const composed = new THREE.Euler().setFromRotationMatrix(rMat.multiply(rp), "ZYX");
       rotation = [composed.x, composed.y, composed.z];
     }
     const location: Vec3 = [
