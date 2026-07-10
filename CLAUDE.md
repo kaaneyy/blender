@@ -66,7 +66,7 @@ One shared **AssetSpec** JSON (`schemas/asset_spec.schema.json`, root `additiona
 
 **Standards/validation:** `standards/us_codes.json` (dimensional limits with citations) + pure `validator.py`. `code_mode: "strict"` clamps out-of-code dimensions on export; `"advisory"` (the UI's unlock toggle) only warns.
 
-**Backend AI** (`backend/app/`, thin Vercel wrapper in `api/`): `spec_ai.py` builds prompts embedding the JSON schema, the standards DB, two example specs, and rule blocks; output is schema-validated, code-clamped, test-built, and retried once with the error before rejection. Provider adapters: deepseek (default) / openai / anthropic / mock.
+**Backend AI** (`backend/app/`, thin Vercel wrapper in `api/`): `spec_ai.py` builds prompts embedding the JSON schema, the standards DB, two example specs, and rule blocks; output is schema-validated, code-clamped, and test-built. Failures are **classified** (`SpecGenerationError.kind`: truncated / not_json / schema / build / buildability / provider) with a targeted `hint`, and the pipeline re-prompts with the correction + full error history up to `MAX_ATTEMPTS` (3) model calls — final attempt lenient on buildability, transient provider errors (429/5xx/timeout) retried, config errors aborted. Provider adapters: deepseek (default) / openai / anthropic / mock.
 
 **Examples** (`examples/*.json`) double as demo assets and AI few-shots (`FEW_SHOT_*` in `spec_ai.py`). A new example must pass schema validation, build via `compute_primitives`, and have no `check_buildability` errors — the README's "Add an example to the folder" section has the exact snippet. `street_light.json` is the startup asset (`App.tsx` imports it).
 

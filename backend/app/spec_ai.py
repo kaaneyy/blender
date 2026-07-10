@@ -5,8 +5,17 @@ standards DB (T2.2 — ranges come from the DB, not model memory), the curated
 builder catalog, and a few-shot custom example → call the provider → strip
 fences → parse → strict JSON-Schema validation (T7.4, rejects unknown
 fields) → geometry sanity check → US-code validation/clamping (T2.3).
-On any parse/validation failure, re-prompt once with the error appended
-(T2.6).
+
+Failure recovery (T2.6, hardened): every failure is CLASSIFIED — truncated
+output, invalid JSON, schema violation (with the offending path/field),
+broken expression (with the ids that ARE available), unbuildable geometry,
+floating parts, transient provider errors — and the pipeline re-prompts
+with a targeted correction plus the full error history, up to
+``MAX_ATTEMPTS`` (3) model calls total. The final attempt is lenient about
+buildability so a stubborn-but-parseable spec ships with warnings instead
+of failing the whole generation. Transient provider errors (429/5xx/
+timeouts) retry the same prompt; configuration errors (missing API key)
+abort immediately.
 """
 from __future__ import annotations
 
@@ -56,8 +65,23 @@ BUILTIN_BUILDERS = {
 }
 
 
+#: Maximum model calls per generation (first attempt + corrective retries).
+MAX_ATTEMPTS = 3
+
+
 class SpecGenerationError(RuntimeError):
-    """LLM produced output that could not be turned into a valid spec."""
+    """LLM produced output that could not be turned into a valid spec.
+
+    ``kind`` labels the failure family (truncated / not_json / schema /
+    build / buildability / provider / unknown) and ``hint`` carries the
+    targeted correction instruction the retry prompt hands back to the
+    model — the difference between "error, try again" and telling it
+    exactly what to change."""
+
+    def __init__(self, message: str, kind: str = "unknown", hint: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.hint = hint
 
 
 def _system_prompt(code_mode: str) -> str:
@@ -160,9 +184,14 @@ def _enhance_user(prompt: str) -> str:
 
 
 def enhance_prompt(prompt: str, model: str | None = None) -> str:
-    """One extra AI pass: vague request in, well-written design brief out."""
-    brief = complete(ENHANCE_SYSTEM, _enhance_user(prompt),
-                     temperature=0.5, max_tokens=400, model=model).strip()
+    """One extra AI pass: vague request in, well-written design brief out.
+    The brief is an enhancement, not a requirement — if the provider fails
+    here, generation proceeds from the raw prompt instead of dying."""
+    try:
+        brief = complete(ENHANCE_SYSTEM, _enhance_user(prompt),
+                         temperature=0.5, max_tokens=400, model=model).strip()
+    except LLMError:
+        return prompt
     return brief or prompt
 
 
@@ -220,28 +249,138 @@ def _strip_fences(raw: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# Error understanding — classify each failure and write the targeted
+# correction the retry prompt hands back to the model.
+# ---------------------------------------------------------------------------
+
+def _looks_truncated(text: str) -> bool:
+    """True when the reply contains JSON that never closes — the model ran
+    out of output budget mid-spec (the classic failure 'after creating lots
+    of code')."""
+    depth = 0
+    in_str = esc = False
+    opened = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+            opened = True
+        elif ch == "}" and depth > 0:
+            depth -= 1
+    return opened and (depth > 0 or in_str)
+
+
+def _schema_hint(exc: jsonschema.ValidationError) -> str:
+    """Turn a jsonschema error into an instruction the model can act on."""
+    path = "/".join(str(p) for p in exc.absolute_path) or "<root>"
+    if exc.validator == "additionalProperties":
+        return (
+            f"At {path}: {exc.message}. The schema REJECTS unknown fields — "
+            f"remove the unexpected field(s) or move the information into a "
+            f"field the schema defines."
+        )
+    if exc.validator == "required":
+        return f"At {path}: {exc.message}. Add the missing required field(s)."
+    if exc.validator == "enum":
+        return (
+            f"At {path}: {exc.message}. Use exactly one of the allowed "
+            f"values: {json.dumps(exc.validator_value)}."
+        )
+    if exc.validator in ("type", "pattern", "minItems", "maxItems"):
+        return f"At {path}: {exc.message}. Correct that field's shape."
+    return f"At {path}: {exc.message}."
+
+
+def _build_hint(exc: Exception, spec: dict) -> str:
+    """Hint for a spec that parsed but failed to build, grounded in what the
+    spec actually declares (available ids, primitive requirements)."""
+    msg = str(exc)
+    ids = [p.get("id") for p in spec.get("parameters") or [] if isinstance(p, dict)]
+    ids += [t.get("id") for t in spec.get("toggles") or [] if isinstance(t, dict)]
+    known = ", ".join(str(i) for i in ids if i) or "<none — define parameters first>"
+    if "Unknown name" in msg or "expression" in msg.lower():
+        return (
+            f"{msg}. Expressions may ONLY reference these parameter/toggle "
+            f"ids: {known}. Fix the expression to use an existing id, add "
+            f"the missing parameter, or inline a plain number."
+        )
+    if "missing params" in msg or "Unknown primitive kind" in msg:
+        return (
+            f"{msg}. Required params per kind: cylinder(radius, depth), "
+            f"cone(radius_bottom, radius_top, depth), box(size), "
+            f"sphere(radius), lathe(profile), sweep(path, radius), "
+            f"loft(profile_start, profile_end, depth), tube(radius, wall, depth)."
+        )
+    if "No builder for asset_type" in msg:
+        return (
+            f"{msg}. Either use a curated asset_type (street_light) with its "
+            f"exact parameter ids, or keep your asset_type and include the "
+            f"full 'primitives' array."
+        )
+    return msg
+
+
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
     """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3), and
     buildability-check (contact graph: floating parts, below-grade geometry,
-    dead declarations). Floating parts raise — the deterministic findings
-    feed the retry — unless ``lenient_buildability`` (the retry itself), in
-    which case they're accepted and surfaced as violations instead, so a
-    stubborn generation never bricks."""
+    dead declarations). Every failure raises a CLASSIFIED
+    :class:`SpecGenerationError` whose hint tells the model exactly what to
+    fix. Floating parts raise — the deterministic findings feed the retry —
+    unless ``lenient_buildability`` (the final attempt), in which case
+    they're accepted and surfaced as violations instead, so a stubborn
+    generation never bricks."""
+    stripped = _strip_fences(raw)
     try:
-        spec = json.loads(_strip_fences(raw))
+        spec = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise SpecGenerationError(f"Output was not valid JSON: {exc}") from None
+        if _looks_truncated(stripped):
+            raise SpecGenerationError(
+                f"Output was cut off before the JSON finished: {exc}",
+                kind="truncated",
+                hint=(
+                    "Your previous answer ran out of room mid-JSON. Regenerate "
+                    "the COMPLETE spec from scratch and make it more compact: "
+                    "fewer primitives (aim under 25), use \"array\" "
+                    "{count, step} instead of repeating similar primitives, "
+                    "shorter names, no comments. Finish the entire JSON object."
+                ),
+            ) from None
+        raise SpecGenerationError(
+            f"Output was not valid JSON: {exc}",
+            kind="not_json",
+            hint=(
+                "Return ONLY the AssetSpec JSON object — no prose, no "
+                "apologies, no markdown fences, nothing before or after it."
+            ),
+        ) from None
 
     if not isinstance(spec, dict):
-        raise SpecGenerationError("Output was not a JSON object")
+        raise SpecGenerationError(
+            "Output was not a JSON object",
+            kind="not_json",
+            hint="Return a single AssetSpec JSON object at the top level.",
+        )
     spec.setdefault("code_mode", code_mode)
 
     try:
         jsonschema.validate(spec, ASSET_SPEC_SCHEMA)
     except jsonschema.ValidationError as exc:
         raise SpecGenerationError(
-            f"Schema violation at {'/'.join(str(p) for p in exc.absolute_path) or '<root>'}: "
-            f"{exc.message}"
+            f"Schema violation at "
+            f"{'/'.join(str(p) for p in exc.absolute_path) or '<root>'}: "
+            f"{exc.message}",
+            kind="schema",
+            hint=_schema_hint(exc),
         ) from None
 
     result = validate_spec(spec)
@@ -249,14 +388,25 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
     try:  # prove the spec actually builds (catches bad expressions/params)
         prims = compute_primitives(result.spec)
     except Exception as exc:
-        raise SpecGenerationError(f"Spec does not build: {exc}") from None
+        raise SpecGenerationError(
+            f"Spec does not build: {exc}",
+            kind="build",
+            hint=_build_hint(exc, spec),
+        ) from None
 
     findings = check_buildability(prims, result.spec)
     errors = buildability_errors(findings)
     if errors and not lenient_buildability:
         raise SpecGenerationError(
             "Buildability check failed: "
-            + " ".join(f["message"] for f in errors[:4])
+            + " ".join(f["message"] for f in errors[:4]),
+            kind="buildability",
+            hint=(
+                " ".join(f["message"] for f in errors[:4])
+                + " Every part needs a load path to the ground (z=0); joined "
+                "parts must interpenetrate 10-20mm. Move/extend the named "
+                "parts (or add a connecting member) so they truly overlap."
+            ),
         )
 
     out = result.to_dict()
@@ -267,21 +417,79 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
     return out
 
 
+#: LLMError texts that are worth retrying (rate limits, provider hiccups,
+#: network trouble) — as opposed to configuration errors (missing API key,
+#: unknown provider), which no retry can fix.
+_TRANSIENT_LLM_RE = re.compile(
+    r"returned (?:429|5\d\d)|timed?[ -]?out|timeout|request failed|"
+    r"network|connection|temporarily", re.IGNORECASE,
+)
+
+
+def _transient_llm_error(exc: LLMError) -> bool:
+    return bool(_TRANSIENT_LLM_RE.search(str(exc)))
+
+
+def _correction_user(user: str, attempt: int, history: list, raw: str) -> str:
+    """The corrective prompt for attempt N: the original request, the full
+    error history (so the model never cycles back to a mistake it already
+    made), the targeted fix instruction for the latest failure, and — when
+    fixing in place is possible — the previous answer to repair. Truncated
+    answers are NOT echoed back: re-feeding cut-off JSON just burns the
+    budget that caused the truncation."""
+    spec_errors = [e for e in history if e.kind != "provider"]
+    if not spec_errors:
+        return user  # only provider hiccups so far — same prompt again
+    lines = [user, f"\nATTEMPT {attempt} of {MAX_ATTEMPTS}."]
+    if len(spec_errors) > 1:
+        lines.append("Your previous answers failed, in order:")
+        lines += [f"{i}. [{e.kind}] {e}" for i, e in enumerate(spec_errors, start=1)]
+        lines.append("Do not repeat ANY of these mistakes.")
+    latest = spec_errors[-1]
+    lines.append(f"\nLatest failure [{latest.kind}]: {latest}")
+    lines.append(f"HOW TO FIX IT: {latest.hint or 'Correct the error above.'}")
+    if latest.kind != "truncated" and raw:
+        lines.append(f"\nYour previous answer (repair it in place):\n{raw[:6000]}")
+    lines.append("\nReturn the corrected COMPLETE AssetSpec JSON only.")
+    return "\n".join(lines)
+
+
+def _complete_with_retries(system: str, user: str, finalize, *,
+                           model: str | None = None, **complete_kwargs) -> dict:
+    """Non-streaming attempt loop: call the model, ``finalize(raw, lenient)``
+    the reply, and on a classified failure re-prompt with a targeted
+    correction — up to MAX_ATTEMPTS calls. The last attempt finalizes
+    leniently (buildability warnings instead of failure)."""
+    history: list = []
+    raw = ""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+        try:
+            raw = complete(system, message, model=model, **complete_kwargs)
+        except LLMError as exc:
+            if attempt == MAX_ATTEMPTS or not _transient_llm_error(exc):
+                raise
+            history.append(SpecGenerationError(str(exc), kind="provider"))
+            continue
+        try:
+            return finalize(raw, attempt == MAX_ATTEMPTS)
+        except SpecGenerationError as err:
+            history.append(err)
+            if attempt == MAX_ATTEMPTS:
+                raise SpecGenerationError(
+                    f"Generation failed after {MAX_ATTEMPTS} attempts. "
+                    f"Last error: {err}",
+                    kind=err.kind, hint=err.hint,
+                ) from None
+    raise SpecGenerationError("Generation failed", kind="unknown")  # unreachable
+
+
 def _run(system: str, user: str, code_mode: str, model: str | None = None) -> dict:
-    raw = complete(system, user, model=model)
-    try:
-        return _postprocess(raw, code_mode)
-    except SpecGenerationError as first_error:
-        # T2.6: one retry with the error appended. The retry is lenient about
-        # buildability: a still-floating spec ships with warning violations
-        # instead of failing the whole generation.
-        retry_user = (
-            f"{user}\n\nYour previous answer failed validation with this error:\n"
-            f"{first_error}\n\nPrevious answer:\n{raw[:4000]}\n\n"
-            f"Return the corrected AssetSpec JSON only."
-        )
-        raw = complete(system, retry_user, model=model)
-        return _postprocess(raw, code_mode, lenient_buildability=True)
+    return _complete_with_retries(
+        system, user,
+        lambda raw, lenient: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        model=model,
+    )
 
 
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None) -> dict:
@@ -553,13 +761,10 @@ def propose_standards_update() -> dict:
     review the cited sections before relying on it.
     """
     system, user = _standards_prompts()
-    try:
-        return _standards_finalize(complete(system, user, temperature=0.2, max_tokens=8000))
-    except SpecGenerationError as err:  # T2.6-style single retry
-        return _standards_finalize(
-            complete(system, f"{user}\n\nYour previous answer failed: {err}\nReturn corrected JSON only.",
-                     temperature=0.2, max_tokens=8000)
-        )
+    return _complete_with_retries(
+        system, user, lambda raw, lenient: _standards_finalize(raw),
+        temperature=0.2, max_tokens=8000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -567,37 +772,64 @@ def propose_standards_update() -> dict:
 # generation live, then a sentinel + JSON payload with the validated result.
 # ---------------------------------------------------------------------------
 
+#: Human labels for the attempt banner the stream shows between retries.
+_KIND_LABEL = {
+    "truncated": "the answer was cut off — regenerating more compactly",
+    "not_json": "the answer wasn't clean JSON",
+    "schema": "fixing a schema violation",
+    "build": "fixing geometry that doesn't build",
+    "buildability": "fixing floating/unsupported parts",
+    "provider": "the AI provider hiccuped — retrying",
+}
+
+
 def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
     """``finalize(raw, lenient=False)`` turns the streamed text into the
-    result payload; the retry pass calls it leniently so a spec that still
-    fails only the buildability check ships with warnings instead of dying."""
+    result payload. On a classified failure the pipeline announces what went
+    wrong and what it's fixing, then re-prompts with the targeted correction
+    — up to MAX_ATTEMPTS model calls. The final attempt finalizes leniently
+    so a spec that still fails only the buildability check ships with
+    warnings instead of dying."""
     payload = None
-    try:
+    max_attempts = MAX_ATTEMPTS if retry else 1
+    history: list = []
+    raw = ""
+    for attempt in range(1, max_attempts + 1):
+        message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
         parts = []
-        for chunk in complete_stream(system, user, model=model):
-            parts.append(chunk)
-            yield chunk
         try:
-            payload = {"ok": True, "result": finalize("".join(parts))}
+            for chunk in complete_stream(system, message, model=model):
+                parts.append(chunk)
+                yield chunk
+        except LLMError as exc:
+            if attempt == max_attempts or not _transient_llm_error(exc):
+                payload = {"ok": False, "error": str(exc), "kind": "provider",
+                           "attempts": attempt}
+                break
+            history.append(SpecGenerationError(str(exc), kind="provider"))
+            yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
+                   f"{_KIND_LABEL['provider']}]\n\n")
+            continue
+        raw = "".join(parts)
+        try:
+            payload = {"ok": True,
+                       "result": finalize(raw, attempt == max_attempts),
+                       "attempts": attempt}
+            break
         except SpecGenerationError as err:
-            if not retry:
-                payload = {"ok": False, "error": str(err)}
-            else:
-                yield f"\n\n[validation failed — retrying: {err}]\n\n"
-                retry_user = (
-                    f"{user}\n\nYour previous answer failed validation with this "
-                    f"error:\n{err}\n\nReturn the corrected JSON only."
+            history.append(err)
+            if attempt == max_attempts:
+                failure = (
+                    f"Generation failed after {max_attempts} attempts. "
+                    f"Last error: {err}" if retry else str(err)
                 )
-                parts = []
-                for chunk in complete_stream(system, retry_user, model=model):
-                    parts.append(chunk)
-                    yield chunk
-                try:
-                    payload = {"ok": True, "result": finalize("".join(parts), True)}
-                except SpecGenerationError as err2:
-                    payload = {"ok": False, "error": str(err2)}
-    except LLMError as exc:
-        payload = {"ok": False, "error": str(exc)}
+                payload = {"ok": False, "error": failure, "kind": err.kind,
+                           "attempts": attempt}
+                break
+            label = _KIND_LABEL.get(err.kind, "fixing the reported error")
+            yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
+                   f"{label}: {err}]\n\n[attempt {attempt + 1} of "
+                   f"{max_attempts}]\n\n")
     yield STREAM_SENTINEL + json.dumps(payload)
 
 
@@ -607,15 +839,22 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
 
     def gen():
         yield "[refining your request into a design brief]\n\n"
+        parts = []
         try:
-            parts = []
             for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(prompt),
                                          temperature=0.5, max_tokens=400, model=model):
                 parts.append(chunk)
                 yield chunk
         except LLMError as exc:
-            yield STREAM_SENTINEL + json.dumps({"ok": False, "error": str(exc)})
-            return
+            # the brief is optional — configuration errors still abort (the
+            # spec pass would hit them too), but a transient hiccup here just
+            # means designing straight from the raw request
+            if not _transient_llm_error(exc):
+                yield STREAM_SENTINEL + json.dumps(
+                    {"ok": False, "error": str(exc), "kind": "provider"})
+                return
+            parts = []
+            yield "\n[brief pass unavailable — designing from your request as-is]\n"
         brief = "".join(parts).strip() or prompt
         yield "\n\n[designing the asset from the brief]\n\n"
 

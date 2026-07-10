@@ -149,8 +149,11 @@ Other providers work too — set `LLM_PROVIDER` alongside the matching key
 
 Set `LLM_MODEL` to override the model. The AI's output is strictly
 schema-checked, code-clamped, and test-built before it ever reaches your
-browser; if it fails, it is retried once with the error message and then
-rejected.
+browser. If it fails, the app *understands* the failure — a reply cut off
+mid-JSON, a schema violation at a named field, an expression using an id
+that doesn't exist, a part left floating, a provider hiccup — and retries
+with a targeted correction (and the full error history) up to 3 attempts
+before giving up; the live stream shows each attempt as it happens.
 
 ### Option B — Run on your own computer (one install)
 
