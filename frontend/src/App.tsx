@@ -7,7 +7,8 @@ import { useEffect, useMemo, useState } from "react";
 import defaultSpecJson from "../../examples/street_light.json";
 import type { AssetSpec, Primitive, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
 import { applyAuditFixes, auditConnections, computePrimitives } from "./builders";
-import type { AuditFinding } from "./builders";
+import type { AuditFinding, AuditReport } from "./builders";
+import { reviewConnectionsStream, type DeepseekModel } from "./api";
 import { checkSpec } from "./standards";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
@@ -52,8 +53,15 @@ export default function App() {
   const [tourId, setTourId] = useState(0);
   const [homeId, setHomeId] = useState(0);
 
-  // ── connection check: report, per-finding selection, hover preview ──
-  const [checkOpen, setCheckOpen] = useState(false);
+  // ── connection check: report, per-finding selection, hover preview.
+  // "local" = the deterministic auditor (recomputed live); "ai" = the AI
+  // fabrication review (a one-shot snapshot fetched from the backend).
+  // Both feed the same panel, preview, and confirm-to-apply machinery. ──
+  const [checkMode, setCheckMode] = useState<null | "local" | "ai">(null);
+  const [aiReport, setAiReport] = useState<AuditReport | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiStream, setAiStream] = useState("");
+  const [aiError, setAiError] = useState<string | null>(null);
   /** finding ids the user UNchecked (default = every fixable finding on) */
   const [excludedFixes, setExcludedFixes] = useState<Set<string>>(new Set());
   const [previewFixes, setPreviewFixes] = useState(false);
@@ -67,12 +75,14 @@ export default function App() {
   const primitives = useMemo(() => computePrimitives(spec), [spec]);
   const violations = useMemo(() => checkSpec(spec), [spec]);
 
-  // the audit re-runs live while the panel is open, so the report always
-  // matches the current sliders/edits — applying is still click-only
-  const report = useMemo(
-    () => (checkOpen ? auditConnections(spec) : null),
-    [checkOpen, spec],
+  // the deterministic audit re-runs live while its panel is open, so the
+  // report always matches the current sliders/edits — applying is still
+  // click-only. The AI report is a snapshot from when the button was hit.
+  const localReport = useMemo(
+    () => (checkMode === "local" ? auditConnections(spec) : null),
+    [checkMode, spec],
   );
+  const report = checkMode === "ai" ? aiReport : localReport;
   const fixable = useMemo(
     () => (report ? report.findings.filter((f) => f.fix && !excludedFixes.has(f.id)) : []),
     [report, excludedFixes],
@@ -95,9 +105,9 @@ export default function App() {
     return out;
   }, [previewing, primitives, fixedPrimitives, hoverFinding]);
 
-  /** Open the connection check: make hardware visible (the audit inspects
-   * it, so the user should see it too), then show the report panel. */
-  const startCheck = () => {
+  /** Make hardware visible (both checks inspect it, so the user should see
+   * it too). */
+  const showHardware = () =>
     setSpec((s) => {
       const toggles = [...(s.toggles ?? [])];
       const i = toggles.findIndex((t) => t.id === "connection_hardware");
@@ -108,17 +118,59 @@ export default function App() {
       }
       return { ...s, toggles };
     });
+
+  const resetCheckSelection = () => {
     setExcludedFixes(new Set());
     setPreviewFixes(false);
-    setCheckOpen(true);
+    setHoverFinding(null);
   };
 
-  /** The confirmed apply — the ONLY place audit fixes reach the spec. The
-   * report then recomputes on the fixed spec, so remaining findings (and
-   * any deferred fixes) surface for the next round. */
+  /** Open the deterministic connection check. */
+  const startCheck = () => {
+    showHardware();
+    resetCheckSelection();
+    setCheckMode("local");
+  };
+
+  /** Ask the AI to review the connections. Same principles as the local
+   * check: findings arrive in the same format, hovering Apply previews the
+   * result in 3D, and nothing is applied without confirmation. */
+  const startAiCheck = () => {
+    if (aiBusy) return;
+    showHardware();
+    resetCheckSelection();
+    setAiReport(null);
+    setAiError(null);
+    setAiStream("");
+    setCheckMode("ai");
+    setAiBusy(true);
+    const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
+    reviewConnectionsStream(spec, setAiStream, model)
+      .then(setAiReport)
+      .catch((e) => setAiError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAiBusy(false));
+  };
+
+  const closeCheck = () => {
+    setCheckMode(null);
+    setAiReport(null);
+    setAiError(null);
+    resetCheckSelection();
+  };
+
+  /** The confirmed apply — the ONLY place check fixes reach the spec. The
+   * local report then recomputes on the fixed spec; the AI report drops the
+   * findings that were just applied and keeps the rest for review. */
   const applyFixes = () => {
     if (!fixedSpec) return;
     setSpec(fixedSpec);
+    if (checkMode === "ai" && aiReport) {
+      const applied = new Set(fixable.map((f) => f.id));
+      setAiReport({
+        ...aiReport,
+        findings: aiReport.findings.filter((f) => !applied.has(f.id)),
+      });
+    }
     setExcludedFixes(new Set());
     setPreviewFixes(false);
   };
@@ -362,9 +414,42 @@ export default function App() {
         />
       </main>
       <aside className="sidebar sidebar--right">
-        {checkOpen && report ? (
+        {checkMode === "ai" && (aiBusy || aiError) ? (
+          <div className="panel check-panel">
+            <div className="panel__header">
+              <h3>🤖 AI connection review</h3>
+              <button className="close" onClick={closeCheck} title="Close the AI review">
+                ✕
+              </button>
+            </div>
+            {aiBusy ? (
+              <>
+                <div className="stream-card" aria-live="off">
+                  <div className="stream-card__title">
+                    <span className="stream-card__dot" /> Reviewing every joint…
+                  </div>
+                  <div className="stream-card__text">{aiStream.slice(-700) || "…"}</div>
+                </div>
+                <p className="hint">
+                  The AI reads the spec, the generated joint schedule, and the
+                  deterministic findings, then proposes fixes in the same
+                  format as the local check — previewed on hover, applied only
+                  when you confirm.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="violation" role="alert">
+                  <p>{aiError}</p>
+                </div>
+                <button onClick={startAiCheck}>Try again</button>
+              </>
+            )}
+          </div>
+        ) : checkMode && report ? (
           <CheckPanel
             report={report}
+            mode={checkMode}
             isChecked={(f) => !excludedFixes.has(f.id)}
             onToggleFinding={(f) =>
               setExcludedFixes((prev) => {
@@ -377,11 +462,7 @@ export default function App() {
             onHoverFinding={setHoverFinding}
             onPreview={setPreviewFixes}
             onApply={applyFixes}
-            onClose={() => {
-              setCheckOpen(false);
-              setPreviewFixes(false);
-              setHoverFinding(null);
-            }}
+            onClose={closeCheck}
             fixable={fixable}
           />
         ) : selected && primitives.some((p) => p.component === selected.component) ? (
@@ -409,6 +490,7 @@ export default function App() {
             onHardware={toggleHardware}
             onTour={startTour}
             onCheck={startCheck}
+            onCheckAI={startAiCheck}
             locked={locked}
             onLock={toggleLock}
             onReset={() => {
