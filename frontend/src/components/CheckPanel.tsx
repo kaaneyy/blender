@@ -10,7 +10,6 @@ const SEV_ICON: Record<string, string> = { error: "⛔", warning: "⚠️" };
 
 export default function CheckPanel({
   report,
-  mode = "local",
   isChecked,
   onToggleFinding,
   onHoverFinding,
@@ -20,9 +19,6 @@ export default function CheckPanel({
   fixable,
 }: {
   report: AuditReport;
-  /** "local" = the deterministic auditor; "ai" = the AI fabrication review
-   * (same findings format, same confirm-to-apply rules). */
-  mode?: "local" | "ai";
   /** whether a finding's fix is selected for application */
   isChecked: (f: AuditFinding) => boolean;
   onToggleFinding: (f: AuditFinding) => void;
@@ -49,11 +45,10 @@ export default function CheckPanel({
     onPreview(false);
   };
 
-  const ai = mode === "ai";
   return (
     <div className="panel check-panel">
       <div className="panel__header">
-        <h3>{ai ? "🤖 AI connection review" : "🔍 Connection check"}</h3>
+        <h3>🔍 Connection check</h3>
         <button className="close" onClick={onClose} title="Close the connection check">
           ✕
         </button>
@@ -66,16 +61,9 @@ export default function CheckPanel({
       </div>
       {clean && (
         <p className="hint">
-          {ai
-            ? "The AI reviewed every joint against the materials, geometry, and real-world assembly and found nothing to flag."
-            : "Every part has a load path to the ground, every declared joint has real contact, and all generated hardware bears on the members it joins."}
-        </p>
-      )}
-      {ai && !clean && (
-        <p className="hint">
-          AI proposals from a snapshot of the current asset — each one was
-          checked against the real part names and test-built, but review them
-          yourself before applying. Re-run the review after big edits.
+          Every part has a load path to the ground, every declared joint has
+          real contact, and all generated hardware bears on the members it
+          joins.
         </p>
       )}
 

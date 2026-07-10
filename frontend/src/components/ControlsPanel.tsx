@@ -35,7 +35,6 @@ interface Props {
   onHardware: () => void;
   onTour: () => void;
   onCheck: () => void;
-  onCheckAI: () => void;
   /** true = spec/code slider limits enforced; false = free dimensions */
   locked: boolean;
   onLock: () => void;
@@ -215,7 +214,6 @@ export default function ControlsPanel({
   onHardware,
   onTour,
   onCheck,
-  onCheckAI,
   locked,
   onLock,
   onReset,
@@ -309,13 +307,6 @@ export default function ControlsPanel({
         title="Audit every joint like a fabricator: hardware sticking into thin air, parts that don't really touch, floating members, below-grade geometry. Fixes are proposed, previewed on hover, and applied only when you confirm."
       >
         🔍 Check connections
-      </button>
-      <button
-        className="hardware-btn"
-        onClick={onCheckAI}
-        title="Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm."
-      >
-        🤖 Check connections with AI
       </button>
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,

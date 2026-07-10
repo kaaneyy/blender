@@ -57,15 +57,6 @@ command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sket
   button first shows the result live in the 3D view (changed parts
   highlighted) plus a before → after list of every change, so you see
   exactly what you're approving before you click.
-- **🤖 Check connections with AI** sends the spec, the generated joint
-  schedule, and the deterministic findings to the AI for a fabricator's
-  judgment pass on top: joint types that don't suit the materials, missing
-  declarations, hardware a crew could never reach. The AI must answer in
-  the same findings format with the same tiny fix vocabulary (nudge /
-  declare / undeclare); every proposal is checked against the real part
-  names, bounded, and test-built server-side before you see it — then the
-  **same rules apply**: hover to preview, nothing changes until you
-  confirm.
 - **📋 Installation guide** has the AI write step-by-step installation
   instructions for the current asset — site prep, anchoring, assembly order
   using the actual component names and dimensions, torque notes, and a code
@@ -158,11 +149,8 @@ Other providers work too — set `LLM_PROVIDER` alongside the matching key
 
 Set `LLM_MODEL` to override the model. The AI's output is strictly
 schema-checked, code-clamped, and test-built before it ever reaches your
-browser. If it fails, the app *understands* the failure — a reply cut off
-mid-JSON, a schema violation at a named field, an expression using an id
-that doesn't exist, a part left floating, a provider hiccup — and retries
-with a targeted correction (and the full error history) up to 3 attempts
-before giving up; the live stream shows each attempt as it happens.
+browser; if it fails, it is retried once with the error message and then
+rejected.
 
 ### Option B — Run on your own computer (one install)
 

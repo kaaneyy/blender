@@ -2,7 +2,6 @@
  * function under /api; in dev the Vite proxy forwards /api to localhost:8000.
  * Override with VITE_API_URL when the backend lives elsewhere. */
 import type { AssetSpec } from "./types";
-import type { AuditReport } from "./builders/audit";
 
 const API_BASE: string =
   (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "/api";
@@ -222,21 +221,6 @@ export async function wizardStepStream(
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return result.spec as AssetSpec;
-}
-
-/** AI fabrication review of the spec's connections. The backend answers in
- * the deterministic auditor's findings format (same nudge/declare/undeclare
- * fix ops), sanitized against the real component names and test-built — so
- * the same CheckPanel previews and applies the proposals, and nothing
- * changes without the user's confirmation. */
-export async function reviewConnectionsStream(
-  spec: AssetSpec,
-  onChunk: (text: string) => void,
-  model: DeepseekModel | "" = "",
-): Promise<AuditReport> {
-  const result = await streamPost("/review-connections-stream", { spec, model }, onChunk);
-  if (!Array.isArray(result?.findings)) throw new Error("Backend returned no findings");
-  return result as unknown as AuditReport;
 }
 
 export async function installGuideStream(
