@@ -172,6 +172,15 @@ def _mock(user: str) -> str:
             "## Inspection & maintenance\nInspect fasteners annually.\n\n"
             "*Safety: a licensed engineer must approve structural anchoring for public installations.*"
         )
+    if user.startswith("REVIEW CONNECTIONS"):
+        return json.dumps({"findings": [{
+            "severity": "warning",
+            "title": "Mock AI review — configure a real LLM provider",
+            "detail": ("This demo finding comes from the keyless mock "
+                       "provider. With a real provider the AI walks every "
+                       "joint like a fabricator and proposes reviewed, "
+                       "confirmable fixes."),
+        }]})
     if user.startswith("STANDARDS UPDATE"):
         db = json.loads((REPO_ROOT / "standards" / "us_codes.json").read_text(encoding="utf-8"))
         db["_meta"]["version"] = int(db["_meta"].get("version", 1)) + 1

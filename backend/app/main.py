@@ -77,6 +77,11 @@ class InstallGuideRequest(BaseModel):
     spec: dict
 
 
+class ReviewConnectionsRequest(BaseModel):
+    spec: dict
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -179,6 +184,23 @@ def wizard_step(body: WizardStepRequest) -> dict:
         )
 
 
+@router.post("/review-connections")
+def review_connections(body: ReviewConnectionsRequest) -> dict:
+    """AI fabrication review of the spec's connections. Findings arrive in
+    the deterministic auditor's format (same nudge/declare/undeclare fix
+    ops), sanitized and test-built server-side; the UI applies them only
+    after the user confirms."""
+    try:
+        return spec_ai.review_connections(body.spec, model=body.model)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI review failed validation repeatedly: {exc}",
+        )
+
+
 @router.post("/install-guide")
 def install_guide(body: InstallGuideRequest) -> dict:
     """AI-written installation instructions grounded in the current spec and
@@ -247,6 +269,11 @@ def wizard_step_stream(body: WizardStepRequest) -> StreamingResponse:
             body.spec, body.step, body.message, body.code_mode, model=body.model
         )
     )
+
+
+@router.post("/review-connections-stream")
+def review_connections_stream(body: ReviewConnectionsRequest) -> StreamingResponse:
+    return _stream(spec_ai.stream_review_connections(body.spec, model=body.model))
 
 
 @router.post("/install-guide-stream")

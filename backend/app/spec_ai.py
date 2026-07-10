@@ -628,6 +628,240 @@ def wizard_step(spec: dict, step: str, message: str = "",
 
 
 # ---------------------------------------------------------------------------
+# AI connection review — the "Check connections with AI" button.
+#
+# The deterministic auditor (blender/builders/audit.py) measures what it can
+# prove; this pass adds fabricator JUDGMENT on top: joint types that don't
+# suit the materials or geometry, missing declarations where inference could
+# guess wrong, hardware that shouldn't exist, assembly-access problems. The
+# AI must answer in the auditor's own findings format — the same nudge /
+# declare / undeclare fix ops — so the frontend previews and applies its
+# proposals through the exact same confirmation machinery: hover the Apply
+# button to see the result in 3D, and NOTHING changes until the user clicks.
+# Every proposal is sanitized against the real component names, bounded, and
+# test-built before it ever reaches the browser.
+# ---------------------------------------------------------------------------
+
+from blender.builders.hardware import CONNECTION_TYPES  # noqa: E402
+
+#: findings kept per review, most important first
+MAX_REVIEW_FINDINGS = 10
+#: largest move (m) an AI fix may propose per axis
+MAX_NUDGE = 0.5
+
+REVIEW_SYSTEM = """You are a senior fabrication reviewer for street furniture, lighting, and site structures — the person who signs off a shop drawing before it goes to the floor. Review the connections of the AssetSpec you are given like you would on a real job.
+
+You receive:
+1. the AssetSpec JSON,
+2. the joint schedule the app generated (the hardware that will really appear),
+3. the deterministic checker's findings — these are already measured facts; do NOT repeat them. Your value is judgment beyond them.
+
+REVIEW FOR
+- Joint TYPE suitability: does each declared/inferred connection match the materials and geometry? (wood on metal → carriage_bolt; a pipe standing on a plate → weld or anchor_base, never a bolt down its own axis; round-on-round telescoping → slip_fit; arm on round pole → band_clamp; decorative caps/trim → none)
+- Missing declarations where geometric inference could guess wrong, and joints that should be suppressed (declare type "none").
+- Real-life assembly: could a crew actually reach and torque every fastener? Is anything trapped, inaccessible, or fastened to a part that can't take it?
+- Small placement problems a modest move would fix (parts that should seat 10-20mm deeper, hardware clashing with a neighbor).
+
+OUTPUT — return ONLY this JSON object, no prose, no fences:
+{"findings": [
+  {"severity": "error" | "warning",
+   "title": "<one short sentence naming the problem>",
+   "detail": "<why it isn't buildable / right, in plain fabrication terms>",
+   "component": "<component name to highlight, optional>",
+   "joint": <joint id from the schedule, optional>,
+   "fix": {  // OPTIONAL — omit when there is no safe mechanical fix
+     "summary": "<imperative one-liner of the change>",
+     "before": "<state now>",
+     "after": "<state after the fix>",
+     "ops": [  // the ONLY allowed operations:
+       {"op": "nudge", "key": "<component or component/part>", "delta": [x, y, z]},   // meters, each axis <= 0.5
+       {"op": "declare", "a": "<component or component/part>", "b": "<component or 'ground'>", "type": "<connection type>"},
+       {"op": "undeclare", "a": "<component>", "b": "<component>"}
+     ]}}
+]}
+
+RULES
+- Connection types for "declare": anchor_base, through_bolt, flange_splice, band_clamp, slip_fit, weld, carriage_bolt, lag_screw, none.
+- Reference ONLY component/part names that exist (the user message lists them). Anything else is discarded.
+- At most 8 findings, most important first. If the connections are sound, return {"findings": []} — do not invent problems.
+- Fixes must be conservative: prefer a declaration change over moving parts; keep nudges small (typically under 0.1)."""
+
+
+def _review_user(spec: dict, det: dict) -> str:
+    from blender.builders.base import compute_primitives as _cp
+    from blender.builders.schedule import joint_schedule
+
+    prims = [p for p in _cp(spec) if p.component != "hardware" and not p.cut]
+    comps = sorted({p.component for p in prims})
+    parts = sorted({f"{p.component}/{p.name}" for p in prims})
+    det_brief = [
+        {k: f.get(k) for k in ("severity", "kind", "title", "detail")}
+        for f in det["findings"]
+    ]
+    return (
+        f"REVIEW CONNECTIONS.\n"
+        f"AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Joint schedule (the hardware the app generated):\n"
+        f"{json.dumps(joint_schedule(spec), separators=(',', ':'))}\n\n"
+        f"Deterministic checker findings (already measured — do NOT repeat "
+        f"them):\n{json.dumps(det_brief, separators=(',', ':'))}\n\n"
+        f"Component names you may reference: {json.dumps(comps)}\n"
+        f"Part paths you may reference: {json.dumps(parts)}"
+    )
+
+
+def _sanitize_op(op, comps: set, parts: set):
+    """One validated fix op, or None. Ops may only touch names that exist,
+    with bounded moves and known connection types — an AI proposal can never
+    reach outside the vocabulary the deterministic auditor already uses."""
+    if not isinstance(op, dict):
+        return None
+    kind = op.get("op")
+    refs = comps | parts
+    if kind == "nudge":
+        key, delta = op.get("key"), op.get("delta")
+        if key not in refs or not isinstance(delta, list) or len(delta) != 3:
+            return None
+        try:
+            d = [float(v) for v in delta]
+        except (TypeError, ValueError):
+            return None
+        if any(abs(v) > MAX_NUDGE for v in d) or all(abs(v) < 1e-9 for v in d):
+            return None
+        return {"op": "nudge", "key": key, "delta": d}
+    if kind in ("declare", "undeclare"):
+        a, b = op.get("a"), op.get("b")
+        if not isinstance(a, str) or not isinstance(b, str):
+            return None
+        if a not in refs or (b not in refs and b != "ground"):
+            return None
+        if kind == "undeclare":
+            return {"op": "undeclare", "a": a, "b": b}
+        if op.get("type") not in CONNECTION_TYPES:
+            return None
+        return {"op": "declare", "a": a, "b": b, "type": op["type"]}
+    return None
+
+
+def _sanitize_review_finding(f, i: int, comps: set, parts: set):
+    if not isinstance(f, dict):
+        return None
+    title = str(f.get("title") or "").strip()
+    if not title:
+        return None
+    severity = f.get("severity") if f.get("severity") in ("error", "warning") else "warning"
+    component = f.get("component")
+    if not isinstance(component, str) or (component not in comps and component not in parts):
+        component = None
+    joint = f.get("joint") if isinstance(f.get("joint"), int) else None
+    fix = None
+    rf = f.get("fix")
+    if isinstance(rf, dict):
+        ops = []
+        for op in rf.get("ops") or []:
+            clean = _sanitize_op(op, comps, parts)
+            if clean:
+                ops.append(clean)
+        if ops:
+            fix = {
+                "summary": str(rf.get("summary") or title)[:200],
+                "before": str(rf.get("before") or "")[:200],
+                "after": str(rf.get("after") or "")[:200],
+                "ops": ops,
+            }
+    return {"id": f"ai:{i}", "severity": severity, "kind": "ai_review",
+            "title": title[:160], "detail": str(f.get("detail") or "")[:600],
+            "component": component, "joint": joint, "fix": fix}
+
+
+def _review_finalize(raw: str, spec: dict, det: dict) -> dict:
+    """Parse + sanitize the AI's findings and PROVE the proposals are safe:
+    apply every surviving fix to a copy of the spec and test-build it. Any
+    failure raises a classified error the retry loop feeds back."""
+    from blender.builders.audit import apply_audit_fixes
+    from blender.builders.base import compute_primitives as _cp
+
+    stripped = _strip_fences(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        if _looks_truncated(stripped):
+            raise SpecGenerationError(
+                f"Review was cut off before the JSON finished: {exc}",
+                kind="truncated",
+                hint="Return the COMPLETE findings JSON — fewer findings, "
+                     "shorter detail text.",
+            ) from None
+        raise SpecGenerationError(
+            f"Review was not valid JSON: {exc}",
+            kind="not_json",
+            hint='Return ONLY the {"findings": [...]} JSON object — no '
+                 "prose, no fences.",
+        ) from None
+
+    findings_raw = data.get("findings") if isinstance(data, dict) else data
+    if not isinstance(findings_raw, list):
+        raise SpecGenerationError(
+            'Review JSON did not contain a "findings" array',
+            kind="schema",
+            hint='Answer with exactly {"findings": [...]} (an empty array '
+                 "when nothing is wrong).",
+        )
+
+    prims = [p for p in _cp(spec) if p.component != "hardware" and not p.cut]
+    comps = {p.component for p in prims}
+    parts = {f"{p.component}/{p.name}" for p in prims}
+    findings = []
+    for f in findings_raw:
+        clean = _sanitize_review_finding(f, len(findings) + 1, comps, parts)
+        if clean:
+            findings.append(clean)
+        if len(findings) >= MAX_REVIEW_FINDINGS:
+            break
+
+    fixable = [f for f in findings if f["fix"]]
+    if fixable:
+        try:  # the proposals must leave a spec that still builds
+            _cp(apply_audit_fixes(spec, fixable))
+        except Exception as exc:
+            raise SpecGenerationError(
+                f"Applying the proposed fixes breaks the build: {exc}",
+                kind="build",
+                hint="Propose smaller/simpler ops (or drop the fix and "
+                     "report the finding without one).",
+            ) from None
+
+    return {"findings": findings, "joints": det["joints"],
+            "components": det["components"]}
+
+
+def review_connections(spec: dict, model: str | None = None) -> dict:
+    """AI fabrication review of the spec's connections, answered in the
+    deterministic auditor's findings format (same fix-op vocabulary), so the
+    UI can preview and apply proposals through the same confirmation flow."""
+    from blender.builders.audit import audit_connections
+
+    det = audit_connections(spec)
+    return _complete_with_retries(
+        REVIEW_SYSTEM, _review_user(spec, det),
+        lambda raw, lenient: _review_finalize(raw, spec, det),
+        model=model,
+    )
+
+
+def stream_review_connections(spec: dict, model: str | None = None):
+    """Streaming twin of :func:`review_connections`."""
+    from blender.builders.audit import audit_connections
+
+    det = audit_connections(spec)
+    return _stream_pipeline(
+        REVIEW_SYSTEM, _review_user(spec, det),
+        lambda raw, lenient=False: _review_finalize(raw, spec, det),
+        model=model,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Installation guide
 # ---------------------------------------------------------------------------
 

@@ -57,6 +57,15 @@ command — see [Open your asset in Blender](#open-your-asset-in-blender-or-sket
   button first shows the result live in the 3D view (changed parts
   highlighted) plus a before → after list of every change, so you see
   exactly what you're approving before you click.
+- **🤖 Check connections with AI** sends the spec, the generated joint
+  schedule, and the deterministic findings to the AI for a fabricator's
+  judgment pass on top: joint types that don't suit the materials, missing
+  declarations, hardware a crew could never reach. The AI must answer in
+  the same findings format with the same tiny fix vocabulary (nudge /
+  declare / undeclare); every proposal is checked against the real part
+  names, bounded, and test-built server-side before you see it — then the
+  **same rules apply**: hover to preview, nothing changes until you
+  confirm.
 - **📋 Installation guide** has the AI write step-by-step installation
   instructions for the current asset — site prep, anchoring, assembly order
   using the actual component names and dimensions, torque notes, and a code
