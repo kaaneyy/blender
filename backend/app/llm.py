@@ -104,20 +104,23 @@ def _require_key(env_var: str) -> str:
 def _openai_compatible(url: str, api_key: str, model: str, system: str, user: str,
                        temperature: float, max_tokens: int,
                        timeout: float = TIMEOUT) -> str:
-    resp = httpx.post(
-        url,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        timeout=timeout,
-    )
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:  # timeouts / connection trouble: retryable
+        raise LLMError(f"LLM request failed: {type(exc).__name__}: {exc}") from None
     if resp.status_code != 200:
         raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
     # Reasoning models keep their chain of thought in a separate field; the
@@ -127,18 +130,21 @@ def _openai_compatible(url: str, api_key: str, model: str, system: str, user: st
 
 def _anthropic(api_key: str, model: str, system: str, user: str,
                temperature: float, max_tokens: int) -> str:
-    resp = httpx.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-        json={
-            "model": model,
-            "system": system,
-            "messages": [{"role": "user", "content": user}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        timeout=TIMEOUT,
-    )
+    try:
+        resp = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            json={
+                "model": model,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=TIMEOUT,
+        )
+    except httpx.HTTPError as exc:  # timeouts / connection trouble: retryable
+        raise LLMError(f"LLM request failed: {type(exc).__name__}: {exc}") from None
     if resp.status_code != 200:
         raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
     return resp.json()["content"][0]["text"]
@@ -219,6 +225,16 @@ def complete(system: str, user: str, *, temperature: float = 0.4,
 def _openai_compatible_stream(url: str, api_key: str, model: str, system: str,
                               user: str, temperature: float, max_tokens: int,
                               timeout: float = TIMEOUT) -> Iterator[str]:
+    try:
+        yield from _openai_compatible_stream_inner(
+            url, api_key, model, system, user, temperature, max_tokens, timeout)
+    except httpx.HTTPError as exc:  # timeouts / connection trouble: retryable
+        raise LLMError(f"LLM request failed: {type(exc).__name__}: {exc}") from None
+
+
+def _openai_compatible_stream_inner(url: str, api_key: str, model: str, system: str,
+                                    user: str, temperature: float, max_tokens: int,
+                                    timeout: float) -> Iterator[str]:
     with httpx.stream(
         "POST", url,
         headers={"Authorization": f"Bearer {api_key}"},
@@ -271,33 +287,36 @@ def _openai_compatible_stream(url: str, api_key: str, model: str, system: str,
 
 def _anthropic_stream(api_key: str, model: str, system: str, user: str,
                       temperature: float, max_tokens: int) -> Iterator[str]:
-    with httpx.stream(
-        "POST", "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-        json={
-            "model": model,
-            "system": system,
-            "messages": [{"role": "user", "content": user}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        },
-        timeout=TIMEOUT,
-    ) as resp:
-        if resp.status_code != 200:
-            resp.read()
-            raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
-        for line in resp.iter_lines():
-            if not line.startswith("data:"):
-                continue
-            try:
-                event = json.loads(line[5:].strip())
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "content_block_delta":
-                text = event.get("delta", {}).get("text")
-                if text:
-                    yield text
+    try:
+        with httpx.stream(
+            "POST", "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            json={
+                "model": model,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            },
+            timeout=TIMEOUT,
+        ) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
+            for line in resp.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "content_block_delta":
+                    text = event.get("delta", {}).get("text")
+                    if text:
+                        yield text
+    except httpx.HTTPError as exc:  # timeouts / connection trouble: retryable
+        raise LLMError(f"LLM request failed: {type(exc).__name__}: {exc}") from None
 
 
 def complete_stream(system: str, user: str, *, temperature: float = 0.4,
