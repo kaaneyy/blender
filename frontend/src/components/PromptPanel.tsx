@@ -21,8 +21,40 @@ import {
   type StandardsUpdateResult,
   type WizardStep,
 } from "../api";
+import { auditConnections } from "../builders";
 import Modal from "./Modal";
 import { EXAMPLE_ASSETS } from "../examples";
+
+/** Live, free, client-side connection/buildability findings for a spec (no
+ * network — same deterministic auditor behind "Check connections"). Used to
+ * ground AI edit requests with the exact measured problem instead of vague
+ * free text, and to report the real outcome after a response instead of an
+ * unconditional "Updated the form." */
+function connectionIssues(spec: AssetSpec): string[] {
+  return auditConnections(spec)
+    .findings.slice(0, 5)
+    .map((f) => `${f.title}: ${f.detail}`);
+}
+
+/** "Machine findings to fix first" block (same phrasing the "Check & fix
+ * connections" quick fix already uses), or "" when the spec is clean. */
+function groundingBlock(spec: AssetSpec): string {
+  const issues = connectionIssues(spec);
+  return issues.length ? `\nMachine findings to fix first:\n- ${issues.join("\n- ")}` : "";
+}
+
+/** Chat-message suffix reporting whether the spec a response just produced
+ * still has connection issues — "" when clean, so the common case stays
+ * unchanged. */
+function statusSuffix(spec: AssetSpec): string {
+  const issues = connectionIssues(spec);
+  if (!issues.length) return "";
+  const n = issues.length;
+  return (
+    ` ⚠️ ${n} connection issue${n > 1 ? "s" : ""} remain — e.g. ${issues[0]} ` +
+    `Refine again, or open 🔍 Check connections for details and one-click fixes.`
+  );
+}
 
 interface ChatEntry {
   role: "you" | "assetforge";
@@ -258,7 +290,7 @@ export default function PromptPanel({
       }
       entries.push({
         role: "assetforge",
-        text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.`,
+        text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.${statusSuffix(newSpec)}`,
       });
       setChat(entries);
       setPrompt("");
@@ -287,7 +319,7 @@ export default function PromptPanel({
       }
       entries.push({
         role: "assetforge",
-        text: `Step 1 — built the form of "${newSpec.name}". Review it, then refine or accept.`,
+        text: `Step 1 — built the form of "${newSpec.name}". Review it, then refine or accept.${statusSuffix(newSpec)}`,
       });
       setChat(entries);
       setPrompt("");
@@ -354,29 +386,40 @@ export default function PromptPanel({
   };
 
   /** Apply a user change to the CURRENT step (stays on the same step). Form
-   * is a plain refine; later steps re-run their scoped pass with the note. */
+   * is a plain refine; later steps re-run their scoped pass with the note.
+   * Form/Connections are the only steps whose job is geometry/joints, so
+   * only those get grounded with live measured findings — materials/details
+   * are explicitly told not to touch geometry, and grounding them with a
+   * connection complaint would fight that scope. */
   const applyWizardChange = () =>
     run("wizard", async () => {
       if (wizardStep === null) return;
       const msg = wizardMsg.trim();
       if (!msg) return;
       const step = WIZARD_STEPS[wizardStep];
+      const groundGeometry = step.key === "form" || step.key === "connections";
+      const sent = groundGeometry ? msg + groundingBlock(spec) : msg;
       const newSpec =
         step.key === "form"
-          ? await refineSpecStream(spec, msg, setStreamText, model)
-          : await wizardStepStream(spec, step.key as WizardStep, msg, setStreamText, model);
+          ? await refineSpecStream(spec, sent, setStreamText, model)
+          : await wizardStepStream(spec, step.key as WizardStep, sent, setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
         ...c,
         { role: "you", text: `✎ ${step.title}: ${msg}` },
-        { role: "assetforge", text: `Updated the ${step.title.toLowerCase()}.` },
+        { role: "assetforge", text: `Updated the ${step.title.toLowerCase()}.${statusSuffix(newSpec)}` },
       ]);
       setWizardMsg("");
     });
 
   /** Accept the current step and move on: run the NEXT step's pass, or finish
-   * on the last step. This is the only place a step advances. */
+   * on the last step. This is the only place a step advances. Advancing INTO
+   * Connections — the step whose job is exactly fixing joints/load paths —
+   * is grounded with live measured findings the same way applyWizardChange
+   * is, so a bad Form step's known problems reach the Connections pass on
+   * its very first attempt instead of only after the user notices and asks
+   * again. */
   const acceptWizardStep = () =>
     run("wizard", async () => {
       if (wizardStep === null) return;
@@ -390,10 +433,11 @@ export default function PromptPanel({
         return;
       }
       const next = WIZARD_STEPS[wizardStep + 1];
+      const note = next.key === "connections" ? groundingBlock(spec) : "";
       const newSpec = await wizardStepStream(
         spec,
         next.key as WizardStep,
-        "",
+        note,
         setStreamText,
         model,
       );
@@ -403,7 +447,7 @@ export default function PromptPanel({
         ...c,
         {
           role: "assetforge",
-          text: `Step ${next.n} — worked on the ${next.title.toLowerCase()}. Review, then refine or accept.`,
+          text: `Step ${next.n} — worked on the ${next.title.toLowerCase()}. Review, then refine or accept.${statusSuffix(newSpec)}`,
         },
       ]);
       setWizardMsg("");
@@ -433,13 +477,13 @@ export default function PromptPanel({
     run("refine", async () => {
       const msg = refineMsg.trim();
       if (!msg) return;
-      const newSpec = await refineSpecStream(spec, msg, setStreamText, model);
+      const newSpec = await refineSpecStream(spec, msg + groundingBlock(spec), setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
         ...c,
         { role: "you", text: msg },
-        { role: "assetforge", text: `Updated "${newSpec.name}".` },
+        { role: "assetforge", text: `Updated "${newSpec.name}".${statusSuffix(newSpec)}` },
       ]);
       setRefineMsg("");
     });

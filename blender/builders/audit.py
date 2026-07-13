@@ -16,7 +16,14 @@ joint and component the way a fabricator checks a shop drawing:
   of attaching to its members (each prim must touch a member or chain to
   one through its own assembly);
 * **collision** — a joint's hardware buried inside an unrelated third
-  component.
+  component;
+* **no_coverage** — a shade/canopy/roof-type component whose footprint
+  doesn't actually extend over the seating it's meant to cover (contact
+  checks alone can't catch this: a canopy can touch its posts perfectly and
+  still sit beside the bench instead of over it). Best-effort component-name
+  heuristic (SHADE_KEYWORDS/SEATING_KEYWORDS) — false negatives are possible
+  if a component is named unexpectedly; no fix is proposed (no safe
+  mechanical fix to compute), report-only.
 
 Every finding carries a machine-applicable fix — a small list of data ops
 on the spec (declare/undeclare a connection, nudge a component's offset) —
@@ -52,6 +59,17 @@ ATTACH_TOL = 0.002
 GROUND_BOX: Box = ((0.0, 0.0, -0.5), (1e9, 1e9, 0.5 + CONTACT_TOL))
 
 BOLTED_TYPES = ("through_bolt", "carriage_bolt", "lag_screw")
+
+#: component-name keyword heuristic for the shade-coverage check below —
+#: best-effort, not a fixed vocabulary (AI-authored component names vary).
+SHADE_KEYWORDS = ("canopy", "roof", "awning", "shade", "sail", "cover")
+SEATING_KEYWORDS = ("seat", "bench", "table")
+#: minimum fraction of the seating footprint a shade component must cover
+MIN_SHADE_COVERAGE = 0.5
+#: how far a shade's lowest point may dip below the seat's highest point and
+#: still count as "overhead" (a sloped panel's low edge, a mounting bracket)
+#: rather than a side panel that isn't a roof at all
+SHADE_CLEARANCE_TOL = 0.02
 
 
 def _mm(v: float) -> int:
@@ -102,6 +120,40 @@ def _volume(box: Box) -> float:
 
 def _component_gap(boxes_a: List[Box], boxes_b: List[Box]) -> float:
     return min(_gap(a, b) for a in boxes_a for b in boxes_b)
+
+
+def _matches_any(name: str, keywords: Sequence[str]) -> bool:
+    low = name.lower()
+    return any(k in low for k in keywords)
+
+
+def _xy_rect(boxes: List[Box]) -> Tuple[float, float, float, float]:
+    """(min_x, max_x, min_y, max_y) of a component's combined XY footprint —
+    the outer bounding rectangle across all its primitive boxes."""
+    xs_lo = min(cen[0] - half[0] for cen, half in boxes)
+    xs_hi = max(cen[0] + half[0] for cen, half in boxes)
+    ys_lo = min(cen[1] - half[1] for cen, half in boxes)
+    ys_hi = max(cen[1] + half[1] for cen, half in boxes)
+    return xs_lo, xs_hi, ys_lo, ys_hi
+
+
+def _z_range(boxes: List[Box]) -> Tuple[float, float]:
+    lo = min(cen[2] - half[2] for cen, half in boxes)
+    hi = max(cen[2] + half[2] for cen, half in boxes)
+    return lo, hi
+
+
+def _rect_overlap_fraction(
+    shade_rect: Tuple[float, float, float, float],
+    seat_rect: Tuple[float, float, float, float],
+) -> float:
+    """Fraction of the seat rect's area covered by the shade rect's area."""
+    sx0, sx1, sy0, sy1 = shade_rect
+    qx0, qx1, qy0, qy1 = seat_rect
+    ox = max(0.0, min(sx1, qx1) - max(sx0, qx0))
+    oy = max(0.0, min(sy1, qy1) - max(sy0, qy0))
+    seat_area = max(qx1 - qx0, 1e-9) * max(qy1 - qy0, 1e-9)
+    return (ox * oy) / seat_area
 
 
 def _closing_delta(boxes_move: List[Box], boxes_target: List[Box]) -> Tuple[float, float, float]:
@@ -332,6 +384,35 @@ def audit_connections(spec: dict) -> dict:
                 f"touch.",
                 component=mover, fix=fix,
             ))
+
+    # ---------------------------------------------------------- shade coverage
+    shade_comps = [c for c in comps if _matches_any(c, SHADE_KEYWORDS)]
+    seat_comps = [c for c in comps if _matches_any(c, SEATING_KEYWORDS)]
+    for shade in shade_comps:
+        shade_rect = _xy_rect(member_boxes[shade])
+        shade_lo, _ = _z_range(member_boxes[shade])
+        for seat in seat_comps:
+            if seat == shade:
+                continue
+            _, seat_hi = _z_range(member_boxes[seat])
+            if shade_lo < seat_hi - SHADE_CLEARANCE_TOL:
+                continue  # not actually overhead — a side panel, not a roof
+            seat_rect = _xy_rect(member_boxes[seat])
+            frac = _rect_overlap_fraction(shade_rect, seat_rect)
+            if frac < MIN_SHADE_COVERAGE:
+                pct = round(frac * 100)
+                detail = (
+                    f"Its footprint overlaps only {pct}% of '{seat}' — it "
+                    f"won't actually shade the area below."
+                    if frac > 0 else
+                    f"Its footprint doesn't overlap '{seat}' at all — it "
+                    f"won't shade anything below."
+                )
+                findings.append(_finding(
+                    f"no_coverage:{shade}~{seat}", "warning", "no_coverage",
+                    f"'{shade}' does not cover '{seat}'", detail,
+                    component=shade,
+                ))
 
     # ---------------------------------------------------------- joint checks
     sliver_seen: set = set()

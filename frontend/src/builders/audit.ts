@@ -6,7 +6,10 @@
  * joint and component the way a fabricator checks a shop drawing:
  * floating components, below-grade geometry, dead/gapped declarations,
  * sliver joints (bolts clamping a knife edge), hardware sticking out into
- * thin air, and hardware buried inside unrelated components.
+ * thin air, hardware buried inside unrelated components, and shade/canopy
+ * components whose footprint doesn't actually cover the seating below (a
+ * component-name heuristic — contact checks alone can't catch a canopy that
+ * touches its posts perfectly but sits beside the bench instead of over it).
  *
  * Every finding carries a machine-applicable fix — a small list of data ops
  * on the spec (declare/undeclare a connection, nudge a component's offset) —
@@ -31,6 +34,17 @@ const ATTACH_TOL = 0.002;
 const GROUND_BOX: Aabb = { center: [0, 0, -0.5], half: [1e9, 1e9, 0.5 + CONTACT_TOL] };
 
 const BOLTED_TYPES = new Set(["through_bolt", "carriage_bolt", "lag_screw"]);
+
+/** component-name keyword heuristic for the shade-coverage check below —
+ * best-effort, not a fixed vocabulary (AI-authored component names vary). */
+const SHADE_KEYWORDS = ["canopy", "roof", "awning", "shade", "sail", "cover"];
+const SEATING_KEYWORDS = ["seat", "bench", "table"];
+/** minimum fraction of the seating footprint a shade component must cover */
+const MIN_SHADE_COVERAGE = 0.5;
+/** how far a shade's lowest point may dip below the seat's highest point and
+ * still count as "overhead" (a sloped panel's low edge, a mounting bracket)
+ * rather than a side panel that isn't a roof at all */
+const SHADE_CLEARANCE_TOL = 0.02;
 
 export type FixOp =
   | { op: "nudge"; key: string; delta: Vec3 }
@@ -106,6 +120,40 @@ function componentGap(a: Aabb[], b: Aabb[]): number {
   let best = Infinity;
   for (const x of a) for (const y of b) best = Math.min(best, gap(x, y));
   return best;
+}
+
+function matchesAny(name: string, keywords: string[]): boolean {
+  const low = name.toLowerCase();
+  return keywords.some((k) => low.includes(k));
+}
+
+/** (minX, maxX, minY, maxY) of a component's combined XY footprint — the
+ * outer bounding rectangle across all its primitive boxes. */
+function xyRect(boxes: Aabb[]): [number, number, number, number] {
+  const xsLo = Math.min(...boxes.map((b) => b.center[0] - b.half[0]));
+  const xsHi = Math.max(...boxes.map((b) => b.center[0] + b.half[0]));
+  const ysLo = Math.min(...boxes.map((b) => b.center[1] - b.half[1]));
+  const ysHi = Math.max(...boxes.map((b) => b.center[1] + b.half[1]));
+  return [xsLo, xsHi, ysLo, ysHi];
+}
+
+function zRange(boxes: Aabb[]): [number, number] {
+  const lo = Math.min(...boxes.map((b) => b.center[2] - b.half[2]));
+  const hi = Math.max(...boxes.map((b) => b.center[2] + b.half[2]));
+  return [lo, hi];
+}
+
+/** Fraction of the seat rect's area covered by the shade rect's area. */
+function rectOverlapFraction(
+  shadeRect: [number, number, number, number],
+  seatRect: [number, number, number, number],
+): number {
+  const [sx0, sx1, sy0, sy1] = shadeRect;
+  const [qx0, qx1, qy0, qy1] = seatRect;
+  const ox = Math.max(0, Math.min(sx1, qx1) - Math.max(sx0, qx0));
+  const oy = Math.max(0, Math.min(sy1, qy1) - Math.max(sy0, qy0));
+  const seatArea = Math.max(qx1 - qx0, 1e-9) * Math.max(qy1 - qy0, 1e-9);
+  return (ox * oy) / seatArea;
 }
 
 /** Offset that moves `boxesMove` toward `boxesTarget` so the closest box
@@ -382,6 +430,37 @@ export function auditConnections(spec: AssetSpec): AuditReport {
           mover, null, fix,
         ),
       );
+    }
+  }
+
+  // ---------------------------------------------------------- shade coverage
+  const shadeComps = comps.filter((c) => matchesAny(c, SHADE_KEYWORDS));
+  const seatComps = comps.filter((c) => matchesAny(c, SEATING_KEYWORDS));
+  for (const shade of shadeComps) {
+    const shadeRect = xyRect(memberBoxes.get(shade)!);
+    const [shadeLo] = zRange(memberBoxes.get(shade)!);
+    for (const seat of seatComps) {
+      if (seat === shade) continue;
+      const [, seatHi] = zRange(memberBoxes.get(seat)!);
+      if (shadeLo < seatHi - SHADE_CLEARANCE_TOL) continue; // side panel, not a roof
+      const seatRect = xyRect(memberBoxes.get(seat)!);
+      const frac = rectOverlapFraction(shadeRect, seatRect);
+      if (frac < MIN_SHADE_COVERAGE) {
+        const pct = Math.round(frac * 100);
+        const detail =
+          frac > 0
+            ? `Its footprint overlaps only ${pct}% of '${seat}' — it won't ` +
+              `actually shade the area below.`
+            : `Its footprint doesn't overlap '${seat}' at all — it won't ` +
+              `shade anything below.`;
+        findings.push(
+          finding(
+            `no_coverage:${shade}~${seat}`, "warning", "no_coverage",
+            `'${shade}' does not cover '${seat}'`, detail,
+            shade,
+          ),
+        );
+      }
     }
   }
 

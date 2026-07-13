@@ -123,3 +123,57 @@ class TestFindingsAndFixes:
         report = audit_connections(load("street_light.json"))
         assert report["joints"] == 3  # slip fit + band clamp + luminaire bolt
         assert report["components"] == 4
+
+
+class TestShadeCoverage:
+    """A canopy/roof component can touch its posts perfectly and still sit
+    beside the seating instead of over it — contact checks alone can't catch
+    that, so this is a separate footprint-overlap heuristic."""
+
+    SEAT = {"kind": "box", "name": "seat_slab", "component": "seat",
+            "material_slot": "m", "location": [0, 0, 0.5],
+            "params": {"size": [1.8, 0.5, 0.04]}}
+
+    def test_canopy_covering_the_seat_gets_no_finding(self):
+        canopy = {"kind": "box", "name": "panel", "component": "canopy",
+                  "material_slot": "m", "location": [0, 0, 2.2],
+                  "params": {"size": [2.0, 0.7, 0.03]}}
+        report = audit_connections(base_spec([self.SEAT, canopy]))
+        assert not any(f["kind"] == "no_coverage" for f in report["findings"])
+
+    def test_canopy_offset_away_from_the_seat_is_reported(self):
+        canopy = {"kind": "box", "name": "panel", "component": "canopy",
+                  "material_slot": "m", "location": [3.0, 0, 2.2],
+                  "params": {"size": [1.0, 0.7, 0.03]}}
+        report = audit_connections(base_spec([self.SEAT, canopy]))
+        f = next(f for f in report["findings"] if f["kind"] == "no_coverage")
+        assert f["severity"] == "warning"
+        assert f["component"] == "canopy"
+        assert "canopy" in f["title"] and "seat" in f["title"]
+        assert "at all" in f["detail"]
+        assert f["fix"] is None
+
+    def test_partial_coverage_below_threshold_is_reported(self):
+        # canopy only overlaps a slice of the seat's footprint (~22%)
+        canopy = {"kind": "box", "name": "panel", "component": "canopy",
+                  "material_slot": "m", "location": [1.0, 0, 2.2],
+                  "params": {"size": [1.0, 0.7, 0.03]}}
+        report = audit_connections(base_spec([self.SEAT, canopy]))
+        f = next(f for f in report["findings"] if f["kind"] == "no_coverage")
+        assert "%" in f["detail"]
+
+    def test_side_panel_below_seat_height_is_not_a_roof(self):
+        # a "canopy"-named component that never rises above the seat isn't
+        # overhead at all — should not trigger the coverage check
+        side = {"kind": "box", "name": "panel", "component": "canopy",
+                "material_slot": "m", "location": [0, 0, 0.2],
+                "params": {"size": [0.04, 0.5, 0.3]}}
+        report = audit_connections(base_spec([self.SEAT, side]))
+        assert not any(f["kind"] == "no_coverage" for f in report["findings"])
+
+    def test_no_seating_component_means_no_check(self):
+        canopy = {"kind": "box", "name": "panel", "component": "canopy",
+                  "material_slot": "m", "location": [3.0, 0, 2.2],
+                  "params": {"size": [1.0, 0.7, 0.03]}}
+        report = audit_connections(base_spec([canopy]))
+        assert not any(f["kind"] == "no_coverage" for f in report["findings"])
