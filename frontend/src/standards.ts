@@ -4,14 +4,14 @@
  * Used for the live code-violation UI (T4.5); the server/CLI re-validate
  * authoritatively before any export. */
 import usCodes from "../../standards/us_codes.json";
-import type { AssetSpec, SpecParameter, Unit } from "./types";
-import { convert } from "./units";
+import type { AssetSpec, LengthUnit, SpecParameter, Unit } from "./types";
+import { convert, isLengthUnit } from "./units";
 
 interface Rule {
   min: number | null;
   max: number | null;
   default?: number;
-  unit: Unit;
+  unit: LengthUnit;
   code_ref?: string;
   note?: string;
 }
@@ -20,7 +20,7 @@ export interface CodeViolation {
   parameterId: string;
   limitType: "min" | "max";
   limitValue: number;
-  limitUnit: Unit;
+  limitUnit: LengthUnit;
   /** Nearest legal value, in the parameter's own unit. */
   correctedValue: number;
   codeRef: string;
@@ -39,8 +39,10 @@ export function checkParam(
   if (typeof param.value !== "number") return null;
   const rule = DB[spec.asset_type]?.parameters?.[param.id];
   if (!rule) return null;
+  // dimensionless params (deg/W/x) carry no dimensional code limit
+  if (param.unit && !isLengthUnit(param.unit)) return null;
 
-  const unit: Unit = param.unit ?? (spec.units === "imperial" ? "ft" : "m");
+  const unit: LengthUnit = param.unit ?? (spec.units === "imperial" ? "ft" : "m");
   const v = convert(param.value, unit, rule.unit);
 
   for (const limitType of ["min", "max"] as const) {
@@ -86,8 +88,12 @@ function checkRatios(spec: AssetSpec): Record<string, CodeViolation> {
     if (!pOf || !pTo || typeof pOf.value !== "number" || typeof pTo.value !== "number") {
       continue;
     }
-    const unitOf: Unit = pOf.unit ?? (spec.units === "imperial" ? "ft" : "m");
-    const unitTo: Unit = pTo.unit ?? (spec.units === "imperial" ? "ft" : "m");
+    // ratio rules compare lengths; skip if either side is dimensionless
+    if ((pOf.unit && !isLengthUnit(pOf.unit)) || (pTo.unit && !isLengthUnit(pTo.unit))) {
+      continue;
+    }
+    const unitOf: LengthUnit = pOf.unit ?? (spec.units === "imperial" ? "ft" : "m");
+    const unitTo: LengthUnit = pTo.unit ?? (spec.units === "imperial" ? "ft" : "m");
     const vOf = convert(pOf.value, unitOf, "m");
     const vTo = convert(pTo.value, unitTo, "m");
     if (vTo <= 0) continue;

@@ -156,6 +156,8 @@ def validate_spec(spec: dict, standards: Optional[dict] = None) -> ValidationRes
         value = param.get("value")
         if rule is None or not isinstance(value, (int, float)):
             continue  # no rule for this parameter, or non-numeric (select)
+        if param.get("unit") and param["unit"] not in UNIT_TO_METERS:
+            continue  # dimensionless param (deg/W/x): no dimensional code limits
 
         unit = param.get("unit") or _default_unit(out)
         rule_unit = rule.get("unit", unit)

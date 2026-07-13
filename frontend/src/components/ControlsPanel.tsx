@@ -2,15 +2,15 @@
  * switches from toggles[], material dropdowns from materials[].
  * Zero per-asset UI code. Violations render red with the code citation and
  * a "snap to code" action (T4.5). */
-import type { AssetSpec, SpecMaterial, SpecParameter, Unit, UnitSystem } from "../types";
+import type { AssetSpec, LengthUnit, SpecMaterial, SpecParameter, UnitSystem } from "../types";
 import type { CodeViolation } from "../standards";
 import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
-import { convert, counterpart } from "../units";
+import { convert, counterpart, isLengthUnit, unitSymbol } from "../units";
 
-/** Which unit a parameter is DISPLAYED in for the chosen system: ft↔m,
+/** Which length unit a parameter is DISPLAYED in for the chosen system: ft↔m,
  * in↔cm. The spec always keeps the parameter's native unit — this is pure
  * display conversion, so the validator and builders are untouched. */
-function displayUnitFor(unit: Unit, system: UnitSystem): Unit {
+function displayUnitFor(unit: LengthUnit, system: UnitSystem): LengthUnit {
   if (system === "metric") {
     if (unit === "ft") return "m";
     if (unit === "in") return "cm";
@@ -147,17 +147,24 @@ function ParamControl({
   }
 
   const value = param.value;
-  const unit: Unit = param.unit ?? "ft";
-  const dispUnit = displayUnitFor(unit, displayUnits);
-  const toDisplay = (v: number) => convert(v, unit, dispUnit);
-  const fromDisplay = (v: number) => Number(convert(v, dispUnit, unit).toFixed(6));
+  // Length params (ft/in/m/cm/mm) convert with the ft↔m toggle and show a
+  // metric-equivalent line. Dimensionless params (deg/W/x, or no unit at all
+  // — counts, ratios, light power) show their symbol verbatim, never convert,
+  // and have no counterpart line.
+  const lengthUnit = isLengthUnit(param.unit) ? param.unit : null;
+  const dispUnit = lengthUnit ? displayUnitFor(lengthUnit, displayUnits) : null;
+  const toDisplay = (v: number) =>
+    lengthUnit && dispUnit ? convert(v, lengthUnit, dispUnit) : v;
+  const fromDisplay = (v: number) =>
+    lengthUnit && dispUnit ? Number(convert(v, dispUnit, lengthUnit).toFixed(6)) : v;
+  const converting = !!lengthUnit && dispUnit !== lengthUnit;
   const shownValue = round3(toDisplay(value));
   const specMin = round3(toDisplay(param.min ?? value / 2));
   const specMax = round3(toDisplay(param.max ?? value * 2));
   // unlocked: widen the slider well past the model's suggested limits
   const shownMin = locked ? specMin : round3(Math.min(specMin / 4, shownValue / 2));
   const shownMax = locked ? specMax : round3(Math.max(specMax * 4, shownValue * 2));
-  const shownStep = dispUnit === unit ? (param.step ?? 1) : toDisplay(param.step ?? 1);
+  const shownStep = converting ? toDisplay(param.step ?? 1) : (param.step ?? 1);
 
   return (
     <div className={`control${violation ? " control--violation" : ""}`}>
@@ -172,7 +179,7 @@ function ParamControl({
             step={shownStep}
             onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
           />
-          <span className="control__unit">{dispUnit}</span>
+          <span className="control__unit">{unitSymbol(dispUnit ?? param.unit)}</span>
         </span>
       </div>
       <input
@@ -185,9 +192,8 @@ function ParamControl({
       />
       <div className="control__meta">
         <span>
-          {dispUnit === unit
-            ? counterpart(value, unit)
-            : `${round3(value)} ${unit}`}
+          {lengthUnit && !converting ? counterpart(value, lengthUnit) : ""}
+          {converting && lengthUnit ? `${round3(value)} ${lengthUnit}` : ""}
         </span>
         {param.code_ref && <span className="control__coderef">{param.code_ref}</span>}
       </div>
@@ -195,7 +201,7 @@ function ParamControl({
         <div className="violation" role="alert">
           <p>{violation.message}</p>
           <button onClick={() => onParam(param.id, violation.correctedValue)}>
-            Snap to code ({violation.correctedValue} {param.unit})
+            Snap to code ({violation.correctedValue} {unitSymbol(param.unit)})
           </button>
         </div>
       )}

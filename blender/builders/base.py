@@ -20,7 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Tuple
 
-from standards.validator import convert
+from standards.validator import UNIT_TO_METERS, convert
 
 Vec3 = Tuple[float, float, float]
 
@@ -95,15 +95,20 @@ def register(asset_type: str) -> Callable[[BuilderFn], BuilderFn]:
 
 
 def spec_params(spec: dict) -> Dict[str, float]:
-    """Numeric parameter values keyed by id. Values with a length unit are
-    converted to meters; unit-less parameters (angles in degrees, counts,
-    ratios) pass through unchanged so expressions can use them directly
-    (e.g. rotation "panel_tilt * 0.01745")."""
+    """Numeric parameter values keyed by id. Values with a LENGTH unit
+    (ft/in/m/cm/mm) are converted to meters; dimensionless units (deg/W/x)
+    and unit-less parameters (angles in degrees, counts, ratios) pass
+    through unchanged so expressions can use them directly (e.g. rotation
+    "panel_tilt * 0.01745")."""
     out: Dict[str, float] = {}
     for p in spec.get("parameters", []):
         if isinstance(p.get("value"), (int, float)):
             unit = p.get("unit")
-            out[p["id"]] = convert(p["value"], unit, "m") if unit else float(p["value"])
+            out[p["id"]] = (
+                convert(p["value"], unit, "m")
+                if unit in UNIT_TO_METERS
+                else float(p["value"])
+            )
     return out
 
 

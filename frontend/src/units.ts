@@ -1,7 +1,7 @@
 /** Mirror of standards/validator.py unit handling. */
-import type { Unit, UnitSystem } from "./types";
+import type { LengthUnit, Unit, UnitSystem } from "./types";
 
-export const UNIT_TO_METERS: Record<Unit, number> = {
+export const UNIT_TO_METERS: Record<LengthUnit, number> = {
   m: 1,
   cm: 0.01,
   mm: 0.001,
@@ -9,7 +9,21 @@ export const UNIT_TO_METERS: Record<Unit, number> = {
   in: 0.0254,
 };
 
-export function convert(value: number, from: Unit, to: Unit): number {
+/** True for the length units that convert to meters (ft/in/m/cm/mm); false
+ * for the dimensionless display units (deg/W/x) and undefined. */
+export function isLengthUnit(unit: Unit | undefined): unit is LengthUnit {
+  return unit !== undefined && unit in UNIT_TO_METERS;
+}
+
+/** Display symbol for a unit: the pretty glyph for dimensionless units, the
+ * unit itself for lengths. */
+export function unitSymbol(unit: Unit | undefined): string {
+  if (unit === "deg") return "°";
+  if (unit === "x") return "×";
+  return unit ?? "";
+}
+
+export function convert(value: number, from: LengthUnit, to: LengthUnit): number {
   if (from === to) return value;
   return (value * UNIT_TO_METERS[from]) / UNIT_TO_METERS[to];
 }
@@ -24,8 +38,9 @@ export function formatLength(meters: number, system: UnitSystem): string {
     : `${trim(meters)} m`;
 }
 
-/** The "other system" equivalent shown next to a raw parameter value. */
-export function counterpart(value: number, unit: Unit): string {
+/** The "other system" equivalent shown next to a raw length value (only
+ * length units have a counterpart; dimensionless units don't). */
+export function counterpart(value: number, unit: LengthUnit): string {
   const imperial = unit === "ft" || unit === "in";
   return imperial
     ? `${trim(convert(value, unit, "m"))} m`

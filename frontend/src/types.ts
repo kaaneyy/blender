@@ -2,7 +2,14 @@
  * Primitive dataclass (blender/builders/base.py). Dimensional parity with
  * the Python builders is mandatory (T4.3); keep these in lockstep. */
 
-export type Unit = "ft" | "in" | "m" | "cm" | "mm";
+/** Length units convert to meters in the builders and toggle ft↔m / in↔cm
+ * for display. */
+export type LengthUnit = "ft" | "in" | "m" | "cm" | "mm";
+/** Dimensionless display units: shown verbatim as a symbol (° / W / ×),
+ * never ft/m-converted, and passed through the builders unchanged (angles in
+ * degrees, light power/wattage, counts & ratios). */
+export type DimensionlessUnit = "deg" | "W" | "x";
+export type Unit = LengthUnit | DimensionlessUnit;
 export type UnitSystem = "imperial" | "metric";
 
 export interface SpecParameter {
