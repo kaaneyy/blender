@@ -12,7 +12,7 @@
     { "id": "tube_diameter", "label": "Tube Diameter", "type": "slider",
       "min": 1.5, "max": 3, "step": 0.25, "value": 2.375, "unit": "in" },
     { "id": "hoop_count", "label": "Number of Hoops", "type": "slider",
-      "min": 2, "max": 6, "step": 1, "value": 3 },
+      "min": 2, "max": 6, "step": 1, "value": 3, "unit": "x" },
     { "id": "hoop_spacing", "label": "Hoop Spacing", "type": "slider",
       "min": 24, "max": 48, "step": 1, "value": 36, "unit": "in" }
   ],

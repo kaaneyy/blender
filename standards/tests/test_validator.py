@@ -128,6 +128,21 @@ class TestEdgeCases:
         )
         assert validate_spec(spec).ok
 
+    @pytest.mark.parametrize("unit", ["deg", "W", "x"])
+    def test_dimensionless_param_is_never_dimension_checked(self, unit):
+        """A dimensionless unit (deg/W/x) is not a length, so it carries no
+        dimensional code limit — even when it collides with a length rule's
+        id and is far out of that rule's range, it must pass untouched and
+        never reach convert() (which would raise on the non-length unit)."""
+        spec = make_spec()
+        # pole_height has a real ft rule (20-40); reuse the id with a deg/W/x
+        # value of 90 that would be a violation IF treated as a length
+        set_param(spec, "pole_height", 90, unit=unit)
+        result = validate_spec(spec)
+        assert result.ok  # no violation raised for the dimensionless param
+        # and the value is left exactly as authored (not clamped)
+        assert result.spec["parameters"][0]["value"] == 90
+
     def test_min_only_rule(self):
         spec = {
             "asset_type": "traffic_sign",

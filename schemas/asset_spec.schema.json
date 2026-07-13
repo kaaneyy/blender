@@ -40,7 +40,7 @@
           "max": { "type": "number" },
           "step": { "type": "number", "exclusiveMinimum": 0 },
           "value": { "type": ["number", "string"] },
-          "unit": { "enum": ["ft", "in", "m", "cm", "mm"] },
+          "unit": { "enum": ["ft", "in", "m", "cm", "mm", "deg", "W", "x"] },
           "options": {
             "type": "array",
             "items": { "type": "string" },

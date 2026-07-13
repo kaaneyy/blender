@@ -152,6 +152,41 @@ class TestTiltedGeometry:
         prims = {p.name: p for p in compute_primitives(spec)}
         assert prims["panel"].rotation[1] == pytest.approx(45 * 0.01745, abs=1e-4)
 
+    @pytest.mark.parametrize("unit", ["deg", "W", "x", None])
+    def test_dimensionless_units_pass_through_unchanged(self, unit):
+        """deg/W/x (and no unit) reach expressions raw — only LENGTH units
+        convert to meters, so a 30° tilt is 30 not 9.14."""
+        from blender.builders.base import spec_params
+
+        param = {"id": "a", "label": "A", "type": "slider",
+                 "min": 0, "max": 60, "value": 30}
+        if unit is not None:
+            param["unit"] = unit
+        spec = {"asset_type": "prop", "name": "T", "units": "imperial",
+                "parameters": [param], "toggles": [], "primitives": []}
+        assert spec_params(spec)["a"] == pytest.approx(30.0)
+
+    def test_deg_unit_drives_rotation_like_unitless(self):
+        """A tilt authored with unit 'deg' behaves exactly like the old
+        unit-less form — the display gets a proper ° label without changing
+        the geometry."""
+        spec = {
+            "asset_type": "solar_roof", "name": "T", "units": "imperial",
+            "parameters": [
+                {"id": "panel_tilt", "label": "Panel Tilt", "type": "slider",
+                 "min": 0, "max": 60, "step": 1, "value": 30, "unit": "deg"},
+            ],
+            "toggles": [],
+            "primitives": [
+                {"kind": "box", "name": "panel", "component": "panels",
+                 "location": [0, 0, 1.15],
+                 "rotation": [0, "panel_tilt * 0.01745", 0],
+                 "params": {"size": [1.0, 1.0, 0.03]}},
+            ],
+        }
+        panel = next(p for p in compute_primitives(spec) if p.name == "panel")
+        assert panel.rotation[1] == pytest.approx(30 * 0.01745, abs=1e-4)
+
 
 class TestFabricationKinds:
     """Part B vocabulary in the generate-anything path."""

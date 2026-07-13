@@ -1,7 +1,7 @@
 /** Mirror of blender/builders/base.py — registry, spec helpers, materials.
  * Only the pure primitive layer is mirrored; realization is Three.js. */
 import type { AssetSpec, Primitive, Unit } from "../types";
-import { convert } from "../units";
+import { convert, isLengthUnit } from "../units";
 import { applyStructure, applyTransforms } from "./edits";
 
 export const MATERIAL_PRESETS: Record<
@@ -162,15 +162,15 @@ export function weatheredShading(m: ResolvedMaterial): ShadedMaterial {
   };
 }
 
-/** Numeric parameter values keyed by id. Length-unit values convert to
- * meters; unit-less parameters (angles in degrees, counts, ratios) pass
- * through unchanged so expressions can use them directly (mirror of
- * base.py spec_params). */
+/** Numeric parameter values keyed by id. Length-unit values (ft/in/m/cm/mm)
+ * convert to meters; dimensionless units (deg/W/x) and unit-less parameters
+ * (angles in degrees, counts, ratios) pass through unchanged so expressions
+ * can use them directly (mirror of base.py spec_params). */
 export function specParams(spec: AssetSpec): Record<string, number> {
   const out: Record<string, number> = {};
   for (const p of spec.parameters) {
     if (typeof p.value === "number") {
-      out[p.id] = p.unit ? convert(p.value, p.unit, "m") : p.value;
+      out[p.id] = isLengthUnit(p.unit) ? convert(p.value, p.unit, "m") : p.value;
     }
   }
   return out;
