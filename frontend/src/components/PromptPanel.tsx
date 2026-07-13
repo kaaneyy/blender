@@ -7,6 +7,7 @@ import type { AssetSpec } from "../types";
 import type { CodeViolation } from "../standards";
 import {
   buildabilityFindings,
+  clarifyRequest,
   focusSpecStream,
   generateSpecStream,
   installGuideStream,
@@ -14,6 +15,8 @@ import {
   updateStandardsStream,
   wizardStepStream,
   MODEL_OPTIONS,
+  type Clarification,
+  type ClarifyQuestion,
   type DeepseekModel,
   type StandardsUpdateResult,
   type WizardStep,
@@ -38,6 +41,20 @@ const BUSY_TITLES: Record<Exclude<Busy, false>, string> = {
 };
 
 const MODEL_KEY = "af-model";
+
+/** Dropdown sentinel for "type your own answer" on a clarifying question. */
+const CUSTOM_ANSWER = "__custom__";
+
+/** One round of clarifying questions, pinned to the prompt it was asked
+ * about and to the flow (one-shot generate vs guided build) that continues
+ * once the user answers or skips. */
+interface ClarifyState {
+  forPrompt: string;
+  mode: "generate" | "wizard";
+  questions: ClarifyQuestion[];
+  choices: string[]; // per question: "", an offered option, or CUSTOM_ANSWER
+  custom: string[]; // per question: the typed answer when choice is CUSTOM_ANSWER
+}
 
 /** The guided 4-step build. Step 1 (Form) is the initial generate; steps
  * 2-4 are scoped AI passes (backend keys connections | materials | details).
@@ -196,6 +213,8 @@ export default function PromptPanel({
   );
   const [wizardStep, setWizardStep] = useState<number | null>(null); // null = not in guided build
   const [wizardMsg, setWizardMsg] = useState("");
+  const [clarify, setClarify] = useState<ClarifyState | null>(null);
+  const [clarifyBusy, setClarifyBusy] = useState<false | "generate" | "wizard">(false);
   const guideCache = useRef<{ key: string; text: string } | null>(null);
   const violationCount = Object.keys(violations).length;
 
@@ -218,14 +237,21 @@ export default function PromptPanel({
     }
   };
 
-  const runGenerate = () =>
+  const runGenerate = (text: string, clarifications: Clarification[] = []) =>
     run("generate", async () => {
-      const text = prompt.trim();
       if (!text) return;
-      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText, model);
+      const { spec: newSpec, brief } = await generateSpecStream(
+        text, setStreamText, model, clarifications,
+      );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       const entries: ChatEntry[] = [{ role: "you", text }];
+      if (clarifications.length) {
+        entries.push({
+          role: "you",
+          text: `📎 ${clarifications.map((c) => c.answer).join(" · ")}`,
+        });
+      }
       if (brief && brief.toLowerCase() !== text.toLowerCase()) {
         const shown = brief.length > 220 ? `${brief.slice(0, 220)}…` : brief;
         entries.push({ role: "assetforge", text: `Interpreted as: ${shown}` });
@@ -240,14 +266,21 @@ export default function PromptPanel({
 
   /** Start the guided 4-step build: generate the raw form, then enter the
    * wizard at step 1. Steps never auto-chain from here. */
-  const runGuidedStart = () =>
+  const runGuidedStart = (text: string, clarifications: Clarification[] = []) =>
     run("wizard", async () => {
-      const text = prompt.trim();
       if (!text) return;
-      const { spec: newSpec, brief } = await generateSpecStream(text, setStreamText, model);
+      const { spec: newSpec, brief } = await generateSpecStream(
+        text, setStreamText, model, clarifications,
+      );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       const entries: ChatEntry[] = [{ role: "you", text }];
+      if (clarifications.length) {
+        entries.push({
+          role: "you",
+          text: `📎 ${clarifications.map((c) => c.answer).join(" · ")}`,
+        });
+      }
       if (brief && brief.toLowerCase() !== text.toLowerCase()) {
         const shown = brief.length > 220 ? `${brief.slice(0, 220)}…` : brief;
         entries.push({ role: "assetforge", text: `Interpreted as: ${shown}` });
@@ -261,6 +294,64 @@ export default function PromptPanel({
       setWizardMsg("");
       setWizardStep(0);
     });
+
+  /** Step 0 of every generation: ask the AI for 3 clarifying questions
+   * (3 offered answers each + a type-your-own blank) so a basic request
+   * surfaces the real one behind it. Clarifying is an enhancement, never a
+   * gate — if the call fails, generation proceeds directly. */
+  const startClarify = async (mode: "generate" | "wizard") => {
+    const text = prompt.trim();
+    if (!text || busy !== false || clarifyBusy !== false) return;
+    setError(null);
+    setClarifyBusy(mode);
+    try {
+      const questions = await clarifyRequest(text, model);
+      setClarify({
+        forPrompt: text,
+        mode,
+        questions,
+        choices: questions.map(() => ""),
+        custom: questions.map(() => ""),
+      });
+    } catch {
+      setClarify(null);
+      if (mode === "wizard") void runGuidedStart(text);
+      else void runGenerate(text);
+    } finally {
+      setClarifyBusy(false);
+    }
+  };
+
+  const setClarifyChoice = (i: number, value: string) =>
+    setClarify((c) =>
+      c ? { ...c, choices: c.choices.map((v, j) => (j === i ? value : v)) } : c,
+    );
+
+  const setClarifyCustom = (i: number, value: string) =>
+    setClarify((c) =>
+      c ? { ...c, custom: c.custom.map((v, j) => (j === i ? value : v)) } : c,
+    );
+
+  /** Continue the flow the questions belong to — with the answered pairs,
+   * or with none when the user skips. */
+  const finishClarify = (useAnswers: boolean) => {
+    if (!clarify || busy !== false) return;
+    const answers: Clarification[] = useAnswers
+      ? clarify.questions
+          .map((q, i) => ({
+            question: q.question,
+            answer:
+              clarify.choices[i] === CUSTOM_ANSWER
+                ? clarify.custom[i].trim()
+                : clarify.choices[i],
+          }))
+          .filter((c) => c.answer)
+      : [];
+    const { mode, forPrompt } = clarify;
+    setClarify(null);
+    if (mode === "wizard") void runGuidedStart(forPrompt, answers);
+    else void runGenerate(forPrompt, answers);
+  };
 
   /** Apply a user change to the CURRENT step (stays on the same step). Form
    * is a plain refine; later steps re-run their scoped pass with the note. */
@@ -334,6 +425,7 @@ export default function PromptPanel({
     setError(null);
     setWizardStep(null);
     setWizardMsg("");
+    setClarify(null);
     setChat([{ role: "assetforge", text: `Loaded example: ${example.label}. Refine it or tweak the sliders.` }]);
   };
 
@@ -464,28 +556,93 @@ export default function PromptPanel({
       </label>
       <textarea
         value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
+        onChange={(e) => {
+          setPrompt(e.target.value);
+          // questions belong to the prompt they were asked about
+          if (clarify && e.target.value.trim() !== clarify.forPrompt) setClarify(null);
+        }}
         placeholder='e.g. "a 12 ft art-deco pedestrian lamp with a fluted cast-iron pole and a glowing acorn globe" — anything: benches, bollards, signs, props…'
         rows={4}
-        disabled={busy !== false}
+        disabled={busy !== false || clarifyBusy !== false}
       />
       <div className="gen-row">
         <button
-          onClick={runGuidedStart}
-          disabled={busy !== false || !prompt.trim()}
+          onClick={() => void startClarify("wizard")}
+          disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
           title="Build in 4 reviewable steps: form → connections → materials → working parts"
         >
-          {busy === "wizard" && wizardStep === null ? "Building…" : "🪄 Build step by step"}
+          {clarifyBusy === "wizard"
+            ? "Preparing questions…"
+            : busy === "wizard" && wizardStep === null
+              ? "Building…"
+              : "🪄 Build step by step"}
         </button>
         <button
           className="secondary"
-          onClick={runGenerate}
-          disabled={busy !== false || !prompt.trim()}
+          onClick={() => void startClarify("generate")}
+          disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
           title="Generate the whole asset in one pass"
         >
-          {busy === "generate" ? "Generating…" : "Generate all at once"}
+          {clarifyBusy === "generate"
+            ? "Preparing questions…"
+            : busy === "generate"
+              ? "Generating…"
+              : "Generate all at once"}
         </button>
       </div>
+
+      {clarify !== null && (
+        <div className="clarify">
+          <h4 className="clarify__title">🎯 Three quick questions first</h4>
+          <p className="clarify__blurb">
+            So the AI designs what you actually meant — pick an answer, type
+            your own, or leave any as “no preference”.
+          </p>
+          {clarify.questions.map((q, i) => (
+            <div key={q.id} className="clarify__q">
+              <span className="clarify__label">{q.question}</span>
+              <select
+                value={clarify.choices[i]}
+                onChange={(e) => setClarifyChoice(i, e.target.value)}
+                disabled={busy !== false}
+              >
+                <option value="">No preference</option>
+                {q.options.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+                <option value={CUSTOM_ANSWER}>✏️ My own answer…</option>
+              </select>
+              {clarify.choices[i] === CUSTOM_ANSWER && (
+                <input
+                  type="text"
+                  className="clarify__custom"
+                  value={clarify.custom[i]}
+                  onChange={(e) => setClarifyCustom(i, e.target.value)}
+                  placeholder="type exactly what you want"
+                  maxLength={300}
+                  disabled={busy !== false}
+                />
+              )}
+            </div>
+          ))}
+          <div className="clarify__actions">
+            <button onClick={() => finishClarify(true)} disabled={busy !== false}>
+              {clarify.mode === "wizard"
+                ? "🪄 Build with these answers"
+                : "Generate with these answers"}
+            </button>
+            <button
+              className="secondary"
+              onClick={() => finishClarify(false)}
+              disabled={busy !== false}
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
 
       {wizardStep !== null && (
         <div className="wizard">

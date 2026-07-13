@@ -395,6 +395,72 @@ textarea:disabled {
   font-weight: 400;
 }
 
+/* clarifying questions asked between the prompt and generation */
+.clarify {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-2, var(--panel));
+}
+
+.clarify__title {
+  margin: 0;
+  font-size: 13px;
+}
+
+.clarify__blurb {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.clarify__q {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.clarify__label {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.clarify__q select,
+.clarify__custom {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.clarify__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.clarify__actions button {
+  flex: 1 1 auto;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.clarify__actions button.secondary {
+  flex: 0 0 auto;
+  background: var(--panel-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  font-weight: 400;
+}
+
 /* guided 4-step build wizard */
 .wizard {
   border: 1px solid var(--accent);

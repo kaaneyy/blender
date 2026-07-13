@@ -172,6 +172,18 @@ def _mock(user: str) -> str:
             "## Inspection & maintenance\nInspect fasteners annually.\n\n"
             "*Safety: a licensed engineer must approve structural anchoring for public installations.*"
         )
+    if user.startswith("CLARIFY REQUEST"):
+        return json.dumps({"questions": [
+            {"question": "Who will mainly use it, and where?",
+             "options": ["Adults in a public park", "Children at a playground",
+                         "Customers outside a shop"]},
+            {"question": "What overall size fits the site?",
+             "options": ["Compact (about 4 ft)", "Standard (about 6 ft)",
+                         "Large (about 8 ft)"]},
+            {"question": "What style and material should it be?",
+             "options": ["Classic cast iron with wood", "Modern galvanized steel",
+                         "Minimal powder-coated metal"]},
+        ]})
     if user.startswith("REVIEW CONNECTIONS"):
         return json.dumps({"findings": [{
             "severity": "warning",
