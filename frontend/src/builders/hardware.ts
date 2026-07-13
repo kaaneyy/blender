@@ -241,6 +241,12 @@ const BOLT_CATALOG: Array<[string, number]> = [
   ["M16", 0.008], ["M20", 0.01], ["M24", 0.012],
 ];
 
+/** Seating torque (N·m) for slip-fitter set screws by catalog size — cup
+ * points bearing on a pole tenon, NOT the bolted-joint torque table. Mirror
+ * of hardware.py SET_SCREW_TORQUE (human copy: us_codes.json
+ * `_connections.set_screw_torque_nm`). */
+const SET_SCREW_TORQUE: Record<string, number> = { M6: 8, M8: 15, M10: 30, M12: 50 };
+
 /** rough densities (t/m³) for the moment proxy, keyed by material family */
 const DENSITY = { metal: 7.9, concrete: 2.4, wood: 0.6, other: 1.0 };
 
@@ -798,13 +804,13 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
     // pole's flanks, clear of the arm), not the overlap box's thin axis
     const direction = memberDirection(other);
     const axisH = Math.abs(direction[0]) >= Math.abs(direction[1]) ? 0 : 1;
-    const [earName] = snapBolt(Math.min(Math.max(0.4 * armR, 0.004), 0.008));
+    const [earName, earR] = snapBolt(Math.min(Math.max(0.4 * armR, 0.004), 0.008));
     const row = catalogRow(earName);
     return withJointMeta(
       splitBandClamp(
         joint, radiusAtZ(upright!, center[2]),
         [upright!.location[0], upright!.location[1]], center[2],
-        axisH, armR,
+        axisH, armR, earR,
       ),
       record(`${earName} ear bolt (split band clamp)`, 2, row.grade,
              row.torque_nm, row.code_ref),
@@ -817,9 +823,13 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
     );
     const outer = roundPrims.reduce((mx, p) => (roundRadius(p) > roundRadius(mx) ? p : mx));
     const outerR = isUprightRound(outer) ? radiusAtZ(outer, center[2]) : roundRadius(outer);
+    // C6: set screws scale with the fit and snap to the catalog — an M8
+    // that suits a handrail tenon would rattle loose in a 5-inch fitter
+    const [screwName, screwR] = snapBolt(Math.min(Math.max(0.16 * outerR, 0.003), 0.006));
     return withJointMeta(
-      slipFitter(joint, outerR, [outer.location[0], outer.location[1]], center[2]),
-      record("M8 set screw (slip fitter)", 3, "45H", 15,
+      slipFitter(joint, outerR, [outer.location[0], outer.location[1]], center[2], screwR),
+      record(`${screwName} set screw (slip fitter)`, 3, "45H",
+             SET_SCREW_TORQUE[screwName],
              "pole-fitter convention (heuristic)"),
     );
   }
@@ -827,10 +837,10 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
   if (ctype === "flange_splice") {
     const memberR = Math.min(d1, d2) / 2;
     const nBolts = decl?.count ?? 6;
-    const [spliceName] = snapBolt(Math.min(Math.max(0.35 * memberR, 0.005), 0.012));
+    const [spliceName, spliceR] = snapBolt(Math.min(Math.max(0.35 * memberR, 0.005), 0.012));
     const row = catalogRow(spliceName);
     return withJointMeta(
-      flangeSplice(joint, center, axis, memberR, nBolts),
+      flangeSplice(joint, center, axis, memberR, nBolts, spliceR),
       record(`${spliceName} flange bolt`, nBolts, row.grade, row.torque_nm,
              row.code_ref),
     );

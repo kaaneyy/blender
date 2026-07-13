@@ -134,6 +134,30 @@ class TestSlipFit:
         ]
         assert not vertical_shafts
 
+    def test_set_screws_scale_with_the_fit_and_snap_to_catalog(self):
+        """Adaptive fastener sizing: a big fitter takes bigger set screws
+        than a small one, and both are real catalog sizes (the drawn screw
+        is the scheduled screw)."""
+        from blender.builders.hardware import BOLT_CATALOG
+
+        def screws(post_r, fitter_r):
+            fitter = {"kind": "cylinder", "name": "fitter", "component": "lamp",
+                      "material_slot": "m", "location": [0, 0, 3.0],
+                      "params": {"radius": fitter_r, "depth": 0.2}}
+            post = dict(POLE, params={"radius": post_r, "depth": 3},
+                        location=[0, 0, 1.5])
+            prims = compute_primitives(spec_of([post, fitter]))
+            return [p for p in prims if "setscrew" in p.name
+                    and not p.name.endswith("_head")]
+
+        small = screws(0.02, 0.03)
+        large = screws(0.05, 0.07)
+        assert small and large
+        catalog_radii = {r for _, r in BOLT_CATALOG}
+        for s in small + large:
+            assert s.params["radius"] in catalog_radii, s.name
+        assert large[0].params["radius"] > small[0].params["radius"]
+
     def test_pole_on_flange_disc_is_not_a_slip_fit(self):
         disc = {"kind": "cylinder", "name": "plate", "component": "base",
                 "material_slot": "m", "location": [0, 0, 0.015],

@@ -14,7 +14,8 @@ is honored at matching contacts; geometric inference remains the fallback:
 * **Split band clamps** — horizontal round member meeting a vertical pole:
   a two-piece saddle band with ear tabs, bolted through the ears.
 * **Slip fitters** — round-over-round vertical fits (post-top luminaires):
-  collar + 3 radial set screws instead of a nonsense vertical through-bolt.
+  collar + 3 radial set screws instead of a nonsense vertical through-bolt;
+  the set screws scale with the fit and snap to the catalog.
 * **Carriage bolts** — wood decking on metal frames (vertical axis): dome
   head proud of the timber, washer + hex nut on the steel side.
 * **Anchor bases** — vertical structural members landing at grade with no
@@ -247,6 +248,12 @@ BOLT_CATALOG = (
     ("M6", 0.003), ("M8", 0.004), ("M10", 0.005), ("M12", 0.006),
     ("M16", 0.008), ("M20", 0.010), ("M24", 0.012),
 )
+
+#: seating torque (N·m) for slip-fitter set screws by catalog size — cup
+#: points bearing on a pole tenon, NOT the bolted-joint torque table. The
+#: human-facing copy lives in us_codes.json `_connections.set_screw_torque_nm`
+#: and a test keeps the two in sync.
+SET_SCREW_TORQUE = {"M6": 8, "M8": 15, "M10": 30, "M12": 50}
 
 #: rough densities (t/m³) for the moment proxy, keyed by material family
 DENSITY = {"metal": 7.9, "concrete": 2.4, "wood": 0.6, "other": 1.0}
@@ -775,13 +782,13 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
         # pole's flanks, clear of the arm), not the overlap box's thin axis
         direction = _member_direction(other)
         axis_h = 0 if abs(direction[0]) >= abs(direction[1]) else 1
-        ear_name, _ = _snap_bolt(min(max(0.4 * arm_r, 0.004), 0.008))
+        ear_name, ear_r = _snap_bolt(min(max(0.4 * arm_r, 0.004), 0.008))
         row = _catalog_row(ear_name)
         return _with_joint_meta(
             split_band_clamp(
                 joint, _radius_at_z(upright, center[2]),
                 (upright.location[0], upright.location[1]), center[2],
-                axis_h, arm_r,
+                axis_h, arm_r, shaft_r=ear_r,
             ),
             record(f"{ear_name} ear bolt (split band clamp)", 2,
                    grade=row["grade"], torque=row["torque_nm"],
@@ -795,20 +802,25 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
             _radius_at_z(outer, center[2]) if _is_upright_round(outer)
             else _round_radius(outer)
         )
+        # C6: set screws scale with the fit and snap to the catalog — an M8
+        # that suits a handrail tenon would rattle loose in a 5-inch fitter
+        screw_name, screw_r = _snap_bolt(min(max(0.16 * outer_r, 0.003), 0.006))
         return _with_joint_meta(
             slip_fitter(joint, outer_r, (outer.location[0], outer.location[1]),
-                        center[2]),
-            record("M8 set screw (slip fitter)", 3, grade="45H",
-                   torque=15, code_ref="pole-fitter convention (heuristic)"),
+                        center[2], screw_r=screw_r),
+            record(f"{screw_name} set screw (slip fitter)", 3, grade="45H",
+                   torque=SET_SCREW_TORQUE[screw_name],
+                   code_ref="pole-fitter convention (heuristic)"),
         )
 
     if ctype == "flange_splice":
         member_r = min(d1, d2) / 2
         n_bolts = (decl or {}).get("count") or 6
-        splice_name, _ = _snap_bolt(min(max(0.35 * member_r, 0.005), 0.012))
+        splice_name, splice_r = _snap_bolt(min(max(0.35 * member_r, 0.005), 0.012))
         row = _catalog_row(splice_name)
         return _with_joint_meta(
-            flange_splice(joint, center, axis, member_r, n_bolts=n_bolts),
+            flange_splice(joint, center, axis, member_r, n_bolts=n_bolts,
+                          shaft_r=splice_r),
             record(f"{splice_name} flange bolt", n_bolts, grade=row["grade"],
                    torque=row["torque_nm"], code_ref=row["code_ref"]),
         )

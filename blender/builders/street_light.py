@@ -19,6 +19,21 @@ ARM_RADIUS = 0.035  # m, mast-arm tube radius
 FT = 0.3048
 IN = 0.0254
 
+#: cobra-head housing (m): length along the arm, width across it, height at
+#: the door end. The lens is DERIVED from these (see _luminaire_primitives),
+#: so resizing the housing keeps the light fitting its casing.
+HEAD_LEN = 0.75
+HEAD_W = 0.32
+HEAD_H = 0.17
+#: door-to-nose shrink factors of the lofted housing (width, height)
+NOSE_W = 0.7
+NOSE_H = 0.6
+#: where the drop lens sits along the housing (0 = door end, 1 = nose)
+LENS_STATION = 0.63
+#: lens disc thickness and how far its top tucks up into the housing
+LENS_DEPTH = 0.02
+LENS_RECESS = 0.008
+
 DEFAULTS_M = {
     "pole_height": 30 * FT,
     "arm_length": 8 * FT,
@@ -74,23 +89,44 @@ def _arm_primitives(arm_length: float, pole_height: float,
 
 def _luminaire_primitives(arm_length: float, pole_height: float) -> List[Primitive]:
     """Cobra-head housing lofted from a rounded-rect door end to a slimmer
-    elliptical nose (B4), hollow sheet-metal walls (A4 shell)."""
+    elliptical nose (B4), hollow sheet-metal walls (A4 shell), plus the
+    drop lens seated in its underside.
+
+    Under the (0, pi/2, 0) roll that lays the loft axis along +X, the
+    profiles' local X (their ``w``) spans world Z and local Y (``h``) spans
+    world Y — so ``w`` carries the housing HEIGHT and ``h`` its WIDTH, the
+    same convention gusset_plate uses. Writing the profiles the other way
+    around once rendered the head 0.32 m tall by 0.17 m wide with the
+    0.20 m lens poking out both sides of its casing.
+
+    The lens is derived from the housing cross-section at its own station
+    (the loft bridges its two rings linearly, so width and height
+    interpolate linearly along the axis): its radius clears the shell walls
+    and its top tucks LENS_RECESS up into the housing while the disc face
+    stays proud below the door — the light fits the casing by construction
+    at any housing size."""
     tip_z = pole_height - 0.25  # top of the arm curve (attach_z + rise)
-    head_len, head_w, head_h = 0.75, 0.32, 0.17
-    head_x = arm_length + head_len / 2 - 0.15  # head overhangs the arm tip
+    head_x = arm_length + HEAD_LEN / 2 - 0.15  # head overhangs the arm tip
+    head_z = tip_z + HEAD_H / 2 - 0.02  # door-end underside just below the tip
+    # housing cross-section at the lens station
+    width = HEAD_W * (1.0 + (NOSE_W - 1.0) * LENS_STATION)
+    height = HEAD_H * (1.0 + (NOSE_H - 1.0) * LENS_STATION)
+    lens_r = 0.38 * width  # clears the shell walls on both sides
     return [
         Primitive(
             kind="loft",
             name="head",
             component="luminaire",
-            location=(head_x, 0.0, tip_z + head_h / 2 - 0.02),
+            location=(head_x, 0.0, head_z),
             # loft axis is local Z; rotate it to run along +X (arm direction)
             rotation=(0.0, math.pi / 2, 0.0),
             material_slot="luminaire",
             params={
-                "depth": head_len,
-                "profile_start": {"shape": "rect", "w": head_w, "h": head_h},
-                "profile_end": {"shape": "ellipse", "w": head_w * 0.7, "h": head_h * 0.6},
+                "depth": HEAD_LEN,
+                # w = height, h = width (world axes under the roll — see above)
+                "profile_start": {"shape": "rect", "w": HEAD_H, "h": HEAD_W},
+                "profile_end": {"shape": "ellipse", "w": HEAD_H * NOSE_H,
+                                "h": HEAD_W * NOSE_W},
                 "shell": 0.003,
             },
         ),
@@ -98,9 +134,10 @@ def _luminaire_primitives(arm_length: float, pole_height: float) -> List[Primiti
             kind="cylinder",
             name="lens",
             component="luminaire",
-            location=(head_x + 0.1, 0.0, tip_z - 0.03),
+            location=(head_x + (LENS_STATION - 0.5) * HEAD_LEN, 0.0,
+                      head_z - height / 2 + LENS_RECESS - LENS_DEPTH / 2),
             material_slot="lens",
-            params={"radius": 0.10, "depth": 0.02},
+            params={"radius": lens_r, "depth": LENS_DEPTH},
         ),
     ]
 

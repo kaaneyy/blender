@@ -254,12 +254,16 @@ export function lagScrewAssembly(
 }
 
 /** Slip-fitter: a collar gripping a round-over-round telescoping fit with
- * 3 radial set screws at 120°. outerR is the outer member's fit radius. */
+ * 3 radial set screws at 120°. outerR is the outer member's fit radius;
+ * screwR is the set-screw shaft radius — the orchestrator passes a catalog
+ * size scaled to the fit so the drawn screw is the scheduled screw (the
+ * default reproduces the original fixed M8). */
 export function slipFitter(
   joint: number,
   outerR: number,
   centerXY: [number, number],
   centerZ: number,
+  screwR = 0.004,
 ): Primitive[] {
   const [cx, cy] = centerXY;
   const collarR = outerR + 0.004;
@@ -275,7 +279,8 @@ export function slipFitter(
       params: { radius: collarR, wall: 0.004, depth: collarD },
     },
   ];
-  const screwLen = 0.03;
+  const screwLen = Math.max(0.03, 7.5 * screwR);
+  const headH = 1.25 * screwR;
   for (let i = 0; i < 3; i++) {
     const a = (2 * Math.PI * i) / 3;
     const midR = collarR + screwLen / 2 - 0.012;
@@ -286,9 +291,9 @@ export function slipFitter(
       location: [cx + midR * Math.cos(a), cy + midR * Math.sin(a), centerZ],
       rotation: [0, Math.PI / 2, a],
       materialSlot: "hardware",
-      params: { radius: 0.004, depth: screwLen },
+      params: { radius: screwR, depth: screwLen },
     });
-    const headRDist = collarR + screwLen - 0.012 + 0.0025;
+    const headRDist = collarR + screwLen - 0.012 + headH / 2;
     prims.push({
       kind: "cylinder",
       name: `joint${joint}_setscrew${i + 1}_head`,
@@ -296,13 +301,15 @@ export function slipFitter(
       location: [cx + headRDist * Math.cos(a), cy + headRDist * Math.sin(a), centerZ],
       rotation: [0, Math.PI / 2, a],
       materialSlot: "hardware",
-      params: { radius: 0.007, depth: 0.005, segments: 6 },
+      params: { radius: 1.75 * screwR, depth: headH, segments: 6 },
     });
   }
   return prims;
 }
 
-/** Two-piece saddle band: split band + ear tabs, bolted through the EARS. */
+/** Two-piece saddle band: split band + ear tabs, bolted through the EARS.
+ * The orchestrator passes its catalog-snapped shaftR so the drawn ear bolts
+ * match the scheduled fastener (undefined falls back to the raw formula). */
 export function splitBandClamp(
   joint: number,
   poleR: number,
@@ -310,6 +317,7 @@ export function splitBandClamp(
   centerZ: number,
   axisH: number,
   armR: number,
+  shaftR?: number,
 ): Primitive[] {
   const [cx, cy] = centerXY;
   const bandR = poleR + 0.006;
@@ -328,7 +336,7 @@ export function splitBandClamp(
   const perpH = 1 - axisH;
   const earLen = 0.025;
   const earThick = 0.024;
-  const shaftR = Math.min(Math.max(0.4 * armR, 0.004), 0.008);
+  const earBoltR = shaftR ?? Math.min(Math.max(0.4 * armR, 0.004), 0.008);
   [1, -1].forEach((side, i) => {
     const earCenter: Vec3 = [cx, cy, centerZ];
     earCenter[perpH] += side * (bandR + earLen / 2);
@@ -348,25 +356,28 @@ export function splitBandClamp(
     const spanLo = earCenter[axisH] - earThick / 2 - 0.002;
     const spanHi = earCenter[axisH] + earThick / 2 + 0.002;
     prims.push(
-      ...throughBoltAssembly(joint, i + 1, earCenter, axisH, shaftR, spanLo, spanHi),
+      ...throughBoltAssembly(joint, i + 1, earCenter, axisH, earBoltR, spanLo, spanHi),
     );
   });
   return prims;
 }
 
-/** Bolted flange splice: two mating discs + a bolt circle through both. */
+/** Bolted flange splice: two mating discs + a bolt circle through both.
+ * The orchestrator passes its catalog-snapped shaftR so the drawn bolts
+ * match the scheduled fastener (undefined falls back to the raw formula). */
 export function flangeSplice(
   joint: number,
   center: readonly number[],
   axis: number,
   memberR: number,
   nBolts = 6,
+  shaftR?: number,
 ): Primitive[] {
   const rot = AXIS_ROT[axis];
   const discR = Math.max(memberR * 1.6, memberR + 0.03);
   const discT = 0.01;
   const bcr = (memberR + discR) / 2;
-  const shaftR = Math.min(Math.max(0.35 * memberR, 0.005), 0.012);
+  const boltR = shaftR ?? Math.min(Math.max(0.35 * memberR, 0.005), 0.012);
   const prims: Primitive[] = [];
   [-1, 1].forEach((side, i) => {
     prims.push({
@@ -387,7 +398,7 @@ export function flangeSplice(
     c[perp[1]] += bcr * Math.sin(a);
     const spanLo = center[axis] - discT - 0.002;
     const spanHi = center[axis] + discT + 0.002;
-    prims.push(...throughBoltAssembly(joint, i + 1, c, axis, shaftR, spanLo, spanHi));
+    prims.push(...throughBoltAssembly(joint, i + 1, c, axis, boltR, spanLo, spanHi));
   }
   return prims;
 }

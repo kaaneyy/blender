@@ -29,7 +29,7 @@ fabrication convention, not FEA — see the honest note in docs/BUILD_PLAN.md.
 from __future__ import annotations
 
 import math
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .base import Primitive
 
@@ -241,10 +241,13 @@ def lag_screw_assembly(joint: int, idx: int, center: Sequence[float], axis: int,
 
 
 def slip_fitter(joint: int, outer_r: float, center_xy: Tuple[float, float],
-                center_z: float) -> List[Primitive]:
+                center_z: float, screw_r: float = 0.004) -> List[Primitive]:
     """Slip-fitter: a collar gripping a round-over-round telescoping fit
     (post-top luminaire over a pole tenon) with 3 radial set screws at 120°.
-    ``outer_r`` is the outer member's radius at the fit."""
+    ``outer_r`` is the outer member's radius at the fit; ``screw_r`` is the
+    set-screw shaft radius — the orchestrator passes a catalog size scaled
+    to the fit so the drawn screw is the scheduled screw (the default
+    reproduces the original fixed M8)."""
     cx, cy = center_xy
     collar_r = outer_r + 0.004
     collar_d = min(max(1.2 * outer_r, 0.04), 0.12)
@@ -255,7 +258,8 @@ def slip_fitter(joint: int, outer_r: float, center_xy: Tuple[float, float],
             params={"radius": collar_r, "wall": 0.004, "depth": collar_d},
         )
     ]
-    screw_len = 0.03
+    screw_len = max(0.03, 7.5 * screw_r)
+    head_h = 1.25 * screw_r
     for i in range(3):
         a = 2.0 * math.pi * i / 3.0
         # radial screw: local Z tilted onto X (pi/2 about Y), spun to angle a
@@ -266,10 +270,10 @@ def slip_fitter(joint: int, outer_r: float, center_xy: Tuple[float, float],
                 component="hardware",
                 location=(cx + mid_r * math.cos(a), cy + mid_r * math.sin(a), center_z),
                 rotation=(0.0, math.pi / 2, a), material_slot="hardware",
-                params={"radius": 0.004, "depth": screw_len},
+                params={"radius": screw_r, "depth": screw_len},
             )
         )
-        head_r_dist = collar_r + screw_len - 0.012 + 0.0025
+        head_r_dist = collar_r + screw_len - 0.012 + head_h / 2
         prims.append(
             Primitive(
                 kind="cylinder", name=f"joint{joint}_setscrew{i + 1}_head",
@@ -277,18 +281,21 @@ def slip_fitter(joint: int, outer_r: float, center_xy: Tuple[float, float],
                 location=(cx + head_r_dist * math.cos(a),
                           cy + head_r_dist * math.sin(a), center_z),
                 rotation=(0.0, math.pi / 2, a), material_slot="hardware",
-                params={"radius": 0.007, "depth": 0.005, "segments": 6},
+                params={"radius": 1.75 * screw_r, "depth": head_h, "segments": 6},
             )
         )
     return prims
 
 
 def split_band_clamp(joint: int, pole_r: float, center_xy: Tuple[float, float],
-                     center_z: float, axis_h: int, arm_r: float) -> List[Primitive]:
+                     center_z: float, axis_h: int, arm_r: float,
+                     shaft_r: Optional[float] = None) -> List[Primitive]:
     """Two-piece saddle band: a split band wraps the pole, ear tabs protrude
     on both sides perpendicular to the arm, and one bolt per ear pair clamps
     the halves together — through the EARS, not through the pole. Band width
-    and bolt size scale with the clamped arm."""
+    and bolt size scale with the clamped arm; the orchestrator passes its
+    catalog-snapped ``shaft_r`` so the drawn ear bolts match the scheduled
+    fastener (None falls back to the raw un-snapped formula)."""
     cx, cy = center_xy
     band_r = pole_r + 0.006
     band_w = min(max(3.0 * arm_r, 0.03), 0.08)
@@ -302,7 +309,8 @@ def split_band_clamp(joint: int, pole_r: float, center_xy: Tuple[float, float],
     perp_h = 1 - axis_h  # the other horizontal axis: where the ears live
     ear_len = 0.025
     ear_thick = 0.024  # the two mating tabs, modeled as one block
-    shaft_r = min(max(0.4 * arm_r, 0.004), 0.008)
+    if shaft_r is None:
+        shaft_r = min(max(0.4 * arm_r, 0.004), 0.008)
     for i, side in enumerate((1.0, -1.0), start=1):
         ear_center = [cx, cy, center_z]
         ear_center[perp_h] += side * (band_r + ear_len / 2)
@@ -327,14 +335,18 @@ def split_band_clamp(joint: int, pole_r: float, center_xy: Tuple[float, float],
 
 
 def flange_splice(joint: int, center: Sequence[float], axis: int,
-                  member_r: float, n_bolts: int = 6) -> List[Primitive]:
+                  member_r: float, n_bolts: int = 6,
+                  shaft_r: Optional[float] = None) -> List[Primitive]:
     """Bolted flange splice: two mating discs at the joint plane with a bolt
-    circle through both — how pole/mast sections join end-to-end."""
+    circle through both — how pole/mast sections join end-to-end. The
+    orchestrator passes its catalog-snapped ``shaft_r`` so the drawn bolts
+    match the scheduled fastener (None falls back to the raw formula)."""
     rot = AXIS_ROT[axis]
     disc_r = max(member_r * 1.6, member_r + 0.03)
     disc_t = 0.010
     bcr = (member_r + disc_r) / 2
-    shaft_r = min(max(0.35 * member_r, 0.005), 0.012)
+    if shaft_r is None:
+        shaft_r = min(max(0.35 * member_r, 0.005), 0.012)
     prims = []
     for i, side in enumerate((-1.0, 1.0), start=1):
         prims.append(
