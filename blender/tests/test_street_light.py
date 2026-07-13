@@ -94,6 +94,60 @@ def test_arm_is_a_tapered_sweep_reaching_arm_length(arm_length):
     assert head.params["shell"] == pytest.approx(0.003)  # hollow housing (A4)
 
 
+class TestLuminaireCasingFit:
+    """The lens is derived from the housing cross-section at its own station,
+    so the light fits the casing by construction — no poking out the sides,
+    no floating below the door — at every parameter combination."""
+
+    @staticmethod
+    def _fit(prims):
+        head = next(p for p in prims if p.name == "head")
+        lens = next(p for p in prims if p.name == "lens")
+        # station along the loft axis, 0 = door end, 1 = nose. The loft runs
+        # along X with the door toward the pole; the lens sits nose-ward of
+        # the head center, so the offset magnitude gives the station on the
+        # mirrored copy too.
+        t = abs(lens.location[0] - head.location[0]) / head.params["depth"] + 0.5
+        ps, pe = head.params["profile_start"], head.params["profile_end"]
+        width_y = ps["h"] + (pe["h"] - ps["h"]) * t   # profile h spans world Y
+        height_z = ps["w"] + (pe["w"] - ps["w"]) * t  # profile w spans world Z
+        return head, lens, t, width_y, height_z
+
+    @pytest.mark.parametrize("pole_height,arm_length", [
+        (20, 4), (30, 8), (40, 15),
+    ])
+    def test_lens_nests_inside_the_casing(self, pole_height, arm_length):
+        prims = compute_primitives(make_spec(pole_height, arm_length))
+        head, lens, t, width_y, height_z = self._fit(prims)
+        assert 0.0 < t < 1.0  # the lens sits under the housing, not off an end
+        # the lens clears the shell walls on both sides
+        assert lens.params["radius"] + head.params["shell"] < width_y / 2
+        # its top tucks up into the housing instead of floating below it...
+        casing_bottom = head.location[2] - height_z / 2
+        assert lens.location[2] + lens.params["depth"] / 2 > casing_bottom
+        # ...while the drop-lens face stays visible below the door
+        assert lens.location[2] - lens.params["depth"] / 2 < casing_bottom
+
+    def test_housing_is_wider_than_tall(self):
+        # a cobra head reads long, wide, and flat — regression for the
+        # transposed profiles that rendered it 0.32 m tall by 0.17 m wide
+        prims = compute_primitives(make_spec())
+        head = next(p for p in prims if p.name == "head")
+        _, half = _aabb(head)
+        assert half[0] > half[1] > half[2]  # long > wide > tall
+        assert 2 * half[1] == pytest.approx(0.32)
+        assert 2 * half[2] == pytest.approx(0.17)
+
+    def test_mirrored_luminaire_keeps_the_fit(self):
+        prims = compute_primitives(make_spec(double_arm=True))
+        head = next(p for p in prims if p.name == "head_b")
+        lens = next(p for p in prims if p.name == "lens_b")
+        # mirrored lens stays under the mirrored housing's X span
+        assert abs(lens.location[0] - head.location[0]) < head.params["depth"] / 2
+        _, half = _aabb(head)
+        assert half[1] > half[2]  # still wider than tall
+
+
 def test_pole_cap_is_a_lathe_dome():
     prims = compute_primitives(make_spec())
     cap = next(p for p in prims if p.name == "cap")

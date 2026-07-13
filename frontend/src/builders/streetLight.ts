@@ -10,6 +10,21 @@ const ARM_RADIUS = 0.035;
 const FT = 0.3048;
 const IN = 0.0254;
 
+// cobra-head housing (m): length along the arm, width across it, height at
+// the door end. The lens is DERIVED from these (see luminairePrimitives),
+// so resizing the housing keeps the light fitting its casing.
+const HEAD_LEN = 0.75;
+const HEAD_W = 0.32;
+const HEAD_H = 0.17;
+// door-to-nose shrink factors of the lofted housing (width, height)
+const NOSE_W = 0.7;
+const NOSE_H = 0.6;
+// where the drop lens sits along the housing (0 = door end, 1 = nose)
+const LENS_STATION = 0.63;
+// lens disc thickness and how far its top tucks up into the housing
+const LENS_DEPTH = 0.02;
+const LENS_RECESS = 0.008;
+
 const DEFAULTS_M = {
   pole_height: 30 * FT,
   arm_length: 8 * FT,
@@ -66,24 +81,32 @@ function armPrimitives(
   ];
 }
 
+/** Cobra-head housing + drop lens. Under the (0, pi/2, 0) roll the loft
+ * profiles' `w` spans world Z (housing HEIGHT) and `h` spans world Y
+ * (WIDTH). The lens is derived from the housing cross-section at its own
+ * station (ring dimensions interpolate linearly along the loft), so the
+ * light fits the casing by construction at any housing size. */
 function luminairePrimitives(armLength: number, poleHeight: number): Primitive[] {
   const tipZ = poleHeight - 0.25;
-  const headLen = 0.75;
-  const headW = 0.32;
-  const headH = 0.17;
-  const headX = armLength + headLen / 2 - 0.15;
+  const headX = armLength + HEAD_LEN / 2 - 0.15;
+  const headZ = tipZ + HEAD_H / 2 - 0.02; // door-end underside just below the tip
+  // housing cross-section at the lens station
+  const width = HEAD_W * (1 + (NOSE_W - 1) * LENS_STATION);
+  const height = HEAD_H * (1 + (NOSE_H - 1) * LENS_STATION);
+  const lensR = 0.38 * width; // clears the shell walls on both sides
   return [
     {
       kind: "loft",
       name: "head",
       component: "luminaire",
-      location: [headX, 0, tipZ + headH / 2 - 0.02],
+      location: [headX, 0, headZ],
       rotation: [0, Math.PI / 2, 0],
       materialSlot: "luminaire",
       params: {
-        depth: headLen,
-        profile_start: { shape: "rect", w: headW, h: headH },
-        profile_end: { shape: "ellipse", w: headW * 0.7, h: headH * 0.6 },
+        depth: HEAD_LEN,
+        // w = height, h = width (world axes under the roll — see above)
+        profile_start: { shape: "rect", w: HEAD_H, h: HEAD_W },
+        profile_end: { shape: "ellipse", w: HEAD_H * NOSE_H, h: HEAD_W * NOSE_W },
         shell: 0.003,
       },
     },
@@ -91,10 +114,14 @@ function luminairePrimitives(armLength: number, poleHeight: number): Primitive[]
       kind: "cylinder",
       name: "lens",
       component: "luminaire",
-      location: [headX + 0.1, 0, tipZ - 0.03],
+      location: [
+        headX + (LENS_STATION - 0.5) * HEAD_LEN,
+        0,
+        headZ - height / 2 + LENS_RECESS - LENS_DEPTH / 2,
+      ],
       rotation: [0, 0, 0],
       materialSlot: "lens",
-      params: { radius: 0.1, depth: 0.02 },
+      params: { radius: lensR, depth: LENS_DEPTH },
     },
   ];
 }

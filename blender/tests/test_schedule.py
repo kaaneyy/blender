@@ -52,6 +52,35 @@ class TestCatalog:
             if p.component == "hardware" and p.name.endswith("_shaft"):
                 assert round(p.params["radius"], 6) in radii, p.name
 
+    def test_set_screw_torques_match_standards_db(self):
+        """The set-screw torque map and the human-facing table must not drift
+        (same contract as the bolt catalog)."""
+        from blender.builders.hardware import SET_SCREW_TORQUE
+
+        db = json.loads((REPO_ROOT / "standards" / "us_codes.json").read_text())
+        table = {k: v for k, v in
+                 db["_connections"]["set_screw_torque_nm"].items() if k != "note"}
+        assert table == SET_SCREW_TORQUE
+
+    def test_drawn_fasteners_match_recorded_catalog_size(self):
+        """The screw you see is the screw the schedule cites: slip-fitter set
+        screws and band-clamp ear bolts are drawn at the exact catalog radius
+        their joint record names."""
+        spec = load("street_light.json")
+        spec["toggles"].append({"id": "connection_hardware", "label": "CH", "value": True})
+        prims = compute_primitives(spec)
+        catalog = dict(BOLT_CATALOG)
+        by_name = {p.name: p for p in prims}
+        recs = {p.meta["joint"]["type"]: p.meta["joint"] for p in prims if p.meta}
+
+        slip = recs["slip_fit"]
+        screw = by_name[f"joint{slip['id']}_setscrew1"]
+        assert screw.params["radius"] == catalog[slip["fastener"].split()[0]]
+
+        band = recs["band_clamp"]
+        ear_shaft = by_name[f"joint{band['id']}_bolt1_shaft"]
+        assert ear_shaft.params["radius"] == catalog[band["fastener"].split()[0]]
+
 
 class TestMomentProxy:
     def _fixture(self, arm_center_x):
