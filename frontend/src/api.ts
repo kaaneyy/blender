@@ -54,6 +54,31 @@ export function generateSpec(prompt: string): Promise<AssetSpec> {
   return postForSpec("/generate-spec", { prompt, code_mode: "strict" });
 }
 
+/** One clarifying question with 3 AI-written answers for the dropdown. */
+export interface ClarifyQuestion {
+  id: string;
+  question: string;
+  options: string[];
+}
+
+/** An answered clarifying question, folded into the generation request. */
+export interface Clarification {
+  question: string;
+  answer: string;
+}
+
+/** 3 clarifying questions x 3 offered answers for a raw request — shown as
+ * dropdowns (plus a type-your-own blank) before generating, so a basic
+ * request surfaces the real one behind it. */
+export async function clarifyRequest(
+  prompt: string,
+  model: DeepseekModel | "" = "",
+): Promise<ClarifyQuestion[]> {
+  const data = await post("/clarify-request", { prompt, model });
+  if (!Array.isArray(data?.questions)) throw new Error("Backend returned no questions");
+  return data.questions as ClarifyQuestion[];
+}
+
 export function refineSpec(spec: AssetSpec, message: string): Promise<AssetSpec> {
   return postForSpec("/refine-spec", { spec, message, code_mode: spec.code_mode ?? "strict" });
 }
@@ -159,10 +184,11 @@ export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  clarifications: Clarification[] = [],
 ): Promise<{ spec: AssetSpec; brief?: string }> {
   const result = await streamPost(
     "/generate-spec-stream",
-    { prompt, code_mode: "strict", model },
+    { prompt, code_mode: "strict", model, clarifications },
     onChunk,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");

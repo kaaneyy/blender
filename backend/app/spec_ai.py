@@ -195,6 +195,135 @@ def enhance_prompt(prompt: str, model: str | None = None) -> str:
     return brief or prompt
 
 
+# ---------------------------------------------------------------------------
+# Clarifying questions — surfacing the REAL request behind a basic one.
+#
+# "A bench" hides who sits on it, where it lives, and what it should look
+# like. Before generating, the UI asks the backend for EXACTLY 3 clarifying
+# questions, each with EXACTLY 3 concrete AI-written answers; the user picks
+# from a dropdown or types their own (the blank space), and the answered
+# pairs ride into generation via ``clarifications`` on /generate-spec[-stream]
+# — folded into the request BEFORE the design-brief pass so every downstream
+# stage honors them. Answering is always optional: the UI can skip straight
+# to generation, and a failed clarify call must never block generating.
+# ---------------------------------------------------------------------------
+
+#: the fixed shape of a clarify round: 3 questions x 3 offered answers
+CLARIFY_QUESTIONS = 3
+CLARIFY_OPTIONS = 3
+#: answered pairs folded into one generation (matches the questions asked,
+#: with headroom for a UI that lets the user add a custom detail or two)
+MAX_CLARIFICATIONS = 6
+
+CLARIFY_SYSTEM = f"""You help a parametric 3D asset generator (street furniture, lighting, signage, props) discover the REAL request behind a short one, before anything is generated.
+
+Given the user's request, write EXACTLY {CLARIFY_QUESTIONS} clarifying questions whose answers would most change the design, each with EXACTLY {CLARIFY_OPTIONS} concrete, mutually different example answers the user can pick from a dropdown (they may also type their own answer instead).
+
+Cover the biggest unknowns for THIS request — typically one question each on: who will use it and where (adults / children / accessible use; park, plaza, private yard); the size or capacity that matters (seats, bikes, height class); and the style, material, or standout feature. Never ask about something the request already states, and never ask about units, code modes, or file formats. Keep each question under 90 characters and each answer under 60 — answers are design choices ("Classic cast iron with wood slats"), not sentences.
+
+Answer ONLY with this JSON object — no prose, no fences:
+{{"questions": [{{"question": "...", "options": ["...", "...", "..."]}}, {{"question": "...", "options": ["...", "...", "..."]}}, {{"question": "...", "options": ["...", "...", "..."]}}]}}"""
+
+
+def _clarify_user(prompt: str) -> str:
+    return f"CLARIFY REQUEST.\nRequest: {prompt}"
+
+
+def _clarify_finalize(raw: str) -> dict:
+    """Parse + sanitize the AI's questions into the fixed 3x3 shape (plus
+    stable ids). Anything malformed raises a CLASSIFIED error so the retry
+    loop can hand the model a targeted correction."""
+    stripped = _strip_fences(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        if _looks_truncated(stripped):
+            raise SpecGenerationError(
+                f"Questions were cut off before the JSON finished: {exc}",
+                kind="truncated",
+                hint="Return the COMPLETE questions JSON — shorter questions "
+                     "and answers.",
+            ) from None
+        raise SpecGenerationError(
+            f"Questions were not valid JSON: {exc}",
+            kind="not_json",
+            hint='Return ONLY the {"questions": [...]} JSON object — no '
+                 "prose, no fences.",
+        ) from None
+
+    questions_raw = data.get("questions") if isinstance(data, dict) else data
+    if not isinstance(questions_raw, list):
+        raise SpecGenerationError(
+            'Clarify JSON did not contain a "questions" array',
+            kind="schema",
+            hint='Answer with exactly {"questions": [...]}.',
+        )
+
+    questions = []
+    for q in questions_raw:
+        if not isinstance(q, dict):
+            continue
+        text = str(q.get("question") or "").strip()
+        options = []
+        for opt in q.get("options") or []:
+            clean = str(opt).strip()[:80]
+            if clean and clean.lower() not in {o.lower() for o in options}:
+                options.append(clean)
+        if not text or len(options) < CLARIFY_OPTIONS:
+            continue
+        questions.append({
+            "id": f"q{len(questions) + 1}",
+            "question": text[:160],
+            "options": options[:CLARIFY_OPTIONS],
+        })
+        if len(questions) == CLARIFY_QUESTIONS:
+            break
+    if len(questions) < CLARIFY_QUESTIONS:
+        raise SpecGenerationError(
+            f"Expected {CLARIFY_QUESTIONS} questions with "
+            f"{CLARIFY_OPTIONS} distinct options each, got {len(questions)} usable",
+            kind="schema",
+            hint=f"Return exactly {CLARIFY_QUESTIONS} questions, each with "
+                 f"exactly {CLARIFY_OPTIONS} DISTINCT non-empty options.",
+        )
+    return {"questions": questions}
+
+
+def clarify_request(prompt: str, model: str | None = None) -> dict:
+    """3 clarifying questions x 3 offered answers for a raw request, ready
+    for the UI's dropdowns. Rides the classified retry engine like every
+    other structured AI answer."""
+    return _complete_with_retries(
+        CLARIFY_SYSTEM, _clarify_user(prompt),
+        lambda raw, lenient: _clarify_finalize(raw),
+        model=model, temperature=0.6, max_tokens=600,
+    )
+
+
+def _clarified_prompt(prompt: str, clarifications: list | None) -> str:
+    """The user's request plus their clarifying answers as ONE request
+    string — the input to the design-brief pass, so the brief (and through
+    it the spec) honors what the user actually meant. Unanswered rounds
+    pass the prompt through untouched."""
+    pairs = []
+    for c in clarifications or []:
+        if not isinstance(c, dict):
+            continue
+        q = str(c.get("question") or "").strip()
+        a = str(c.get("answer") or "").strip()
+        if q and a:
+            pairs.append((q[:200], a[:200]))
+        if len(pairs) == MAX_CLARIFICATIONS:
+            break
+    if not pairs:
+        return prompt
+    lines = [prompt,
+             "\nThe user answered clarifying questions about this request — "
+             "honor EVERY answer explicitly:"]
+    lines += [f"- {q} → {a}" for q, a in pairs]
+    return "\n".join(lines)
+
+
 def _last_balanced_object(text: str) -> str | None:
     """Return the last top-level ``{...}`` in ``text`` that parses as JSON, or
     None. Unlike a first-``{``/last-``}`` slice, this is not fooled by stray
@@ -492,11 +621,14 @@ def _run(system: str, user: str, code_mode: str, model: str | None = None) -> di
     )
 
 
-def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None) -> dict:
-    """T2.1: natural-language prompt → design brief (extra AI pass) →
-    validated AssetSpec (+ violations). The brief rides along in the result
-    so the UI can show how the request was interpreted."""
-    brief = enhance_prompt(prompt, model=model)
+def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
+                  clarifications: list | None = None) -> dict:
+    """T2.1: natural-language prompt (+ answered clarifying questions) →
+    design brief (extra AI pass) → validated AssetSpec (+ violations). The
+    brief rides along in the result so the UI can show how the request was
+    interpreted."""
+    request = _clarified_prompt(prompt, clarifications)
+    brief = enhance_prompt(request, model=model)
     result = _run(_system_prompt(code_mode), f"Request: {brief}", code_mode, model=model)
     result["brief"] = brief
     return result
@@ -1067,15 +1199,18 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
     yield STREAM_SENTINEL + json.dumps(payload)
 
 
-def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None):
+def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
+                         clarifications: list | None = None):
     """Two visible stages in one stream: the brief being written, then the
-    spec being designed from it."""
+    spec being designed from it. Answered clarifying questions are folded
+    into the request before the brief pass."""
+    request = _clarified_prompt(prompt, clarifications)
 
     def gen():
         yield "[refining your request into a design brief]\n\n"
         parts = []
         try:
-            for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(prompt),
+            for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(request),
                                          temperature=0.5, max_tokens=400, model=model):
                 parts.append(chunk)
                 yield chunk
@@ -1089,7 +1224,7 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
                 return
             parts = []
             yield "\n[brief pass unavailable — designing from your request as-is]\n"
-        brief = "".join(parts).strip() or prompt
+        brief = "".join(parts).strip() or request
         yield "\n\n[designing the asset from the brief]\n\n"
 
         def finalize(raw: str, lenient: bool = False) -> dict:

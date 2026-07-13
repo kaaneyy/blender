@@ -44,9 +44,23 @@ ASSET_SPEC_SCHEMA = json.loads(
 _MODEL_PATTERN = "^(deepseek-chat|deepseek-v4-flash|deepseek-v4-pro)?$"
 
 
+class Clarification(BaseModel):
+    """One answered clarifying question riding into generation."""
+
+    question: str = Field(min_length=1, max_length=300)
+    answer: str = Field(min_length=1, max_length=300)
+
+
 class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=3, max_length=2000)
     code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+    #: answered clarifying questions (see /clarify-request); optional
+    clarifications: list[Clarification] = Field(default_factory=list, max_length=6)
+
+
+class ClarifyRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=2000)
     model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
@@ -125,11 +139,31 @@ def validate(spec: dict) -> dict:
     return result
 
 
+@router.post("/clarify-request")
+def clarify(body: ClarifyRequest) -> dict:
+    """3 AI-written clarifying questions x 3 offered answers for a raw
+    request — the UI shows them as dropdowns (plus a type-your-own blank)
+    before generating, so a basic request surfaces the real one behind it."""
+    try:
+        return spec_ai.clarify_request(body.prompt, model=body.model)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI could not produce usable questions: {exc}",
+        )
+
+
 @router.post("/generate-spec")
 def generate(body: GenerateRequest) -> dict:
-    """T2.1: prompt → validated AssetSpec + code violations."""
+    """T2.1: prompt (+ answered clarifying questions) → validated AssetSpec
+    + code violations."""
     try:
-        return spec_ai.generate_spec(body.prompt, body.code_mode, model=body.model)
+        return spec_ai.generate_spec(
+            body.prompt, body.code_mode, model=body.model,
+            clarifications=[c.model_dump() for c in body.clarifications],
+        )
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except spec_ai.SpecGenerationError as exc:
@@ -245,7 +279,10 @@ def _stream(gen) -> StreamingResponse:
 
 @router.post("/generate-spec-stream")
 def generate_stream(body: GenerateRequest) -> StreamingResponse:
-    return _stream(spec_ai.stream_generate_spec(body.prompt, body.code_mode, model=body.model))
+    return _stream(spec_ai.stream_generate_spec(
+        body.prompt, body.code_mode, model=body.model,
+        clarifications=[c.model_dump() for c in body.clarifications],
+    ))
 
 
 @router.post("/refine-spec-stream")
