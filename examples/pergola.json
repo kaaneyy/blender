@@ -1,0 +1,67 @@
+{
+  "asset_type": "pergola",
+  "name": "TimberPergola12x10",
+  "units": "imperial",
+  "code_mode": "advisory",
+  "parameters": [
+    { "id": "post_height", "label": "Post Height", "type": "slider",
+      "min": 7, "max": 10, "step": 0.5, "value": 8, "unit": "ft" },
+    { "id": "post_size", "label": "Post Size", "type": "slider",
+      "min": 3.5, "max": 7.5, "step": 0.5, "value": 5.5, "unit": "in" },
+    { "id": "span_x", "label": "Width (post to post)", "type": "slider",
+      "min": 8, "max": 16, "step": 1, "value": 12, "unit": "ft" },
+    { "id": "span_y", "label": "Depth (row to row)", "type": "slider",
+      "min": 6, "max": 14, "step": 1, "value": 10, "unit": "ft" },
+    { "id": "beam_depth", "label": "Beam Depth", "type": "slider",
+      "min": 5.5, "max": 11.5, "step": 0.5, "value": 7.25, "unit": "in" },
+    { "id": "beam_width", "label": "Beam Width", "type": "slider",
+      "min": 1.5, "max": 3.5, "step": 0.5, "value": 3, "unit": "in" },
+    { "id": "rafter_depth", "label": "Rafter Depth", "type": "slider",
+      "min": 3.5, "max": 7.5, "step": 0.5, "value": 5.5, "unit": "in" },
+    { "id": "rafter_width", "label": "Rafter Width", "type": "slider",
+      "min": 1.5, "max": 3.5, "step": 0.5, "value": 1.5, "unit": "in" },
+    { "id": "rafter_count", "label": "Rafter Count", "type": "slider",
+      "min": 3, "max": 9, "step": 1, "value": 7, "unit": "x" },
+    { "id": "rafter_overhang", "label": "Rafter Overhang", "type": "slider",
+      "min": 6, "max": 18, "step": 1, "value": 12, "unit": "in" }
+  ],
+  "toggles": [
+    { "id": "connection_hardware", "label": "Connection Hardware", "value": true }
+  ],
+  "materials": [
+    { "slot": "posts", "preset": "wood_slat", "color": "#6b4a30", "roughness": 0.8 },
+    { "slot": "beams", "preset": "wood_slat", "color": "#7a5638", "roughness": 0.75 },
+    { "slot": "rafters", "preset": "wood_slat", "color": "#8a6444", "roughness": 0.7 }
+  ],
+  "components": ["posts", "beams", "rafters"],
+  "connections": [
+    { "a": "posts", "b": "ground", "type": "anchor_base" },
+    { "a": "beams", "b": "posts", "type": "through_bolt" },
+    { "a": "rafters", "b": "beams", "type": "lag_screw" }
+  ],
+  "primitives": [
+    { "kind": "box", "name": "post_fl", "component": "posts", "material_slot": "posts",
+      "location": ["span_x/2", "span_y/2", "post_height/2"],
+      "params": { "size": ["post_size", "post_size", "post_height"] } },
+    { "kind": "box", "name": "post_fr", "component": "posts", "material_slot": "posts",
+      "location": ["-span_x/2", "span_y/2", "post_height/2"],
+      "params": { "size": ["post_size", "post_size", "post_height"] } },
+    { "kind": "box", "name": "post_bl", "component": "posts", "material_slot": "posts",
+      "location": ["span_x/2", "-span_y/2", "post_height/2"],
+      "params": { "size": ["post_size", "post_size", "post_height"] } },
+    { "kind": "box", "name": "post_br", "component": "posts", "material_slot": "posts",
+      "location": ["-span_x/2", "-span_y/2", "post_height/2"],
+      "params": { "size": ["post_size", "post_size", "post_height"] } },
+    { "kind": "box", "name": "beam_front", "component": "beams", "material_slot": "beams",
+      "location": [0, "span_y/2", "post_height + beam_depth/2 - 0.02"],
+      "params": { "size": ["span_x + beam_width*2", "beam_width", "beam_depth"] } },
+    { "kind": "box", "name": "beam_back", "component": "beams", "material_slot": "beams",
+      "location": [0, "-span_y/2", "post_height + beam_depth/2 - 0.02"],
+      "params": { "size": ["span_x + beam_width*2", "beam_width", "beam_depth"] } },
+    { "kind": "box", "name": "rafter", "component": "rafters", "material_slot": "rafters",
+      "location": ["-span_x/2", 0, "post_height + beam_depth + rafter_depth/2 - 0.04"],
+      "array": { "count": "rafter_count", "step": ["span_x / (rafter_count - 1)", 0, 0] },
+      "params": { "size": ["rafter_width", "span_y + rafter_overhang*2", "rafter_depth"] } }
+  ],
+  "seed": 5
+}

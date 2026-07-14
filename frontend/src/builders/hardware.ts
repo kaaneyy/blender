@@ -340,21 +340,63 @@ function specConnections(spec?: AssetSpec): SpecConnection[] {
   );
 }
 
-function sideMatches(ref: string, p: Primitive): boolean {
-  return ref === p.component || ref === `${p.component}/${p.name}`;
+/** Map a duplicated component's name to its ultimate source component, from
+ * spec.edits.duplicates ([{source, name}]), resolved transitively — a
+ * duplicate of a duplicate resolves all the way to the root source.
+ * Declared-connection matching resolves each side's component through this
+ * map first, so a copy inherits the joint intent declared for the component
+ * it was cloned from (apply_structure/edits.ts run duplicates before
+ * hardware for exactly this reason). Mirror of hardware.py
+ * _dup_resolution_map. Cycles are broken defensively: a name caught in a
+ * cycle resolves to itself. */
+function dupResolutionMap(spec?: AssetSpec): Map<string, string> {
+  const raw = new Map<string, string>();
+  for (const dup of spec?.edits?.duplicates ?? []) {
+    if (typeof dup?.name === "string" && typeof dup?.source === "string") {
+      raw.set(dup.name, dup.source);
+    }
+  }
+  const resolved = new Map<string, string>();
+  function resolve(name: string, seen: Set<string>): string {
+    if (resolved.has(name)) return resolved.get(name)!;
+    if (!raw.has(name) || seen.has(name)) return name;
+    seen.add(name);
+    return resolve(raw.get(name)!, seen);
+  }
+  for (const name of raw.keys()) {
+    resolved.set(name, resolve(name, new Set()));
+  }
+  return resolved;
 }
 
-/** First declaration whose {a, b} matches this prim pair (unordered). */
+function resolveComponent(name: string, dupMap: Map<string, string>): string {
+  return dupMap.get(name) ?? name;
+}
+
+function sideMatches(ref: string, p: Primitive, dupMap: Map<string, string>): boolean {
+  const comp = resolveComponent(p.component, dupMap);
+  return ref === comp || ref === `${comp}/${p.name}`;
+}
+
+/** First declaration whose {a, b} matches this prim pair (unordered),
+ * matching through duplicate resolution so a copy inherits its source's
+ * declared intent. A pair that resolves to the same component on both
+ * sides (a copy touching its own source) declares nothing new — it falls
+ * through to inference. */
 function findDeclaration(
   decls: SpecConnection[],
   pa: Primitive,
   pb: Primitive,
+  dupMap: Map<string, string>,
 ): SpecConnection | null {
+  if (resolveComponent(pa.component, dupMap) === resolveComponent(pb.component, dupMap)) {
+    return null;
+  }
   for (const d of decls) {
     if (d.b === "ground") continue; // handled by the anchor pass
     if (
-      (sideMatches(d.a, pa) && sideMatches(d.b, pb)) ||
-      (sideMatches(d.a, pb) && sideMatches(d.b, pa))
+      (sideMatches(d.a, pa, dupMap) && sideMatches(d.b, pb, dupMap)) ||
+      (sideMatches(d.a, pb, dupMap) && sideMatches(d.b, pa, dupMap))
     ) {
       return d;
     }
@@ -362,10 +404,14 @@ function findDeclaration(
   return null;
 }
 
-function groundDeclaration(decls: SpecConnection[], p: Primitive): SpecConnection | null {
+function groundDeclaration(
+  decls: SpecConnection[],
+  p: Primitive,
+  dupMap: Map<string, string>,
+): SpecConnection | null {
   for (const d of decls) {
-    if (d.b === "ground" && sideMatches(d.a, p)) return d;
-    if (d.a === "ground" && sideMatches(d.b, p)) return d;
+    if (d.b === "ground" && sideMatches(d.a, p, dupMap)) return d;
+    if (d.a === "ground" && sideMatches(d.b, p, dupMap)) return d;
   }
   return null;
 }
@@ -536,6 +582,7 @@ type Candidate = PairCandidate | AnchorCandidate;
 
 export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive[] {
   const decls = specConnections(spec);
+  const dupMap = dupResolutionMap(spec);
   const boxes = prims
     .filter((p) => p.component !== "hardware" && !p.cut)
     .map((p) => {
@@ -566,7 +613,7 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       }
       if (!overlaps) continue;
 
-      const decl = findDeclaration(decls, a.p, b.p);
+      const decl = findDeclaration(decls, a.p, b.p, dupMap);
       if (decl?.type === "none") continue; // explicitly no visible hardware
       if (!decl && isSoft(a.p.materialSlot, spec) && isSoft(b.p.materialSlot, spec)) {
         continue; // non-structural joint — concealed joinery, no bolts
@@ -610,7 +657,7 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
   for (const { p, c, h } of boxes) {
     if (!isVerticalStructural(p)) continue;
     if (c[2] - h[2] > 0.01) continue; // bottom must land at grade
-    const gdecl = groundDeclaration(decls, p);
+    const gdecl = groundDeclaration(decls, p, dupMap);
     if (gdecl?.type === "none") continue;
     const forced = gdecl?.type === "anchor_base";
     if (!forced) {
