@@ -54,11 +54,35 @@ export function generateSpec(prompt: string): Promise<AssetSpec> {
   return postForSpec("/generate-spec", { prompt, code_mode: "strict" });
 }
 
-/** One clarifying question with 3 AI-written answers for the dropdown. */
+/** Which discipline is asking a clarifying question (or whose take appears
+ * in the post-generation design panel) — an older backend omits this. */
+export interface Persona {
+  id: "architecture" | "mechanical" | "civil" | "design";
+  label: string;
+  icon: string;
+}
+
+const PERSONA_IDS = new Set(["architecture", "mechanical", "civil", "design"]);
+
+/** Tolerant parse of an optional `persona` field: any malformed shape
+ * degrades to `undefined` rather than throwing or dropping the question. */
+function parsePersona(raw: unknown): Persona | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.id !== "string" || !PERSONA_IDS.has(p.id)) return undefined;
+  if (typeof p.label !== "string") return undefined;
+  if (typeof p.icon !== "string") return undefined;
+  return { id: p.id as Persona["id"], label: p.label, icon: p.icon };
+}
+
+/** One clarifying question with AI-written answers for the dropdown. The
+ * backend may ask any number of questions — never assume a fixed count. */
 export interface ClarifyQuestion {
   id: string;
   question: string;
   options: string[];
+  /** Which discipline is asking, when the backend provides one. */
+  persona?: Persona;
 }
 
 /** An answered clarifying question, folded into the generation request. */
@@ -67,16 +91,25 @@ export interface Clarification {
   answer: string;
 }
 
-/** 3 clarifying questions x 3 offered answers for a raw request — shown as
- * dropdowns (plus a type-your-own blank) before generating, so a basic
- * request surfaces the real one behind it. */
+/** A handful of clarifying questions (any count >= 1) x 3 offered answers
+ * each for a raw request — shown as dropdowns (plus a type-your-own blank)
+ * before generating, so a basic request surfaces the real one behind it. */
 export async function clarifyRequest(
   prompt: string,
   model: DeepseekModel | "" = "",
 ): Promise<ClarifyQuestion[]> {
   const data = await post("/clarify-request", { prompt, model });
   if (!Array.isArray(data?.questions)) throw new Error("Backend returned no questions");
-  return data.questions as ClarifyQuestion[];
+  return (data.questions as Array<Record<string, unknown>>).map((q) => {
+    const question: ClarifyQuestion = {
+      id: q.id as string,
+      question: q.question as string,
+      options: q.options as string[],
+    };
+    const persona = parsePersona(q.persona);
+    if (persona) question.persona = persona;
+    return question;
+  });
 }
 
 export function refineSpec(spec: AssetSpec, message: string): Promise<AssetSpec> {
@@ -180,12 +213,39 @@ async function streamPost(
   return payload.result as Record<string, unknown>;
 }
 
+/** One persona's 1-2 sentence take on what the user deep-down asked for,
+ * part of the post-generation design panel. */
+export interface PanelEntry {
+  id: "architecture" | "mechanical" | "civil" | "design";
+  label: string;
+  icon: string;
+  take: string;
+}
+
+/** Tolerant parse of the optional `panel` envelope key: an older backend
+ * omits it entirely, and any malformed shape must degrade to `undefined`
+ * rather than throw — generation still succeeds either way. */
+function parsePanel(raw: unknown): PanelEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: PanelEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return undefined;
+    const p = item as Record<string, unknown>;
+    if (typeof p.id !== "string" || !PERSONA_IDS.has(p.id)) return undefined;
+    if (typeof p.label !== "string") return undefined;
+    if (typeof p.icon !== "string") return undefined;
+    if (typeof p.take !== "string") return undefined;
+    out.push({ id: p.id as PanelEntry["id"], label: p.label, icon: p.icon, take: p.take });
+  }
+  return out;
+}
+
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   clarifications: Clarification[] = [],
-): Promise<{ spec: AssetSpec; brief?: string }> {
+): Promise<{ spec: AssetSpec; brief?: string; panel?: PanelEntry[] }> {
   const result = await streamPost(
     "/generate-spec-stream",
     { prompt, code_mode: "strict", model, clarifications },
@@ -195,6 +255,7 @@ export async function generateSpecStream(
   return {
     spec: result.spec as AssetSpec,
     brief: typeof result.brief === "string" ? result.brief : undefined,
+    panel: parsePanel(result.panel),
   };
 }
 

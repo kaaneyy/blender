@@ -429,6 +429,20 @@ textarea:disabled {
   font-weight: 600;
 }
 
+.clarify__persona {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid var(--border-2);
+  color: var(--text-muted);
+  background: var(--panel-3);
+}
+
 .clarify__q select,
 .clarify__custom {
   width: 100%;
