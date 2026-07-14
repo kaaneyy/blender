@@ -8,14 +8,17 @@ from pathlib import Path
 import pytest
 
 import blender.builders  # noqa: F401
-from blender.builders.base import compute_primitives
+from blender.builders.base import Primitive, compute_primitives
 from blender.builders.edits import (
     apply_transforms,
     component_pivot,
     _euler_xyz_matrix,
     _euler_from_matrix,
     _mat_mul,
+    _scale_factors,
+    _group_z_min,
 )
+from blender.builders.hardware import _aabb
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -178,3 +181,136 @@ def test_no_edits_is_identity():
     spec = load("street_light.json")
     prims = compute_primitives(spec)
     assert apply_transforms(prims, {}) is prims  # fast path returns input
+
+
+class TestRotationAwareScale:
+    """A component/part scale edit applies world-axis factors s; a member
+    rotated off-axis must stretch along its correct LOCAL axes (f = S·R·e_i
+    lengths, not s directly), or scaled bench-like structures tear apart."""
+
+    def test_rotated_cylinder_stretches_along_its_own_axis(self):
+        # cylinder lying along world Y (rotation (pi/2, 0, 0)), like a bench
+        # stretcher spanning between two legs at y = +-1.0
+        cyl = Primitive(
+            kind="cylinder", name="stretcher", component="frame",
+            location=(0.0, 0.0, 0.5), rotation=(math.pi / 2, 0.0, 0.0),
+            params={"radius": 0.05, "depth": 2.0},
+        )
+        leg_a = Primitive(
+            kind="box", name="leg_a", component="frame",
+            location=(0.0, -1.0, 0.0), params={"size": (0.1, 0.1, 1.0)},
+        )
+        leg_b = Primitive(
+            kind="box", name="leg_b", component="frame",
+            location=(0.0, 1.0, 0.0), params={"size": (0.1, 0.1, 1.0)},
+        )
+        spec = {"edits": {"scales": {"frame": [1.0, 2.0, 1.0]}}}
+        out = {p.name: p for p in apply_transforms([cyl, leg_a, leg_b], spec)}
+        # world-Y span doubled to match the legs (now at y = +-2.0)
+        assert out["stretcher"].params["depth"] == pytest.approx(4.0)
+        # radius unaffected: local axes 0/1 (both perpendicular to world Y
+        # after the rotation) see factor 1 from an all-XZ-preserving scale
+        assert out["stretcher"].params["radius"] == pytest.approx(0.05)
+        # legs actually ended up at y = +-2.0, confirming the stretcher would
+        # now reach them
+        assert out["leg_a"].location[1] == pytest.approx(-2.0)
+        assert out["leg_b"].location[1] == pytest.approx(2.0)
+
+    def test_box_rotated_about_z_grows_local_y_not_local_x(self):
+        box = Primitive(
+            kind="box", name="panel", component="frame",
+            location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, math.pi / 2),
+            params={"size": (1.0, 0.4, 0.2)},
+        )
+        spec = {"edits": {"scales": {"frame": [2.0, 1.0, 1.0]}}}
+        out = apply_transforms([box], spec)[0]
+        # world-X scale becomes a LOCAL-Y stretch once rotated 90 deg about Z
+        assert out.params["size"][0] == pytest.approx(1.0)
+        assert out.params["size"][1] == pytest.approx(0.8)
+        assert out.params["size"][2] == pytest.approx(0.2)
+
+    def test_unrotated_box_keeps_current_behavior(self):
+        box = Primitive(
+            kind="box", name="panel", component="frame",
+            location=(0.0, 0.0, 0.0), params={"size": (1.0, 0.4, 0.2)},
+        )
+        spec = {"edits": {"scales": {"frame": [2.0, 1.0, 1.0]}}}
+        out = apply_transforms([box], spec)[0]
+        assert out.params["size"][0] == pytest.approx(2.0)
+        assert out.params["size"][1] == pytest.approx(0.4)
+        assert out.params["size"][2] == pytest.approx(0.2)
+
+    def test_scale_factors_identity_rotation_equals_s(self):
+        s = (1.5, 2.0, 0.5)
+        f = _scale_factors(s, (0.0, 0.0, 0.0))
+        for a, b in zip(f, s):
+            assert math.isclose(a, b, abs_tol=1e-9)
+
+
+def _z_min(prims):
+    return min(_aabb(p)[0][2] - _aabb(p)[1][2] for p in prims if not p.cut)
+
+
+def test_group_z_min_matches_manual_aabb_scan():
+    spec = load("park_bench.json")
+    frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+    assert math.isclose(_group_z_min(frame), _z_min(frame), abs_tol=1e-12)
+
+
+class TestScaleRegrounding:
+    """A scale target whose bottom sat at grade (z ~ 0) before the scale
+    must still sit at grade after — scaling a bench up must not sink its
+    legs below grade, and scaling it down must not leave it floating."""
+
+    def test_scale_up_keeps_grounded_frame_at_grade(self):
+        spec = load("park_bench.json")
+        base_frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        assert math.isclose(_z_min(base_frame), 0.0, abs_tol=1e-9)  # sanity: grounded pre-edit
+
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 1.5]}}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        # without re-grounding this would land at ~ -0.118 (below grade)
+        assert math.isclose(_z_min(frame), 0.0, abs_tol=1e-6)
+
+    def test_scale_down_keeps_grounded_frame_at_grade(self):
+        spec = load("park_bench.json")
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 0.5]}}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        # without re-grounding this would float above grade
+        assert math.isclose(_z_min(frame), 0.0, abs_tol=1e-6)
+
+    def test_ungrounded_group_keeps_center_pivot_not_forced_to_grade(self):
+        spec = load("park_bench.json")
+        base_seat = [p for p in compute_primitives(spec) if p.component == "seat"]
+        base_z_min = _z_min(base_seat)
+        assert base_z_min > 0.1  # sanity: the seat floats well above grade
+
+        spec["edits"] = {"scales": {"seat": [2.0, 2.0, 2.0]}}
+        seat = [p for p in compute_primitives(spec) if p.component == "seat"]
+        # center-pivot semantics unchanged: it is NOT snapped to z-min == 0
+        assert _z_min(seat) > 0.1
+        assert not math.isclose(_z_min(seat), 0.0, abs_tol=1e-3)
+
+    def test_offset_applies_after_regrounding(self):
+        spec = load("park_bench.json")
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 1.5]}}
+        spec["offsets"] = {"frame": [0.0, 0.0, 0.3]}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        assert math.isclose(_z_min(frame), 0.3, abs_tol=1e-6)
+
+    def test_rotation_only_edit_does_not_reground(self):
+        # a grounded box (bottom exactly at grade) tilted about X only must
+        # NOT be snapped back to z-min == 0, even though the tilt itself
+        # pushes it below grade — re-grounding only fires for `scales`,
+        # never bare `rotations`.
+        box = Primitive(
+            kind="box", name="leg", component="frame",
+            location=(0.0, 0.0, 0.5), params={"size": (0.2, 0.2, 1.0)},
+        )
+        assert math.isclose(_z_min([box]), 0.0, abs_tol=1e-9)  # sanity: grounded pre-edit
+        spec = {"edits": {"rotations": {"frame": [0.5, 0.0, 0.0]}}}
+        out = apply_transforms([box], spec)
+        # tilting about the box's own center necessarily moves its AABB
+        # bottom off the original grade line; left uncorrected because
+        # there is no scale entry for "frame" to trigger re-grounding
+        assert abs(_z_min(out)) > 1e-3
