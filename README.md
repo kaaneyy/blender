@@ -273,15 +273,18 @@ and the AI's few-shot references. There are two kinds:
 - **Curated** (`street_light.json`) — `asset_type` matches a Python builder in
   `blender/builders/`, so it carries **no `primitives`**; the builder generates
   the geometry from the parameters/toggles.
-- **Custom** (`park_bench.json`, `bike_rack.json`, `planter.json`) — the
-  "generate anything" path: the spec carries its own `primitives` array with
-  dimensions written as **expressions** over the slider parameters. No Python
-  needed; the generic builder (Python + its 1:1 TS mirror) realizes them.
+- **Custom** (`park_bench.json`, `bike_rack.json`, `planter.json`,
+  `pergola.json`) — the "generate anything" path: the spec carries its own
+  `primitives` array with dimensions written as **expressions** over the
+  slider parameters. No Python needed; the generic builder (Python + its
+  1:1 TS mirror) realizes them.
 
 `bike_rack.json` (arrayed inverted-U hoops, welded to a surface channel,
-anchored at grade) and `planter.json` (a single revolved-`lathe` urn in aged
-cast-iron) are custom examples added to show the arrayed-structure and
-lathe/vase paths.
+anchored at grade), `planter.json` (a single revolved-`lathe` urn in aged
+cast-iron), and `pergola.json` (a 4-post timber post-and-beam structure with
+an arrayed rafter run, anchored at grade with through-bolted beams and
+lag-screwed rafters) are custom examples added to show the arrayed-structure,
+lathe/vase, and multi-joint post-and-beam paths.
 
 ### Add an example to the folder
 
@@ -390,7 +393,7 @@ these to the app's prompt box, or to your own AI after the prompts above):
 | `backend/` | FastAPI service: spec validation + AI endpoints (`/generate-spec`, `/refine-spec`) with DeepSeek/OpenAI/Anthropic adapters |
 | `api/` | Thin Vercel serverless entrypoint wrapping the backend |
 | `frontend/` | Vite + React + react-three-fiber live preview (mirrors the Python builders 1:1) |
-| `examples/` | Ready-to-build example specs — curated `street_light`, and custom-primitive `park_bench`, `bike_rack`, `planter` (see [Examples & how to make your own](#examples--how-to-make-your-own)) |
+| `examples/` | Ready-to-build example specs — curated `street_light`, and custom-primitive `park_bench`, `bike_rack`, `planter`, `pergola` (see [Examples & how to make your own](#examples--how-to-make-your-own)) |
 
 ## Architecture rule
 
