@@ -36,6 +36,9 @@ interface Props {
   onTour: () => void;
   onCheck: () => void;
   onCheckAI: () => void;
+  onImprove: () => void;
+  /** true while any AI call (the AI check or improve itself) is in flight */
+  improveDisabled: boolean;
   /** true = spec/code slider limits enforced; false = free dimensions */
   locked: boolean;
   onLock: () => void;
@@ -222,6 +225,8 @@ export default function ControlsPanel({
   onTour,
   onCheck,
   onCheckAI,
+  onImprove,
+  improveDisabled,
   locked,
   onLock,
   onReset,
@@ -322,6 +327,14 @@ export default function ControlsPanel({
         title="Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm."
       >
         🤖 Check connections with AI
+      </button>
+      <button
+        className="hardware-btn"
+        onClick={onImprove}
+        disabled={improveDisabled}
+        title="Runs the app's checks and an AI pass on the current asset, then adopts the improved result."
+      >
+        ✨ Improve
       </button>
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,
