@@ -995,17 +995,181 @@ def stream_review_connections(spec: dict, model: str | None = None):
 
 
 # ---------------------------------------------------------------------------
+# AI persona evaluators — four discipline reviews that back the "Improve"
+# button's evaluator cards (architecture, mechanical engineering, civil/
+# structural engineering, industrial design). Each persona reads the
+# deterministic Python findings blender/builders/perspectives.py already
+# computed for its discipline (that module is a separate, independently-
+# evolving piece — imported lazily so this module never hard-depends on it)
+# and adds ONE round of professional judgment on top, in the same
+# {severity, kind, message} findings shape "Check connections" already uses
+# elsewhere in the app. A single persona's AI call failing NEVER fails the
+# whole evaluation: that entry just keeps its deterministic findings and
+# carries a short "error" message instead of an AI opinion — the other three
+# personas, and the improve pass itself, are unaffected.
+# ---------------------------------------------------------------------------
+
+#: severities a persona's AI findings may use — anything else is clamped to
+#: "warning" (matches the vocabulary the rest of the app already uses).
+PERSPECTIVE_SEVERITIES = ("error", "warning", "info")
+#: at most this many AI findings kept per persona (on top of its checks findings)
+MAX_PERSPECTIVE_FINDINGS = 5
+
+
+def _persona_prompt(role: str, focus: str) -> str:
+    return (
+        f"{role} You are given the AssetSpec JSON for a parametric "
+        f"site-furnishing asset and the deterministic findings your "
+        f"discipline's checks already produced for it — those are measured "
+        f"facts, do not just repeat them. Add YOUR professional judgment on "
+        f"top, focused on {focus}.\n\n"
+        "Return ONLY this JSON object — no prose, no markdown fences, "
+        "nothing outside it:\n"
+        '{"summary": "<one sentence>", "findings": '
+        '[{"severity": "error"|"warning"|"info", "kind": "<snake_case>", '
+        '"message": "<specific, actionable>"}]}\n'
+        f"At most {MAX_PERSPECTIVE_FINDINGS} findings, most important first."
+    )
+
+
+#: one system prompt per blender/builders/perspectives.py::PERSPECTIVES id.
+PERSONA_SYSTEM = {
+    "architecture": _persona_prompt(
+        "You are a licensed architect reviewing a parametric site-furnishing asset.",
+        "massing and proportion, human factors (scale, clearances, reach/"
+        "sightlines), and how well the piece fits its intended site context",
+    ),
+    "mechanical": _persona_prompt(
+        "You are a mechanical engineer reviewing a parametric site-furnishing asset.",
+        "fasteners and joint types, torque/hardware adequacy, and "
+        "serviceability (could a crew actually assemble, inspect, and "
+        "maintain every connection)",
+    ),
+    "civil": _persona_prompt(
+        "You are a licensed civil/structural engineer reviewing a parametric "
+        "site-furnishing asset.",
+        "load paths to grade, foundation/anchorage adequacy, and US code "
+        "compliance (AASHTO/IBC/ADA/MUTCD as applicable)",
+    ),
+    "design": _persona_prompt(
+        "You are an industrial designer reviewing a parametric site-furnishing asset.",
+        "materials and finishes, color, and detail coherence across the whole piece",
+    ),
+}
+
+
+def _perspective_user(spec: dict, entry: dict) -> str:
+    checks_brief = [
+        {k: f.get(k) for k in ("severity", "kind", "message")}
+        for f in (entry.get("findings") or [])
+    ]
+    return (
+        f"PERSPECTIVE REVIEW — {entry.get('label') or entry.get('id')}.\n"
+        f"AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Metrics from your discipline's checks:\n"
+        f"{json.dumps(entry.get('metrics') or {}, separators=(',', ':'))}\n\n"
+        f"Deterministic findings from your discipline's checks:\n"
+        f"{json.dumps(checks_brief, separators=(',', ':'))}"
+    )
+
+
+def _sanitize_perspective_finding(f):
+    """One AI finding, source-tagged and bounded — or None to drop it.
+    Severity outside the 3 allowed values is clamped to "warning"; kind and
+    message are coerced to (capped) strings."""
+    if not isinstance(f, dict):
+        return None
+    message = str(f.get("message") or "").strip()
+    if not message:
+        return None
+    severity = f.get("severity")
+    if severity not in PERSPECTIVE_SEVERITIES:
+        severity = "warning"
+    kind = str(f.get("kind") or "general").strip()[:60] or "general"
+    return {"severity": severity, "kind": kind, "message": message[:400], "source": "ai"}
+
+
+def _persona_finalize(raw: str) -> tuple:
+    """Parse + sanitize one persona's reply into ``(summary, ai_findings)``.
+    Raises ``ValueError`` with a short human-readable reason on anything
+    malformed; the caller turns that into the entry's "error" field instead
+    of letting it propagate — a persona's tolerant-parse failure must never
+    take down the whole evaluation."""
+    stripped = _strip_fences(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"reply was not valid JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise ValueError("reply was not a JSON object")
+    findings_raw = data.get("findings")
+    if not isinstance(findings_raw, list):
+        raise ValueError('reply did not contain a "findings" array')
+    summary = str(data.get("summary") or "").strip()[:300]
+    findings = []
+    for f in findings_raw:
+        clean = _sanitize_perspective_finding(f)
+        if clean:
+            findings.append(clean)
+        if len(findings) >= MAX_PERSPECTIVE_FINDINGS:
+            break
+    return summary, findings
+
+
+def evaluate_perspectives(spec: dict, model: str | None = None) -> list:
+    """Four named evaluators (architecture, mechanical, civil/structural,
+    industrial design): each combines that discipline's deterministic Python
+    findings (``blender.builders.perspectives.evaluate_all`` — imported
+    lazily, an independently-evolving sibling module) with ONE AI persona
+    review (a single ``complete()`` call per persona; never retried — a
+    persona opinion is advisory, not load-bearing). Returns the 4 envelope
+    entries in ``PERSPECTIVES`` order, each
+    ``{id, label, icon, summary, findings, error}`` — "findings" is that
+    persona's checks findings (source "checks") followed by its AI findings
+    (source "ai"). A persona's AI call failing never fails the whole
+    evaluation: that entry keeps its checks findings, an empty AI
+    contribution, summary "", and a short "error" message instead."""
+    from blender.builders.perspectives import evaluate_all
+
+    out = []
+    for entry in evaluate_all(spec):
+        pid = entry.get("id")
+        checks_findings = [dict(f, source="checks") for f in (entry.get("findings") or [])]
+        system = PERSONA_SYSTEM.get(pid)
+        summary, ai_findings, error = "", [], None
+        if system is None:
+            error = f"no persona prompt registered for {pid!r}"
+        else:
+            try:
+                raw = complete(system, _perspective_user(spec, entry), model=model,
+                               temperature=0.3, max_tokens=800)
+                summary, ai_findings = _persona_finalize(raw)
+            except (LLMError, ValueError) as exc:
+                error = str(exc)[:300]
+        out.append({
+            "id": pid,
+            "label": entry.get("label"),
+            "icon": entry.get("icon"),
+            "summary": summary,
+            "findings": checks_findings + ai_findings,
+            "error": error,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # AI spec improvement — "here is my creation and everything the Python
 # checks flagged, return a better one."
 #
 # Composes the SAME deterministic checks the rest of the app already runs
 # (the connection auditor, the buildability contact-graph check, and the
 # US-code validator) into one flat findings list, hands the spec AND those
-# findings to the AI with an instruction to fix every one of them and
-# modestly improve realism, then routes the reply through the ordinary
-# generation pipeline (_run/_stream_pipeline) so the result is
-# schema/build/buildability checked exactly like every other AI-produced
-# spec. The findings that were fed in ride along in the result so the UI can
+# findings (plus the four persona evaluations above) to the AI with an
+# instruction to fix every one of them and modestly improve realism, then
+# routes the reply through the ordinary generation pipeline
+# (_run/_stream_pipeline) so the result is schema/build/buildability checked
+# exactly like every other AI-produced spec. The findings and the four
+# evaluator cards that were fed in ride along in the result so the UI can
 # show what was fixed.
 # ---------------------------------------------------------------------------
 
@@ -1056,11 +1220,43 @@ def _gather_findings(spec: dict) -> list:
     return findings
 
 
-def _improve_user(spec: dict, findings: list) -> str:
+def _perspectives_block(perspectives: list | None) -> str:
+    """Compact JSON of the four evaluator cards plus the directive to
+    address their error/warning findings, or "" when there are none (a
+    persona-evaluation failure upstream still yields entries, so this is
+    normally always populated)."""
+    if not perspectives:
+        return ""
+    brief = [
+        {
+            "id": p.get("id"),
+            "label": p.get("label"),
+            "summary": p.get("summary"),
+            "findings": [
+                {k: f.get(k) for k in ("severity", "kind", "message", "source")}
+                for f in (p.get("findings") or [])
+            ],
+        }
+        for p in perspectives
+    ]
+    return (
+        "\n\nFour discipline experts each reviewed this asset — architecture, "
+        "mechanical engineering, civil/structural engineering, and industrial "
+        "design — combining deterministic checks with a persona's "
+        "professional judgment:\n"
+        f"{json.dumps(brief, separators=(',', ':'))}\n\n"
+        "Address every error- and warning-severity finding from these four "
+        "evaluations where geometrically sensible, in addition to the "
+        "deterministic checks above."
+    )
+
+
+def _improve_user(spec: dict, findings: list, perspectives: list | None = None) -> str:
     return (
         f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
         f"The app's deterministic checks found these issues in it — FIX EVERY "
-        f"ONE:\n{json.dumps(findings, separators=(',', ':'))}\n\n"
+        f"ONE:\n{json.dumps(findings, separators=(',', ':'))}"
+        f"{_perspectives_block(perspectives)}\n\n"
         "Fix every finding listed above. Keep existing parameter, toggle, and "
         "material ids and their current values stable except where a finding "
         "requires a change. You may add missing \"connections\" declarations, "
@@ -1075,29 +1271,38 @@ def _improve_user(spec: dict, findings: list) -> str:
 
 
 def improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None) -> dict:
-    """Current spec + the deterministic Python-side findings → an improved,
-    re-validated spec that fixes every finding. Rides the same classified
-    retry engine as every other AI-produced spec (``_run``); the findings
-    that were fed to the AI ride along in the result."""
+    """Current spec + the deterministic Python-side findings + the four
+    persona evaluations → an improved, re-validated spec that fixes every
+    finding. Rides the same classified retry engine as every other
+    AI-produced spec (``_run``); the findings and the four evaluator cards
+    that were fed to the AI ride along in the result as "findings" and
+    "perspectives"."""
     findings = _gather_findings(spec)
-    result = _run(_system_prompt(code_mode), _improve_user(spec, findings),
+    perspectives = evaluate_perspectives(spec, model=model)
+    result = _run(_system_prompt(code_mode),
+                 _improve_user(spec, findings, perspectives),
                  code_mode, model=model)
     result["findings"] = findings
+    result["perspectives"] = perspectives
     return result
 
 
 def stream_improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None):
     """Streaming twin of :func:`improve_spec` — the result envelope carries
-    "findings" the same way."""
+    "findings" and "perspectives" the same way."""
     findings = _gather_findings(spec)
+    perspectives = evaluate_perspectives(spec, model=model)
 
     def finalize(raw: str, lenient: bool = False) -> dict:
         result = _postprocess(raw, code_mode, lenient_buildability=lenient)
         result["findings"] = findings
+        result["perspectives"] = perspectives
         return result
 
     return _stream_pipeline(
-        _system_prompt(code_mode), _improve_user(spec, findings), finalize, model=model
+        _system_prompt(code_mode),
+        _improve_user(spec, findings, perspectives),
+        finalize, model=model,
     )
 
 
