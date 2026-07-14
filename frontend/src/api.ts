@@ -274,17 +274,89 @@ export interface Finding {
   message: string;
 }
 
+/** One finding inside a perspective card — same severity/kind/message shape
+ * as `Finding` plus which pass surfaced it: the deterministic Python checks
+ * for that discipline, or that persona's own AI read of the asset. */
+export interface PerspectiveFinding {
+  severity: string;
+  kind: string;
+  message: string;
+  source: "checks" | "ai";
+}
+
+/** One professional-evaluator card returned by /improve-spec[-stream]:
+ * a discipline (architecture/mechanical/civil/design) with what its checks
+ * and its AI persona found on the pre-improvement asset. `summary` is ""
+ * and `error` is set when that persona's AI call failed — the other
+ * perspectives are unaffected. */
+export interface Perspective {
+  id: "architecture" | "mechanical" | "civil" | "design";
+  label: string;
+  icon: string;
+  summary: string;
+  findings: PerspectiveFinding[];
+  error: string | null;
+}
+
+const PERSPECTIVE_IDS = new Set(["architecture", "mechanical", "civil", "design"]);
+
+/** Tolerant parse of the optional `perspectives` envelope key: an older
+ * backend omits it entirely, and any malformed shape must degrade to
+ * `undefined` rather than throw — the flat findings list below still
+ * renders either way. */
+function parsePerspectives(raw: unknown): Perspective[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Perspective[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return undefined;
+    const p = item as Record<string, unknown>;
+    if (typeof p.id !== "string" || !PERSPECTIVE_IDS.has(p.id)) return undefined;
+    if (typeof p.label !== "string") return undefined;
+    if (typeof p.icon !== "string") return undefined;
+    if (typeof p.summary !== "string") return undefined;
+    if (p.error !== null && typeof p.error !== "string") return undefined;
+    if (!Array.isArray(p.findings)) return undefined;
+    const findings: PerspectiveFinding[] = [];
+    for (const f of p.findings) {
+      if (!f || typeof f !== "object") return undefined;
+      const rec = f as Record<string, unknown>;
+      if (typeof rec.severity !== "string") return undefined;
+      if (typeof rec.kind !== "string") return undefined;
+      if (typeof rec.message !== "string") return undefined;
+      if (rec.source !== "checks" && rec.source !== "ai") return undefined;
+      findings.push({
+        severity: rec.severity,
+        kind: rec.kind,
+        message: rec.message,
+        source: rec.source,
+      });
+    }
+    out.push({
+      id: p.id as Perspective["id"],
+      label: p.label,
+      icon: p.icon,
+      summary: p.summary,
+      findings,
+      error: (p.error as string | null) ?? null,
+    });
+  }
+  return out;
+}
+
 /** AI-improved spec plus the findings the Python checks flagged beforehand.
- * `findings` may be empty when the asset already passed every check. */
+ * `findings` may be empty when the asset already passed every check.
+ * `perspectives` is absent on an older backend that doesn't return it. */
 export interface ImproveResult {
   spec: AssetSpec;
   findings: Finding[];
+  perspectives?: Perspective[];
 }
 
 /** Runs the app's deterministic checks against the current spec, then asks
  * the AI to improve the asset in one pass. The backend returns the same
  * result envelope as /refine-spec plus `findings` — what the checks found
- * before the AI pass ran (may be empty). */
+ * before the AI pass ran (may be empty) — and, optionally, `perspectives`:
+ * four professional-evaluator cards over the same pre-improvement asset. */
 export async function improveSpecStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,
@@ -297,7 +369,8 @@ export async function improveSpecStream(
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
-  return { spec: result.spec as AssetSpec, findings };
+  const perspectives = parsePerspectives(result.perspectives);
+  return { spec: result.spec as AssetSpec, findings, perspectives };
 }
 
 export async function installGuideStream(
