@@ -265,6 +265,41 @@ export async function reviewConnectionsStream(
   return result as unknown as AuditReport;
 }
 
+/** One deterministic-check finding surfaced by /improve-spec[-stream] before
+ * the AI improves the asset — informational only (no fix ops; the backend
+ * already folded the fix into the returned spec). */
+export interface Finding {
+  severity: string;
+  kind: string;
+  message: string;
+}
+
+/** AI-improved spec plus the findings the Python checks flagged beforehand.
+ * `findings` may be empty when the asset already passed every check. */
+export interface ImproveResult {
+  spec: AssetSpec;
+  findings: Finding[];
+}
+
+/** Runs the app's deterministic checks against the current spec, then asks
+ * the AI to improve the asset in one pass. The backend returns the same
+ * result envelope as /refine-spec plus `findings` — what the checks found
+ * before the AI pass ran (may be empty). */
+export async function improveSpecStream(
+  spec: AssetSpec,
+  onChunk: (text: string) => void,
+  model: DeepseekModel | "" = "",
+): Promise<ImproveResult> {
+  const result = await streamPost(
+    "/improve-spec-stream",
+    { spec, code_mode: spec.code_mode ?? "strict", model },
+    onChunk,
+  );
+  if (!result?.spec) throw new Error("Backend returned no spec");
+  const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
+  return { spec: result.spec as AssetSpec, findings };
+}
+
 export async function installGuideStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,

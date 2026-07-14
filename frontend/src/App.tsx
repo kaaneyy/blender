@@ -8,7 +8,7 @@ import defaultSpecJson from "../../examples/street_light.json";
 import type { AssetSpec, Primitive, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
 import { applyAuditFixes, auditConnections, computePrimitives } from "./builders";
 import type { AuditFinding, AuditReport } from "./builders";
-import { reviewConnectionsStream, type DeepseekModel } from "./api";
+import { improveSpecStream, reviewConnectionsStream, type DeepseekModel, type Finding } from "./api";
 import { checkSpec } from "./standards";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
@@ -19,6 +19,10 @@ import type { Selection } from "./components/AssetMesh";
 import "./styles.css";
 
 const defaultSpec = defaultSpecJson as unknown as AssetSpec;
+
+/** Severity → icon for the improve findings list (same vocabulary as
+ * CheckPanel's SEV_ICON; "info"/other severities fall back to ℹ️). */
+const IMPROVE_SEV_ICON: Record<string, string> = { error: "⛔", warning: "⚠️" };
 
 type Theme = "light" | "dark";
 
@@ -66,6 +70,15 @@ export default function App() {
   const [excludedFixes, setExcludedFixes] = useState<Set<string>>(new Set());
   const [previewFixes, setPreviewFixes] = useState(false);
   const [hoverFinding, setHoverFinding] = useState<AuditFinding | null>(null);
+
+  // ── improve: one click runs the app's checks + an AI pass on the current
+  // asset and adopts the result. Independent of the check panel above — its
+  // findings are informational (the fix is already folded into the spec the
+  // backend returns), so there is no apply/preview step. ──
+  const [improveBusy, setImproveBusy] = useState(false);
+  const [improveStream, setImproveStream] = useState("");
+  const [improveError, setImproveError] = useState<string | null>(null);
+  const [improveFindings, setImproveFindings] = useState<Finding[] | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -129,6 +142,7 @@ export default function App() {
   const startCheck = () => {
     showHardware();
     resetCheckSelection();
+    closeImprove(); // a finished improve panel shouldn't keep this one hidden
     setCheckMode("local");
   };
 
@@ -139,6 +153,7 @@ export default function App() {
     if (aiBusy) return;
     showHardware();
     resetCheckSelection();
+    closeImprove(); // a finished improve panel shouldn't keep this one hidden
     setAiReport(null);
     setAiError(null);
     setAiStream("");
@@ -156,6 +171,37 @@ export default function App() {
     setAiReport(null);
     setAiError(null);
     resetCheckSelection();
+  };
+
+  /** "✨ Improve": run the app's deterministic checks + an AI pass on the
+   * current asset in one shot, then adopt the result through the same
+   * validated path as every other AI spec swap. The findings the checks
+   * flagged beforehand are shown for context — the fix is already folded
+   * into the adopted spec, so there's nothing further to apply. */
+  const startImprove = () => {
+    if (aiBusy || improveBusy) return;
+    showHardware();
+    setImproveError(null);
+    setImproveFindings(null);
+    setImproveStream("");
+    setImproveBusy(true);
+    const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
+    improveSpecStream(spec, setImproveStream, model)
+      .then((result) => {
+        const err = adoptSpec(result.spec);
+        if (err) {
+          setImproveError(err);
+          return;
+        }
+        setImproveFindings(result.findings);
+      })
+      .catch((e) => setImproveError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setImproveBusy(false));
+  };
+
+  const closeImprove = () => {
+    setImproveError(null);
+    setImproveFindings(null);
   };
 
   /** The confirmed apply — the ONLY place check fixes reach the spec. The
@@ -446,6 +492,63 @@ export default function App() {
               </>
             )}
           </div>
+        ) : improveBusy || improveError || improveFindings ? (
+          <div className="panel check-panel">
+            <div className="panel__header">
+              <h3>✨ Improve</h3>
+              <button className="close" onClick={closeImprove} title="Close the improve panel">
+                ✕
+              </button>
+            </div>
+            {improveBusy ? (
+              <>
+                <div className="stream-card" aria-live="off">
+                  <div className="stream-card__title">
+                    <span className="stream-card__dot" /> Checking and improving the asset…
+                  </div>
+                  <div className="stream-card__text">{improveStream.slice(-700) || "…"}</div>
+                </div>
+                <p className="hint">
+                  Runs the app's deterministic checks against the current
+                  asset, then asks the AI to improve it in one pass — the
+                  result replaces the current asset once it builds cleanly.
+                </p>
+              </>
+            ) : improveError ? (
+              <>
+                <div className="violation" role="alert">
+                  <p>{improveError}</p>
+                </div>
+                <button onClick={startImprove}>Try again</button>
+              </>
+            ) : (
+              <>
+                <div
+                  className={`code-status ${
+                    improveFindings!.length === 0 ? "code-status--ok" : "code-status--bad"
+                  }`}
+                >
+                  {improveFindings!.length === 0
+                    ? "0 findings — asset already passes all checks"
+                    : `${improveFindings!.length} finding${
+                        improveFindings!.length === 1 ? "" : "s"
+                      } from the pre-improvement checks`}
+                </div>
+                <p className="hint">
+                  The asset shown now is the AI-improved version — the checks
+                  below describe what it found before improving.
+                </p>
+                {improveFindings!.map((f, i) => (
+                  <div key={i} className={`finding finding--${f.severity}`}>
+                    <span className="finding__title">
+                      {IMPROVE_SEV_ICON[f.severity] ?? "ℹ️"} {f.kind.replace(/_/g, " ")}
+                    </span>
+                    <p className="finding__detail">{f.message}</p>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         ) : checkMode && report ? (
           <CheckPanel
             report={report}
@@ -491,6 +594,8 @@ export default function App() {
             onTour={startTour}
             onCheck={startCheck}
             onCheckAI={startAiCheck}
+            onImprove={startImprove}
+            improveDisabled={aiBusy || improveBusy}
             locked={locked}
             onLock={toggleLock}
             onReset={() => {
