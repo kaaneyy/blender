@@ -333,6 +333,73 @@ class TestDuplicatesGetHardware:
         assert dup_hw2 >= base_hw  # duplicate participates in joint detection
 
 
+class TestDuplicateInheritsDeclaredConnections:
+    """A duplicate (edits.duplicates) must be matched against the spec's
+    `connections` declarations as if it were its source component — the
+    declaration is written against the source's name, which a copy never
+    literally matches, so without resolution a copy silently falls back to
+    geometric inference instead of the fabrication intent the designer
+    declared for the part it was cloned from."""
+
+    def test_duplicate_inherits_declared_type_from_source(self):
+        # park_bench.json declares {"a": "seat", "b": "frame", "type":
+        # "carriage_bolt"} — but seat (wood) on frame (cast_iron) is also
+        # what geometric inference would pick on its own for a vertical
+        # joint, so a coincidental match wouldn't prove resolution is doing
+        # anything. Override the declared type to through_bolt instead:
+        # inference would still infer carriage_bolt for this wood-on-metal
+        # vertical joint, so only a real declaration match produces
+        # through_bolt.
+        spec = load("park_bench.json")
+        spec["toggles"].append({"id": "connection_hardware", "label": "CH", "value": True})
+        spec["connections"][0]["type"] = "through_bolt"
+        spec["edits"] = {"duplicates": [{"source": "seat", "name": "seat copy"}]}
+        # offset the copy sideways (not just vertically) so its contact
+        # region lands in a different dedupe grid cell than the original
+        # seat's joints, while still overlapping the frame rail
+        spec["offsets"] = {"seat copy": [0.1, 0.0, 0.0]}
+        prims = compute_primitives(spec)
+        joints = [p.meta["joint"] for p in prims if p.component == "hardware" and p.meta]
+        copy_frame_joints = [
+            j for j in joints if {"seat copy", "frame"} == {j["a"], j["b"]}
+        ]
+        assert copy_frame_joints, "seat copy should form joints with frame"
+        assert all(j["type"] == "through_bolt" for j in copy_frame_joints), (
+            "seat copy should inherit seat's declared through_bolt override, "
+            "not fall back to carriage_bolt inference"
+        )
+        # the meta record keeps the copy's REAL component name, not the
+        # resolved source name — resolution affects matching only
+        assert all("seat copy" in (j["a"], j["b"]) for j in copy_frame_joints)
+
+    def test_copy_touching_its_own_source_falls_back_to_inference(self):
+        # a declaration that (incorrectly) matched a copy against its own
+        # source would let a self-referential declaration fire between the
+        # two — a resolved pair that maps to (X, X) must match nothing.
+        spec = load("park_bench.json")
+        spec["toggles"].append({"id": "connection_hardware", "label": "CH", "value": True})
+        spec["connections"].append({"a": "seat", "b": "seat", "type": "lag_screw"})
+        spec["edits"] = {"duplicates": [{"source": "seat", "name": "seat copy"}]}
+        # small vertical offset: overlaps the original seat directly (both
+        # wood -> soft/soft, no declared match -> inference skips it, same
+        # as today's behavior for two abutting non-metal parts)
+        spec["offsets"] = {"seat copy": [0.0, 0.0, 0.01]}
+        prims = compute_primitives(spec)
+        joints = [p.meta["joint"] for p in prims if p.component == "hardware" and p.meta]
+        assert not any({"seat", "seat copy"} == {j["a"], j["b"]} for j in joints)
+
+    def test_duplicate_of_ground_none_declaration_gets_no_anchor(self):
+        prims_spec = spec_of(
+            [POLE], connections=[{"a": "pole", "b": "ground", "type": "none"}]
+        )
+        prims_spec["edits"] = {"duplicates": [{"source": "pole", "name": "pole copy"}]}
+        # shift sideways only, so the copy still lands at grade like its
+        # source and would otherwise qualify for an auto anchor base
+        prims_spec["offsets"] = {"pole copy": [2.0, 0.0, 0.0]}
+        prims = compute_primitives(prims_spec)
+        assert not any("flange" in n for n in hw_names(prims))
+
+
 class TestStableJointIds:
     def test_anchor_base_is_joint1(self):
         prims = compute_primitives(spec_of([POLE, dict(CROSS_ARM)]))

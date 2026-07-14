@@ -384,29 +384,77 @@ def _spec_connections(spec) -> List[dict]:
     return out
 
 
-def _side_matches(ref: str, p: Primitive) -> bool:
-    return ref == p.component or ref == f"{p.component}/{p.name}"
+def _dup_resolution_map(spec) -> Dict[str, str]:
+    """Map a duplicated component's name to its ultimate source component,
+    from ``spec.edits.duplicates`` (``[{"source": ..., "name": ...}]``),
+    resolved transitively — a duplicate of a duplicate resolves all the way
+    to the root source. Declared-connection matching resolves each side's
+    component through this map first, so a copy inherits the joint intent
+    declared for the component it was cloned from (``apply_structure`` runs
+    duplicates before hardware for exactly this reason). Cycles (which
+    should never occur from normal edits, but a malformed spec could produce
+    one) are broken defensively: a name caught in a cycle resolves to
+    itself rather than recursing forever."""
+    if not isinstance(spec, dict):
+        return {}
+    edits = spec.get("edits") or {}
+    raw: Dict[str, str] = {}
+    for dup in edits.get("duplicates") or []:
+        if isinstance(dup, dict) and isinstance(dup.get("name"), str) and isinstance(dup.get("source"), str):
+            raw[dup["name"]] = dup["source"]
+
+    resolved: Dict[str, str] = {}
+
+    def resolve(name: str, seen: set) -> str:
+        if name in resolved:
+            return resolved[name]
+        if name not in raw or name in seen:
+            return name
+        seen.add(name)
+        return resolve(raw[name], seen)
+
+    for name in raw:
+        resolved[name] = resolve(name, set())
+    return resolved
 
 
-def _find_declaration(decls: List[dict], pa: Primitive, pb: Primitive) -> Optional[dict]:
+def _resolve_component(name: str, dup_map: Dict[str, str]) -> str:
+    return dup_map.get(name, name)
+
+
+def _side_matches(ref: str, p: Primitive, dup_map: Dict[str, str]) -> bool:
+    comp = _resolve_component(p.component, dup_map)
+    return ref == comp or ref == f"{comp}/{p.name}"
+
+
+def _find_declaration(
+    decls: List[dict], pa: Primitive, pb: Primitive, dup_map: Dict[str, str]
+) -> Optional[dict]:
     """First declaration whose {a, b} matches this prim pair (unordered;
-    component or component/part paths)."""
+    component or component/part paths), matching through duplicate
+    resolution so a copy inherits its source's declared intent. A pair that
+    resolves to the same component on both sides (a copy touching its own
+    source) declares nothing new — it falls through to inference."""
+    if _resolve_component(pa.component, dup_map) == _resolve_component(pb.component, dup_map):
+        return None
     for d in decls:
         a, b = d["a"], d["b"]
         if b == "ground":
             continue  # ground declarations are handled by the anchor pass
-        if (_side_matches(a, pa) and _side_matches(b, pb)) or (
-            _side_matches(a, pb) and _side_matches(b, pa)
+        if (_side_matches(a, pa, dup_map) and _side_matches(b, pb, dup_map)) or (
+            _side_matches(a, pb, dup_map) and _side_matches(b, pa, dup_map)
         ):
             return d
     return None
 
 
-def _ground_declaration(decls: List[dict], p: Primitive) -> Optional[dict]:
+def _ground_declaration(
+    decls: List[dict], p: Primitive, dup_map: Dict[str, str]
+) -> Optional[dict]:
     for d in decls:
-        if d["b"] == "ground" and _side_matches(d["a"], p):
+        if d["b"] == "ground" and _side_matches(d["a"], p, dup_map):
             return d
-        if d["a"] == "ground" and _side_matches(d["b"], p):
+        if d["a"] == "ground" and _side_matches(d["b"], p, dup_map):
             return d
     return None
 
@@ -537,6 +585,7 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
     type. Joints between two non-metal members with no declaration get no
     bolts — real furniture uses concealed joinery."""
     decls = _spec_connections(spec)
+    dup_map = _dup_resolution_map(spec)
     boxes = [
         (p, *_aabb(p))
         for p in prims
@@ -559,7 +608,7 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             if any(hi[k] <= lo[k] for k in range(3)):
                 continue  # parts don't actually touch
 
-            decl = _find_declaration(decls, pa, pb)
+            decl = _find_declaration(decls, pa, pb, dup_map)
             if decl is not None and decl["type"] == "none":
                 continue  # explicitly no visible hardware
             if decl is None and _is_soft(pa.material_slot, spec) and _is_soft(pb.material_slot, spec):
@@ -600,7 +649,7 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             continue
         if c[2] - h[2] > 0.01:  # bottom must land at grade
             continue
-        gdecl = _ground_declaration(decls, p)
+        gdecl = _ground_declaration(decls, p, dup_map)
         if gdecl is not None and gdecl["type"] == "none":
             continue
         forced = gdecl is not None and gdecl["type"] == "anchor_base"
