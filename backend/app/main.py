@@ -71,6 +71,12 @@ class RefineRequest(BaseModel):
     model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
+class ImproveRequest(BaseModel):
+    spec: dict
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+
+
 class FocusRequest(BaseModel):
     spec: dict
     area: str = Field(min_length=1, max_length=2000)
@@ -187,6 +193,23 @@ def refine(body: RefineRequest) -> dict:
         )
 
 
+@router.post("/improve-spec")
+def improve(body: ImproveRequest) -> dict:
+    """Current spec + the deterministic Python-side checks (connection
+    audit, buildability, US-code validation) → an AI-improved,
+    re-validated spec that fixes every finding. The findings fed to the AI
+    ride along in the response as "findings"."""
+    try:
+        return spec_ai.improve_spec(body.spec, body.code_mode, model=body.model)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
 @router.post("/focus-spec")
 def focus(body: FocusRequest) -> dict:
     """Deep-detail ONE area of the current spec, leaving the rest untouched."""
@@ -289,6 +312,13 @@ def generate_stream(body: GenerateRequest) -> StreamingResponse:
 def refine_stream(body: RefineRequest) -> StreamingResponse:
     return _stream(
         spec_ai.stream_refine_spec(body.spec, body.message, body.code_mode, model=body.model)
+    )
+
+
+@router.post("/improve-spec-stream")
+def improve_stream(body: ImproveRequest) -> StreamingResponse:
+    return _stream(
+        spec_ai.stream_improve_spec(body.spec, body.code_mode, model=body.model)
     )
 
 

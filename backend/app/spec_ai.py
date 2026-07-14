@@ -995,6 +995,113 @@ def stream_review_connections(spec: dict, model: str | None = None):
 
 
 # ---------------------------------------------------------------------------
+# AI spec improvement — "here is my creation and everything the Python
+# checks flagged, return a better one."
+#
+# Composes the SAME deterministic checks the rest of the app already runs
+# (the connection auditor, the buildability contact-graph check, and the
+# US-code validator) into one flat findings list, hands the spec AND those
+# findings to the AI with an instruction to fix every one of them and
+# modestly improve realism, then routes the reply through the ordinary
+# generation pipeline (_run/_stream_pipeline) so the result is
+# schema/build/buildability checked exactly like every other AI-produced
+# spec. The findings that were fed in ride along in the result so the UI can
+# show what was fixed.
+# ---------------------------------------------------------------------------
+
+def _gather_findings(spec: dict) -> list:
+    """Deterministic Python-side checks — connection audit
+    (``audit_connections``), buildability contact-graph
+    (``check_buildability``), and US-code validation (``validate_spec``) —
+    normalized into a flat list of ``{severity, kind, message, ...}`` dicts
+    ready to embed in the AI prompt. A spec broken badly enough that it
+    can't even ``compute_primitives`` still yields exactly ONE
+    ``build_failure`` finding instead of crashing, so the AI has something
+    concrete to repair."""
+    from blender.builders.audit import audit_connections
+
+    findings: list = []
+    try:
+        det = audit_connections(spec)
+        for f in det.get("findings", []):
+            findings.append({
+                "severity": f.get("severity", "warning"),
+                "kind": f.get("kind", "audit"),
+                "message": f.get("detail") or f.get("title") or "",
+                "component": f.get("component"),
+            })
+
+        prims = compute_primitives(spec)
+        for f in check_buildability(prims, spec):
+            findings.append({
+                "severity": f.get("severity", "error"),
+                "kind": f.get("limit_type", "buildability"),
+                "message": f.get("message", ""),
+            })
+
+        result = validate_spec(spec)
+        for v in result.violations:
+            d = v.to_dict()
+            findings.append({
+                "severity": "warning",
+                "kind": f"code_{d['limit_type']}",
+                "message": d["message"],
+                "parameter_id": d["parameter_id"],
+            })
+    except Exception as exc:
+        # a spec this broken can't be checked further — hand the AI the one
+        # fact it needs (what broke) instead of a partial/misleading list
+        return [{"severity": "error", "kind": "build_failure", "message": str(exc)}]
+
+    return findings
+
+
+def _improve_user(spec: dict, findings: list) -> str:
+    return (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"The app's deterministic checks found these issues in it — FIX EVERY "
+        f"ONE:\n{json.dumps(findings, separators=(',', ':'))}\n\n"
+        "Fix every finding listed above. Keep existing parameter, toggle, and "
+        "material ids and their current values stable except where a finding "
+        "requires a change. You may add missing \"connections\" declarations, "
+        "adjust primitive dimensions/positions, and add small missing "
+        "structural members (rails, gussets, collars, base plates) so every "
+        "part has a real load path to the ground. Do NOT rename existing "
+        "components. Beyond fixing the findings, make modest realism "
+        "improvements (better proportions, small missing details) without "
+        "changing the asset's overall design intent or asset_type. Return "
+        "the FULL updated AssetSpec JSON."
+    )
+
+
+def improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None) -> dict:
+    """Current spec + the deterministic Python-side findings → an improved,
+    re-validated spec that fixes every finding. Rides the same classified
+    retry engine as every other AI-produced spec (``_run``); the findings
+    that were fed to the AI ride along in the result."""
+    findings = _gather_findings(spec)
+    result = _run(_system_prompt(code_mode), _improve_user(spec, findings),
+                 code_mode, model=model)
+    result["findings"] = findings
+    return result
+
+
+def stream_improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None):
+    """Streaming twin of :func:`improve_spec` — the result envelope carries
+    "findings" the same way."""
+    findings = _gather_findings(spec)
+
+    def finalize(raw: str, lenient: bool = False) -> dict:
+        result = _postprocess(raw, code_mode, lenient_buildability=lenient)
+        result["findings"] = findings
+        return result
+
+    return _stream_pipeline(
+        _system_prompt(code_mode), _improve_user(spec, findings), finalize, model=model
+    )
+
+
+# ---------------------------------------------------------------------------
 # Installation guide
 # ---------------------------------------------------------------------------
 
