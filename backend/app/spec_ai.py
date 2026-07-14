@@ -156,9 +156,60 @@ EXAMPLE — custom primitives (the "anything" path):
 
 
 # ---------------------------------------------------------------------------
+# Persona identity — the SAME four discipline personas that back the
+# Improve button's evaluator cards (blender/builders/perspectives.py ::
+# PERSPECTIVES) now front-load the CREATION flow too: each one asks a
+# clarifying question, then all four synthesize the design brief together.
+# perspectives.py is an independently-evolving sibling module (like
+# evaluate_perspectives already treats it below) — imported lazily, with a
+# hardcoded fallback so a change over there can never break generation here.
+# ---------------------------------------------------------------------------
+
+#: canonical persona order — clarify questions, panel takes, and the
+#: envelope's "panel"/"persona" entries always land in this order.
+PERSONA_ORDER = ("architecture", "mechanical", "civil", "design")
+
+#: hardcoded fallback if blender.builders.perspectives ever fails to import
+#: or drops an id (kept in sync with PERSPECTIVES there by convention, not
+#: by import, so this module never hard-depends on that one).
+_PERSONA_FALLBACK = {
+    "architecture": {"id": "architecture", "label": "Architecture", "icon": "\U0001f3db️"},
+    "mechanical": {"id": "mechanical", "label": "Mechanical engineering", "icon": "\U0001f529"},
+    "civil": {"id": "civil", "label": "Civil / structural engineering", "icon": "\U0001f3d7️"},
+    "design": {"id": "design", "label": "Industrial design", "icon": "\U0001f3a8"},
+}
+
+
+def _personas() -> tuple:
+    """The four persona identities (id/label/icon) in ``PERSONA_ORDER``, read
+    from :mod:`blender.builders.perspectives` — imported lazily so this
+    module never hard-depends on that independently-evolving sibling — with
+    the hardcoded fallback above if the import fails or is missing an id."""
+    try:
+        from blender.builders.perspectives import PERSPECTIVES
+
+        by_id = {p["id"]: p for p in PERSPECTIVES if isinstance(p, dict) and p.get("id")}
+        if all(pid in by_id for pid in PERSONA_ORDER):
+            return tuple(
+                {"id": pid, "label": by_id[pid].get("label", pid.title()),
+                 "icon": by_id[pid].get("icon", "")}
+                for pid in PERSONA_ORDER
+            )
+    except Exception:
+        pass
+    return tuple(_PERSONA_FALLBACK[pid] for pid in PERSONA_ORDER)
+
+
+# ---------------------------------------------------------------------------
 # Prompt refiner — turns a vague request into a precise design brief before
 # the spec generator sees it ("a lamp" → asset type, style, dimensions with
 # units, materials, options, connections).
+#
+# ``enhance_prompt`` is the original single-voice pass, kept working for
+# backward compatibility; ``generate_spec``/``stream_generate_spec`` no
+# longer call it — they use the four-persona DESIGN PANEL pass below, which
+# synthesizes the same kind of brief but through all four personas at once
+# (see "Design panel" section).
 # ---------------------------------------------------------------------------
 
 ENHANCE_SYSTEM = (
@@ -197,33 +248,190 @@ def enhance_prompt(prompt: str, model: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Clarifying questions — surfacing the REAL request behind a basic one.
+# Design panel — the four personas write the brief TOGETHER.
 #
-# "A bench" hides who sits on it, where it lives, and what it should look
-# like. Before generating, the UI asks the backend for EXACTLY 3 clarifying
-# questions, each with EXACTLY 3 concrete AI-written answers; the user picks
-# from a dropdown or types their own (the blank space), and the answered
-# pairs ride into generation via ``clarifications`` on /generate-spec[-stream]
-# — folded into the request BEFORE the design-brief pass so every downstream
-# stage honors them. Answering is always optional: the UI can skip straight
-# to generation, and a failed clarify call must never block generating.
+# Same idea as ``enhance_prompt`` (vague request in, precise brief out) but
+# ONE AI call now plays all four Improve-flow personas at once: each one
+# names what they specifically bring, and the reply synthesizes their takes
+# into a single buildable brief. ``generate_spec``/``stream_generate_spec``
+# use this instead of ``enhance_prompt`` — the brief AND the four takes ride
+# into the spec-generation prompt so the panel's judgment actually steers
+# the design, not just an unread aside. No extra AI call versus today: this
+# is still exactly one pass.
 # ---------------------------------------------------------------------------
 
-#: the fixed shape of a clarify round: 3 questions x 3 offered answers
-CLARIFY_QUESTIONS = 3
+def _panel_system() -> str:
+    personas = _personas()
+    roster = "\n".join(f'- {p["label"]} ({p["id"]})' for p in personas)
+    ids = ", ".join(f'"{p["id"]}"' for p in personas)
+    return (
+        "You are the four-person design panel for a parametric 3D asset "
+        "generator (street furniture, lighting, signage, props) — the same "
+        "four professionals who later review the finished asset:\n"
+        f"{roster}\n\n"
+        "Read the user's request (any answered clarifying questions are "
+        "folded into it already — honor every one) and, THINKING AS ALL "
+        "FOUR TOGETHER:\n\n"
+        "1. Write ONE precise, buildable design brief that SYNTHESIZES all "
+        "four perspectives into a single coherent plan. Name the asset "
+        "type; a coherent style; overall dimensions WITH units, choosing "
+        "sensible values within US code limits where they apply (AASHTO/"
+        "MUTCD/ADA/IBC); per-part materials and finishes; 2-4 optional "
+        "features worth exposing as toggles; and how the parts connect and "
+        "mount to the ground (base plate, rails, clamps). Keep EVERY "
+        "explicit detail the user gave — only add what is missing. If the "
+        "request names several parts or features ('a car roof with slanted "
+        "solar panels'), the brief MUST explicitly cover every one of "
+        "them, with tilt/slope angles in degrees for slanted or curved "
+        "elements and how each part mounts to the others — name the "
+        "fabrication connection per joint (anchor base at grade, band "
+        "clamp on the pole, slip-fit tenon, weld, carriage bolts into "
+        "timber, through-bolts). Plain prose, at most 150 words, no JSON, "
+        "no lists, no preamble.\n\n"
+        "2. Give each panelist their OWN take: 1-2 sentences on what THEY "
+        "specifically bring to this design and how the brief addresses "
+        "it — architecture on who uses it, where it lives, and site "
+        "context; mechanical on assembly, serviceability, and moving "
+        "parts; civil on ground conditions, loads, and code/permit "
+        "context; design on style, materials, mood, and the standout "
+        "feature.\n\n"
+        "Answer ONLY with this JSON object — no prose, no markdown fences:\n"
+        '{"brief": "<the synthesized brief, plain prose>", "panel": '
+        '[{"id": "<persona id>", "take": "<1-2 sentences>"}, ...]}\n'
+        f"\"panel\" must have exactly {len(personas)} entries, one per "
+        f"persona id above ({ids}), in that order."
+    )
+
+
+def _sanitize_panel(panel_raw) -> list | None:
+    """The four ``{id, take}`` entries the model wrote, reordered into
+    ``PERSONA_ORDER`` and stamped with each persona's label/icon — or
+    ``None`` if any persona is missing/duplicated/empty. Deliberately
+    strict (unlike the clarify tolerance): a partial panel is not worth
+    surfacing as "the panel", so a bad reply just degrades to no panel at
+    all, same as a provider failure."""
+    if not isinstance(panel_raw, list):
+        return None
+    takes: dict = {}
+    for entry in panel_raw:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("id")
+        take = str(entry.get("take") or "").strip()
+        if pid in PERSONA_ORDER and take and pid not in takes:
+            takes[pid] = take[:400]
+    if len(takes) != len(PERSONA_ORDER):
+        return None
+    return [
+        {"id": p["id"], "label": p["label"], "icon": p["icon"], "take": takes[p["id"]]}
+        for p in _personas()
+    ]
+
+
+def _finalize_panel(raw: str, fallback_prompt: str) -> tuple:
+    """Parse the panel pass's reply into ``(brief, panel)``. Mirrors
+    ``enhance_prompt``'s failure tolerance and extends it: if the reply
+    isn't the expected JSON object (or has no usable "brief"), the raw text
+    becomes a plain brief instead — exactly what ``enhance_prompt`` would
+    have shipped — and "panel" is simply ``None``. A malformed/partial panel
+    degrades the same way without touching the brief."""
+    stripped = _strip_fences(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return (raw.strip() or fallback_prompt), None
+    if not isinstance(data, dict):
+        return (raw.strip() or fallback_prompt), None
+    brief = str(data.get("brief") or "").strip()
+    if not brief:
+        return (raw.strip() or fallback_prompt), None
+    return brief, _sanitize_panel(data.get("panel"))
+
+
+def _design_panel(prompt: str, model: str | None = None) -> tuple:
+    """One AI pass that plays all four Improve-flow personas against the
+    request before generation: ``(brief, panel)`` where ``panel`` is the 4
+    ordered ``{id, label, icon, take}`` entries, or ``None`` when the pass
+    failed or degraded. Never retried — like ``enhance_prompt``, this is an
+    enhancement, not a requirement, so a provider error just proceeds from
+    the raw prompt."""
+    try:
+        raw = complete(_panel_system(), _enhance_user(prompt),
+                       temperature=0.5, max_tokens=700, model=model)
+    except LLMError:
+        return prompt, None
+    return _finalize_panel(raw, prompt)
+
+
+def _panel_request(brief: str, panel: list | None) -> str:
+    """The brief plus each panelist's own take, as ONE request string for
+    the spec generator — the panel's judgment only steers the design if the
+    prompt actually carries it forward. Falls back to the brief alone when
+    the panel pass failed or degraded."""
+    if not panel:
+        return brief
+    lines = [brief, "\nThe design panel's own takes — honor each one:"]
+    lines += [f"- {p['label']}: {p['take']}" for p in panel]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Clarifying questions — a four-persona design-panel intake.
+#
+# "A bench" hides who sits on it, where it lives, and what it should look
+# like. Before generating, the UI asks the backend for EXACTLY 4 clarifying
+# questions — ONE from each of the same four personas that review assets
+# under the Improve button (architecture, mechanical, civil, design) — each
+# with EXACTLY 3 concrete AI-written answers; the user picks from a dropdown
+# or types their own (the blank space), and the answered pairs ride into
+# generation via ``clarifications`` on /generate-spec[-stream] — folded into
+# the request BEFORE the design-panel brief pass so every downstream stage
+# honors them. Answering is always optional: the UI can skip straight to
+# generation, and a failed clarify call must never block generating.
+# ---------------------------------------------------------------------------
+
+#: the fixed shape of a clarify round: 4 questions (one per persona) x 3
+#: offered answers
+CLARIFY_QUESTIONS = 4
 CLARIFY_OPTIONS = 3
+#: fewer than this many usable questions is a genuine failure worth
+#: retrying; at or above it, finalize ACCEPTS what it has rather than
+#: burning a retry over the model missing (or double-tagging) one persona —
+#: the same tolerance philosophy as the original 3-for-3 requirement, just
+#: no longer an all-or-nothing count now that persona tagging can wobble.
+CLARIFY_MIN_QUESTIONS = 3
 #: answered pairs folded into one generation (matches the questions asked,
 #: with headroom for a UI that lets the user add a custom detail or two)
 MAX_CLARIFICATIONS = 6
 
-CLARIFY_SYSTEM = f"""You help a parametric 3D asset generator (street furniture, lighting, signage, props) discover the REAL request behind a short one, before anything is generated.
+#: the question each persona would most want answered before their part of
+#: the design starts.
+_CLARIFY_FOCUS = {
+    "architecture": "who will use it and where it lives — the site context",
+    "mechanical": "how it goes together, what moves or adjusts, and how it gets serviced",
+    "civil": "the ground conditions and loads it must stand up to, and any code/permit context",
+    "design": "the style, materials, mood, and the one feature that should stand out",
+}
 
-Given the user's request, write EXACTLY {CLARIFY_QUESTIONS} clarifying questions whose answers would most change the design, each with EXACTLY {CLARIFY_OPTIONS} concrete, mutually different example answers the user can pick from a dropdown (they may also type their own answer instead).
 
-Cover the biggest unknowns for THIS request — typically one question each on: who will use it and where (adults / children / accessible use; park, plaza, private yard); the size or capacity that matters (seats, bikes, height class); and the style, material, or standout feature. Never ask about something the request already states, and never ask about units, code modes, or file formats. Keep each question under 90 characters and each answer under 60 — answers are design choices ("Classic cast iron with wood slats"), not sentences.
+def _clarify_system() -> str:
+    personas = _personas()
+    roster = "\n".join(
+        f'{i}. {p["label"]} ({p["id"]}) — asks about '
+        f'{_CLARIFY_FOCUS.get(p["id"], "their part of the design")}'
+        for i, p in enumerate(personas, start=1)
+    )
+    ids = ", ".join(f'"{p["id"]}"' for p in personas)
+    return f"""You help a parametric 3D asset generator (street furniture, lighting, signage, props) discover the REAL request behind a short one, before anything is generated — by putting together a small panel of the four professionals who later review the finished asset, each asking the ONE question whose answer would most change their part of the design:
+{roster}
+
+Given the user's request, write EXACTLY {CLARIFY_QUESTIONS} clarifying questions, ONE per panelist above IN THAT ORDER, tagged with that panelist's persona id, each with EXACTLY {CLARIFY_OPTIONS} concrete, mutually different example answers the user can pick from a dropdown (they may also type their own answer instead).
+
+Ask the question THAT panelist would actually ask about THIS request — never ask about something the request already states, and never ask about units, code modes, or file formats. Keep each question under 90 characters and each answer under 60 — answers are design choices ("Classic cast iron with wood slats"), not sentences.
 
 Answer ONLY with this JSON object — no prose, no fences:
-{{"questions": [{{"question": "...", "options": ["...", "...", "..."]}}, {{"question": "...", "options": ["...", "...", "..."]}}, {{"question": "...", "options": ["...", "...", "..."]}}]}}"""
+{{"questions": [{{"question": "...", "options": ["...", "...", "..."], "persona": "<id>"}}, {{"question": "...", "options": ["...", "...", "..."], "persona": "<id>"}}, {{"question": "...", "options": ["...", "...", "..."], "persona": "<id>"}}, {{"question": "...", "options": ["...", "...", "..."], "persona": "<id>"}}]}}
+"persona" must be exactly one of {ids}, matching the panelist order above."""
 
 
 def _clarify_user(prompt: str) -> str:
@@ -231,9 +439,17 @@ def _clarify_user(prompt: str) -> str:
 
 
 def _clarify_finalize(raw: str) -> dict:
-    """Parse + sanitize the AI's questions into the fixed 3x3 shape (plus
-    stable ids). Anything malformed raises a CLASSIFIED error so the retry
-    loop can hand the model a targeted correction."""
+    """Parse + sanitize the AI's questions into a persona-ordered shape
+    (plus stable ids). Anything malformed raises a CLASSIFIED error so the
+    retry loop can hand the model a targeted correction.
+
+    Persona tags are sanitized independently of the question/options text:
+    an unknown, missing, or duplicate "persona" id just drops the tag (the
+    question itself is kept), then tagged questions are reordered into
+    ``PERSONA_ORDER`` with untagged ones kept, in their original relative
+    order, at the end. The count only needs to clear
+    ``CLARIFY_MIN_QUESTIONS`` (3) to survive — a model that returns 3 or 5
+    usable questions is accepted/trimmed rather than forcing a retry."""
     stripped = _strip_fences(raw)
     try:
         data = json.loads(stripped)
@@ -260,7 +476,9 @@ def _clarify_finalize(raw: str) -> dict:
             hint='Answer with exactly {"questions": [...]}.',
         )
 
-    questions = []
+    persona_by_id = {p["id"]: p for p in _personas()}
+    seen_personas: set = set()
+    cleaned = []
     for q in questions_raw:
         if not isinstance(q, dict):
             continue
@@ -272,32 +490,53 @@ def _clarify_finalize(raw: str) -> dict:
                 options.append(clean)
         if not text or len(options) < CLARIFY_OPTIONS:
             continue
-        questions.append({
-            "id": f"q{len(questions) + 1}",
+        pid = q.get("persona")
+        pid = pid if isinstance(pid, str) else None
+        if pid not in persona_by_id or pid in seen_personas:
+            pid = None  # unknown, missing, or a repeat -> untagged, question kept
+        else:
+            seen_personas.add(pid)
+        cleaned.append({
             "question": text[:160],
             "options": options[:CLARIFY_OPTIONS],
+            "persona_id": pid,
         })
-        if len(questions) == CLARIFY_QUESTIONS:
-            break
-    if len(questions) < CLARIFY_QUESTIONS:
+
+    if len(cleaned) < CLARIFY_MIN_QUESTIONS:
         raise SpecGenerationError(
-            f"Expected {CLARIFY_QUESTIONS} questions with "
-            f"{CLARIFY_OPTIONS} distinct options each, got {len(questions)} usable",
+            f"Expected at least {CLARIFY_MIN_QUESTIONS} questions with "
+            f"{CLARIFY_OPTIONS} distinct options each, got {len(cleaned)} usable",
             kind="schema",
-            hint=f"Return exactly {CLARIFY_QUESTIONS} questions, each with "
-                 f"exactly {CLARIFY_OPTIONS} DISTINCT non-empty options.",
+            hint=f"Return {CLARIFY_QUESTIONS} questions, one per panelist "
+                 f"({', '.join(PERSONA_ORDER)}), each with exactly "
+                 f"{CLARIFY_OPTIONS} DISTINCT non-empty options and a "
+                 f'matching "persona" id.',
         )
+
+    tagged = {c["persona_id"]: c for c in cleaned if c["persona_id"]}
+    untagged = [c for c in cleaned if not c["persona_id"]]
+    ordered = [tagged[pid] for pid in PERSONA_ORDER if pid in tagged] + untagged
+    ordered = ordered[:CLARIFY_QUESTIONS]
+
+    questions = []
+    for i, c in enumerate(ordered, start=1):
+        entry = {"id": f"q{i}", "question": c["question"], "options": c["options"]}
+        if c["persona_id"]:
+            p = persona_by_id[c["persona_id"]]
+            entry["persona"] = {"id": p["id"], "label": p["label"], "icon": p["icon"]}
+        questions.append(entry)
     return {"questions": questions}
 
 
 def clarify_request(prompt: str, model: str | None = None) -> dict:
-    """3 clarifying questions x 3 offered answers for a raw request, ready
-    for the UI's dropdowns. Rides the classified retry engine like every
-    other structured AI answer."""
+    """4 persona-tagged clarifying questions (architecture, mechanical,
+    civil, design) x 3 offered answers for a raw request, ready for the
+    UI's dropdowns. Rides the classified retry engine like every other
+    structured AI answer."""
     return _complete_with_retries(
-        CLARIFY_SYSTEM, _clarify_user(prompt),
+        _clarify_system(), _clarify_user(prompt),
         lambda raw, lenient: _clarify_finalize(raw),
-        model=model, temperature=0.6, max_tokens=600,
+        model=model, temperature=0.6, max_tokens=700,
     )
 
 
@@ -625,13 +864,17 @@ def _run(system: str, user: str, code_mode: str, model: str | None = None) -> di
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                   clarifications: list | None = None) -> dict:
     """T2.1: natural-language prompt (+ answered clarifying questions) →
-    design brief (extra AI pass) → validated AssetSpec (+ violations). The
-    brief rides along in the result so the UI can show how the request was
-    interpreted."""
+    four-persona design-panel brief (one extra AI call) → validated
+    AssetSpec (+ violations). The brief rides along in the result so the UI
+    can show how the request was interpreted; when the panel pass parsed,
+    the 4 ordered persona takes ride along too as "panel"."""
     request = _clarified_prompt(prompt, clarifications)
-    brief = enhance_prompt(request, model=model)
-    result = _run(_system_prompt(code_mode), f"Request: {brief}", code_mode, model=model)
+    brief, panel = _design_panel(request, model=model)
+    result = _run(_system_prompt(code_mode), f"Request: {_panel_request(brief, panel)}",
+                 code_mode, model=model)
     result["brief"] = brief
+    if panel:
+        result["panel"] = panel
     return result
 
 
@@ -1514,17 +1757,18 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
 
 def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                          clarifications: list | None = None):
-    """Two visible stages in one stream: the brief being written, then the
-    spec being designed from it. Answered clarifying questions are folded
-    into the request before the brief pass."""
+    """Two visible stages in one stream: the four-persona design panel
+    being written, then the spec being designed from its brief (+ takes).
+    Answered clarifying questions are folded into the request before the
+    panel pass."""
     request = _clarified_prompt(prompt, clarifications)
 
     def gen():
         yield "[refining your request into a design brief]\n\n"
         parts = []
         try:
-            for chunk in complete_stream(ENHANCE_SYSTEM, _enhance_user(request),
-                                         temperature=0.5, max_tokens=400, model=model):
+            for chunk in complete_stream(_panel_system(), _enhance_user(request),
+                                         temperature=0.5, max_tokens=700, model=model):
                 parts.append(chunk)
                 yield chunk
         except LLMError as exc:
@@ -1537,16 +1781,19 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
                 return
             parts = []
             yield "\n[brief pass unavailable — designing from your request as-is]\n"
-        brief = "".join(parts).strip() or request
+        brief, panel = _finalize_panel("".join(parts), request)
         yield "\n\n[designing the asset from the brief]\n\n"
 
         def finalize(raw: str, lenient: bool = False) -> dict:
             result = _postprocess(raw, code_mode, lenient_buildability=lenient)
             result["brief"] = brief
+            if panel:
+                result["panel"] = panel
             return result
 
         yield from _stream_pipeline(
-            _system_prompt(code_mode), f"Request: {brief}", finalize, model=model
+            _system_prompt(code_mode), f"Request: {_panel_request(brief, panel)}",
+            finalize, model=model
         )
 
     return gen()

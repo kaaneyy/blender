@@ -18,6 +18,7 @@ import {
   type Clarification,
   type ClarifyQuestion,
   type DeepseekModel,
+  type PanelEntry,
   type StandardsUpdateResult,
   type WizardStep,
 } from "../api";
@@ -59,6 +60,21 @@ function statusSuffix(spec: AssetSpec): string {
 interface ChatEntry {
   role: "you" | "assetforge";
   text: string;
+}
+
+/** Compact "design panel" chat lines: one per persona's take on what the
+ * user deep-down asked for, each truncated to a chat-line-friendly length.
+ * Returns [] when there's no panel to show (older backend / failed call). */
+function panelEntries(panel: PanelEntry[] | undefined): ChatEntry[] {
+  if (!panel || !panel.length) return [];
+  const entries: ChatEntry[] = [
+    { role: "assetforge", text: "🎭 Design panel — how each discipline read your ask:" },
+  ];
+  for (const p of panel) {
+    const take = p.take.length > 140 ? `${p.take.slice(0, 140)}…` : p.take;
+    entries.push({ role: "assetforge", text: `${p.icon} ${p.label}: ${take}` });
+  }
+  return entries;
 }
 
 type Busy = false | "generate" | "refine" | "focus" | "guide" | "standards" | "wizard";
@@ -272,7 +288,7 @@ export default function PromptPanel({
   const runGenerate = (text: string, clarifications: Clarification[] = []) =>
     run("generate", async () => {
       if (!text) return;
-      const { spec: newSpec, brief } = await generateSpecStream(
+      const { spec: newSpec, brief, panel } = await generateSpecStream(
         text, setStreamText, model, clarifications,
       );
       const problem = onSpec(newSpec);
@@ -292,6 +308,7 @@ export default function PromptPanel({
         role: "assetforge",
         text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.${statusSuffix(newSpec)}`,
       });
+      entries.push(...panelEntries(panel));
       setChat(entries);
       setPrompt("");
     });
@@ -301,7 +318,7 @@ export default function PromptPanel({
   const runGuidedStart = (text: string, clarifications: Clarification[] = []) =>
     run("wizard", async () => {
       if (!text) return;
-      const { spec: newSpec, brief } = await generateSpecStream(
+      const { spec: newSpec, brief, panel } = await generateSpecStream(
         text, setStreamText, model, clarifications,
       );
       const problem = onSpec(newSpec);
@@ -321,16 +338,17 @@ export default function PromptPanel({
         role: "assetforge",
         text: `Step 1 — built the form of "${newSpec.name}". Review it, then refine or accept.${statusSuffix(newSpec)}`,
       });
+      entries.push(...panelEntries(panel));
       setChat(entries);
       setPrompt("");
       setWizardMsg("");
       setWizardStep(0);
     });
 
-  /** Step 0 of every generation: ask the AI for 3 clarifying questions
-   * (3 offered answers each + a type-your-own blank) so a basic request
-   * surfaces the real one behind it. Clarifying is an enhancement, never a
-   * gate — if the call fails, generation proceeds directly. */
+  /** Step 0 of every generation: ask the AI for a handful of clarifying
+   * questions (3 offered answers each + a type-your-own blank) so a basic
+   * request surfaces the real one behind it. Clarifying is an enhancement,
+   * never a gate — if the call fails, generation proceeds directly. */
   const startClarify = async (mode: "generate" | "wizard") => {
     const text = prompt.trim();
     if (!text || busy !== false || clarifyBusy !== false) return;
@@ -637,13 +655,20 @@ export default function PromptPanel({
 
       {clarify !== null && (
         <div className="clarify">
-          <h4 className="clarify__title">🎯 Three quick questions first</h4>
+          <h4 className="clarify__title">
+            🎯 {clarify.questions.length === 1 ? "One quick question" : "A few quick questions"} first
+          </h4>
           <p className="clarify__blurb">
             So the AI designs what you actually meant — pick an answer, type
             your own, or leave any as “no preference”.
           </p>
           {clarify.questions.map((q, i) => (
             <div key={q.id} className="clarify__q">
+              {q.persona && (
+                <span className="clarify__persona" title={q.persona.label}>
+                  {q.persona.icon} {q.persona.label}
+                </span>
+              )}
               <span className="clarify__label">{q.question}</span>
               <select
                 value={clarify.choices[i]}
