@@ -10,7 +10,10 @@ Two passes:
                        ('pole') or a single part ('pole/shaft'); a part edit
                        turns/stretches that part about its OWN center and
                        composes with any group edit (part first, then group,
-                       then offsets).
+                       then re-grounding, then offsets). A scale target whose
+                       bottom sat at grade (z=0) before the scale is shifted
+                       back to grade afterward (GROUND_EPS) — offsets can
+                       still deliberately lift or sink it from there.
 
 Rotation follows the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
 first about fixed axes) — the one the Blender realization layer uses for
@@ -23,7 +26,7 @@ from __future__ import annotations
 import copy
 import math
 from dataclasses import replace
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .base import Primitive
 from .hardware import _aabb, _euler_xyz_matrix  # noqa: F401  (re-exported for tests)
@@ -31,6 +34,12 @@ from .hardware import _aabb, _euler_xyz_matrix  # noqa: F401  (re-exported for t
 Vec3 = Tuple[float, float, float]
 _ZERO: Vec3 = (0.0, 0.0, 0.0)
 _ONE: Vec3 = (1.0, 1.0, 1.0)
+
+#: a target whose lowest point sits within this of z=0 before a scale edit is
+#: "grounded" and gets its bottom restored to grade after the scale — matches
+#: audit.py's GROUND_TOL (its below-grade/grounded tolerance) so the two
+#: subsystems agree on what "at grade" means.
+GROUND_EPS = 0.005
 
 
 def component_pivot(prims: Sequence[Primitive]) -> Vec3:
@@ -49,6 +58,20 @@ def component_pivot(prims: Sequence[Primitive]) -> Vec3:
     if not n:
         return (0.0, 0.0, 0.0)
     return ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
+
+
+def _group_z_min(members: Sequence[Primitive]) -> Optional[float]:
+    """Lowest world-z point among a group's non-cut members (``None`` if it
+    has none), via the shared AABB helper — used to detect and restore
+    grounding across a scale edit."""
+    lo: Optional[float] = None
+    for p in members:
+        if p.cut:
+            continue
+        center, half = _aabb(p)
+        z = center[2] - half[2]
+        lo = z if lo is None else min(lo, z)
+    return lo
 
 
 # ── rotation math (Blender Euler-XYZ parity; matrix lives in hardware.py) ──
@@ -192,8 +215,10 @@ def apply_transforms(prims: List[Primitive], spec: dict) -> List[Primitive]:
 
     # pivots per edit key, from the pre-transform prims: a component key
     # turns about the group's center, a 'component/part' key about that
-    # part's own center
+    # part's own center. Scale keys also record whether the group was
+    # sitting at grade before the scale, so it can be re-grounded after.
     pivots: Dict[str, Vec3] = {}
+    grounded: Dict[str, bool] = {}
     for key in set(rotations) | set(scales):
         if "/" in key:
             match = [p for p in prims if f"{p.component}/{p.name}" == key]
@@ -201,16 +226,19 @@ def apply_transforms(prims: List[Primitive], spec: dict) -> List[Primitive]:
             match = [p for p in prims if p.component == key]
         if match:
             pivots[key] = component_pivot(match)
+        if key in scales:
+            z_min = _group_z_min(match)
+            grounded[key] = z_min is not None and abs(z_min) <= GROUND_EPS
 
+    # stage pass: rotate/scale about each key's pivot (part stage, then
+    # component stage). Offsets are applied afterward, once re-grounding
+    # (below) has had a chance to restore any scaled group to grade.
     out: List[Primitive] = []
     for p in prims:
         part_key = f"{p.component}/{p.name}"
         rot_p, scl_p = rotations.get(part_key), scales.get(part_key)
         rot_c, scl_c = rotations.get(p.component), scales.get(p.component)
-        oc = offsets.get(p.component, _ZERO)
-        op = offsets.get(part_key, _ZERO)
-        if (rot_p is None and scl_p is None and rot_c is None and scl_c is None
-                and oc == _ZERO and op == _ZERO):
+        if rot_p is None and scl_p is None and rot_c is None and scl_c is None:
             out.append(p)
             continue
 
@@ -223,10 +251,46 @@ def apply_transforms(prims: List[Primitive], spec: dict) -> List[Primitive]:
             location, rotation, params = _apply_stage(
                 location, rotation, params, pivots.get(p.component, _ZERO),
                 rot_c, scl_c)
-        location = (
-            location[0] + oc[0] + op[0],
-            location[1] + oc[1] + op[1],
-            location[2] + oc[2] + op[2],
-        )
         out.append(replace(p, location=location, rotation=rotation, params=params))
-    return out
+
+    # re-ground: a scaled group whose bottom sat at grade before the scale
+    # gets shifted back to z-min == 0 afterward — part-level keys first
+    # (matching the part-then-component stage order), so nested edits
+    # compose. z-min is recomputed per key against the current `out`.
+    part_keys = [k for k in scales if "/" in k]
+    comp_keys = [k for k in scales if "/" not in k]
+    for key in part_keys + comp_keys:
+        if not grounded.get(key):
+            continue
+        if "/" in key:
+            idxs = [i for i, p in enumerate(out) if f"{p.component}/{p.name}" == key]
+        else:
+            idxs = [i for i, p in enumerate(out) if p.component == key]
+        if not idxs:
+            continue
+        z_min = _group_z_min([out[i] for i in idxs])
+        if z_min is None:
+            continue
+        shift = -z_min
+        if shift:
+            for i in idxs:
+                loc = out[i].location
+                out[i] = replace(out[i], location=(loc[0], loc[1], loc[2] + shift))
+
+    if not offsets:
+        return out
+
+    result: List[Primitive] = []
+    for p in out:
+        oc = offsets.get(p.component, _ZERO)
+        op = offsets.get(f"{p.component}/{p.name}", _ZERO)
+        if oc == _ZERO and op == _ZERO:
+            result.append(p)
+            continue
+        loc = p.location
+        result.append(replace(p, location=(
+            loc[0] + oc[0] + op[0],
+            loc[1] + oc[1] + op[1],
+            loc[2] + oc[2] + op[2],
+        )))
+    return result

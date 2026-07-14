@@ -9,7 +9,10 @@
  *                     ('pole') or a single part ('pole/shaft'); a part edit
  *                     turns/stretches that part about its OWN center and
  *                     composes with any group edit (part first, then group,
- *                     then offsets).
+ *                     then re-grounding, then offsets). A scale target whose
+ *                     bottom sat at grade (z=0) before the scale is shifted
+ *                     back to grade afterward (GROUND_EPS) — offsets can
+ *                     still deliberately lift or sink it from there.
  *
  * Rotation uses the Blender Euler-XYZ convention (R = Rz·Ry·Rx, X applied
  * first about fixed axes) — Three's Euler order 'ZYX', the same one the
@@ -21,6 +24,12 @@ import { aabb, eulerXyzMatrix } from "./hardware";
 
 const ZERO: Vec3 = [0, 0, 0];
 const ONE: Vec3 = [1, 1, 1];
+
+/** A target whose lowest point sits within this of z=0 before a scale edit
+ * is "grounded" and gets its bottom restored to grade after the scale —
+ * matches audit.ts's GROUND_TOL (its below-grade/grounded tolerance) so the
+ * two subsystems agree on what "at grade" means. */
+const GROUND_EPS = 0.005;
 
 function isMoved(v: Vec3): boolean {
   return v[0] !== 0 || v[1] !== 0 || v[2] !== 0;
@@ -43,6 +52,20 @@ export function componentPivot(prims: Primitive[]): Vec3 {
   }
   if (!n) return [0, 0, 0];
   return [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+}
+
+/** Lowest world-z point among a group's non-cut members (`null` if it has
+ * none), via the shared AABB helper — used to detect and restore grounding
+ * across a scale edit. Mirror of edits.py _group_z_min. */
+function groupZMin(members: Primitive[]): number | null {
+  let lo: number | null = null;
+  for (const p of members) {
+    if (p.cut) continue;
+    const b = aabb(p);
+    const z = b.center[2] - b.half[2];
+    lo = lo === null ? z : Math.min(lo, z);
+  }
+  return lo;
 }
 
 function cloneParams(params: Primitive["params"]): Primitive["params"] {
@@ -201,37 +224,73 @@ export function applyTransforms(prims: Primitive[], spec: AssetSpec): Primitive[
 
   // pivots per edit key, from the pre-transform prims: a component key
   // turns about the group's center, a 'component/part' key about that
-  // part's own center
+  // part's own center. Scale keys also record whether the group was
+  // sitting at grade before the scale, so it can be re-grounded after.
   const pivots = new Map<string, Vec3>();
+  const grounded = new Map<string, boolean>();
   for (const key of new Set([...Object.keys(rotations), ...Object.keys(scales)])) {
     const match = key.includes("/")
       ? prims.filter((p) => `${p.component}/${p.name}` === key)
       : prims.filter((p) => p.component === key);
     if (match.length) pivots.set(key, componentPivot(match));
+    if (key in scales) {
+      const zMin = groupZMin(match);
+      grounded.set(key, zMin !== null && Math.abs(zMin) <= GROUND_EPS);
+    }
   }
 
-  return prims.map((p) => {
+  // stage pass: rotate/scale about each key's pivot (part stage, then
+  // component stage). Offsets are applied afterward, once re-grounding
+  // (below) has had a chance to restore any scaled group to grade.
+  let out: Primitive[] = prims.map((p) => {
     const partKey = `${p.component}/${p.name}`;
     const rotP = rotations[partKey];
     const sclP = scales[partKey];
     const rotC = rotations[p.component];
     const sclC = scales[p.component];
-    const oc = offsets[p.component] ?? ZERO;
-    const op = offsets[partKey] ?? ZERO;
-    if (!rotP && !sclP && !rotC && !sclC && !isMoved(oc) && !isMoved(op)) return p;
+    if (!rotP && !sclP && !rotC && !sclC) return p;
 
     let st: Staged = { location: p.location, rotation: p.rotation, params: p.params };
     if (rotP || sclP) st = applyStage(st, pivots.get(partKey) ?? ZERO, rotP, sclP);
     if (rotC || sclC) st = applyStage(st, pivots.get(p.component) ?? ZERO, rotC, sclC);
+    return { ...p, location: st.location, rotation: st.rotation, params: st.params };
+  });
+
+  // re-ground: a scaled group whose bottom sat at grade before the scale
+  // gets shifted back to z-min == 0 afterward — part-level keys first
+  // (matching the part-then-component stage order), so nested edits
+  // compose. z-min is recomputed per key against the current `out`.
+  const partKeys = Object.keys(scales).filter((k) => k.includes("/"));
+  const compKeys = Object.keys(scales).filter((k) => !k.includes("/"));
+  for (const key of [...partKeys, ...compKeys]) {
+    if (!grounded.get(key)) continue;
+    const idxs: number[] = [];
+    out.forEach((p, i) => {
+      const matches = key.includes("/") ? `${p.component}/${p.name}` === key : p.component === key;
+      if (matches) idxs.push(i);
+    });
+    if (!idxs.length) continue;
+    const zMin = groupZMin(idxs.map((i) => out[i]));
+    if (zMin === null) continue;
+    const shift = -zMin;
+    if (shift) {
+      for (const i of idxs) {
+        const loc = out[i].location;
+        out[i] = { ...out[i], location: [loc[0], loc[1], loc[2] + shift] as Vec3 };
+      }
+    }
+  }
+
+  if (!hasOffsets) return out;
+
+  return out.map((p) => {
+    const oc = offsets[p.component] ?? ZERO;
+    const op = offsets[`${p.component}/${p.name}`] ?? ZERO;
+    if (!isMoved(oc) && !isMoved(op)) return p;
+    const loc = p.location;
     return {
       ...p,
-      location: [
-        st.location[0] + oc[0] + op[0],
-        st.location[1] + oc[1] + op[1],
-        st.location[2] + oc[2] + op[2],
-      ] as Vec3,
-      rotation: st.rotation,
-      params: st.params,
+      location: [loc[0] + oc[0] + op[0], loc[1] + oc[1] + op[1], loc[2] + oc[2] + op[2]] as Vec3,
     };
   });
 }

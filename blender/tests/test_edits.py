@@ -16,7 +16,9 @@ from blender.builders.edits import (
     _euler_from_matrix,
     _mat_mul,
     _scale_factors,
+    _group_z_min,
 )
+from blender.builders.hardware import _aabb
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -243,3 +245,72 @@ class TestRotationAwareScale:
         f = _scale_factors(s, (0.0, 0.0, 0.0))
         for a, b in zip(f, s):
             assert math.isclose(a, b, abs_tol=1e-9)
+
+
+def _z_min(prims):
+    return min(_aabb(p)[0][2] - _aabb(p)[1][2] for p in prims if not p.cut)
+
+
+def test_group_z_min_matches_manual_aabb_scan():
+    spec = load("park_bench.json")
+    frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+    assert math.isclose(_group_z_min(frame), _z_min(frame), abs_tol=1e-12)
+
+
+class TestScaleRegrounding:
+    """A scale target whose bottom sat at grade (z ~ 0) before the scale
+    must still sit at grade after — scaling a bench up must not sink its
+    legs below grade, and scaling it down must not leave it floating."""
+
+    def test_scale_up_keeps_grounded_frame_at_grade(self):
+        spec = load("park_bench.json")
+        base_frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        assert math.isclose(_z_min(base_frame), 0.0, abs_tol=1e-9)  # sanity: grounded pre-edit
+
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 1.5]}}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        # without re-grounding this would land at ~ -0.118 (below grade)
+        assert math.isclose(_z_min(frame), 0.0, abs_tol=1e-6)
+
+    def test_scale_down_keeps_grounded_frame_at_grade(self):
+        spec = load("park_bench.json")
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 0.5]}}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        # without re-grounding this would float above grade
+        assert math.isclose(_z_min(frame), 0.0, abs_tol=1e-6)
+
+    def test_ungrounded_group_keeps_center_pivot_not_forced_to_grade(self):
+        spec = load("park_bench.json")
+        base_seat = [p for p in compute_primitives(spec) if p.component == "seat"]
+        base_z_min = _z_min(base_seat)
+        assert base_z_min > 0.1  # sanity: the seat floats well above grade
+
+        spec["edits"] = {"scales": {"seat": [2.0, 2.0, 2.0]}}
+        seat = [p for p in compute_primitives(spec) if p.component == "seat"]
+        # center-pivot semantics unchanged: it is NOT snapped to z-min == 0
+        assert _z_min(seat) > 0.1
+        assert not math.isclose(_z_min(seat), 0.0, abs_tol=1e-3)
+
+    def test_offset_applies_after_regrounding(self):
+        spec = load("park_bench.json")
+        spec["edits"] = {"scales": {"frame": [1.0, 1.0, 1.5]}}
+        spec["offsets"] = {"frame": [0.0, 0.0, 0.3]}
+        frame = [p for p in compute_primitives(spec) if p.component == "frame"]
+        assert math.isclose(_z_min(frame), 0.3, abs_tol=1e-6)
+
+    def test_rotation_only_edit_does_not_reground(self):
+        # a grounded box (bottom exactly at grade) tilted about X only must
+        # NOT be snapped back to z-min == 0, even though the tilt itself
+        # pushes it below grade — re-grounding only fires for `scales`,
+        # never bare `rotations`.
+        box = Primitive(
+            kind="box", name="leg", component="frame",
+            location=(0.0, 0.0, 0.5), params={"size": (0.2, 0.2, 1.0)},
+        )
+        assert math.isclose(_z_min([box]), 0.0, abs_tol=1e-9)  # sanity: grounded pre-edit
+        spec = {"edits": {"rotations": {"frame": [0.5, 0.0, 0.0]}}}
+        out = apply_transforms([box], spec)
+        # tilting about the box's own center necessarily moves its AABB
+        # bottom off the original grade line; left uncorrected because
+        # there is no scale entry for "frame" to trigger re-grounding
+        assert abs(_z_min(out)) > 1e-3
