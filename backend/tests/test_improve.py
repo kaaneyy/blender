@@ -23,10 +23,23 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VALID = (REPO_ROOT / "examples" / "street_light.json").read_text()
 client = TestClient(app)
 
+#: this test file is about the findings-gathering/prompt-embedding behavior
+#: of improve_spec, not the four persona evaluators (covered in
+#: test_perspectives_ai.py) — stub evaluate_perspectives so these tests don't
+#: depend on blender/builders/perspectives.py (a separate sibling module) or
+#: burn extra spec_ai.complete()/complete_stream() calls that would throw
+#: off the "calls" assertions below.
+FAKE_PERSPECTIVES = [
+    {"id": pid, "label": pid.title(), "icon": "x", "summary": "", "findings": [], "error": None}
+    for pid in ("architecture", "mechanical", "civil", "design")
+]
+
 
 @pytest.fixture(autouse=True)
 def mock_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setattr(spec_ai, "evaluate_perspectives",
+                        lambda spec, model=None: FAKE_PERSPECTIVES)
 
 
 def spec_dict():

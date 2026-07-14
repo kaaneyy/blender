@@ -8,7 +8,13 @@ import defaultSpecJson from "../../examples/street_light.json";
 import type { AssetSpec, Primitive, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
 import { applyAuditFixes, auditConnections, computePrimitives } from "./builders";
 import type { AuditFinding, AuditReport } from "./builders";
-import { improveSpecStream, reviewConnectionsStream, type DeepseekModel, type Finding } from "./api";
+import {
+  improveSpecStream,
+  reviewConnectionsStream,
+  type DeepseekModel,
+  type Finding,
+  type Perspective,
+} from "./api";
 import { checkSpec } from "./standards";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
@@ -79,6 +85,12 @@ export default function App() {
   const [improveStream, setImproveStream] = useState("");
   const [improveError, setImproveError] = useState<string | null>(null);
   const [improveFindings, setImproveFindings] = useState<Finding[] | null>(null);
+  /** Four professional-evaluator cards (architecture/mechanical/civil/design)
+   * over the pre-improvement asset — absent on an older backend that hasn't
+   * added the `perspectives` envelope key yet. */
+  const [improvePerspectives, setImprovePerspectives] = useState<Perspective[] | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -183,6 +195,7 @@ export default function App() {
     showHardware();
     setImproveError(null);
     setImproveFindings(null);
+    setImprovePerspectives(undefined);
     setImproveStream("");
     setImproveBusy(true);
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
@@ -194,6 +207,7 @@ export default function App() {
           return;
         }
         setImproveFindings(result.findings);
+        setImprovePerspectives(result.perspectives);
       })
       .catch((e) => setImproveError(e instanceof Error ? e.message : String(e)))
       .finally(() => setImproveBusy(false));
@@ -202,6 +216,7 @@ export default function App() {
   const closeImprove = () => {
     setImproveError(null);
     setImproveFindings(null);
+    setImprovePerspectives(undefined);
   };
 
   /** The confirmed apply — the ONLY place check fixes reach the spec. The
@@ -538,6 +553,46 @@ export default function App() {
                   The asset shown now is the AI-improved version — the checks
                   below describe what it found before improving.
                 </p>
+                {improvePerspectives && (
+                  <div className="perspectives">
+                    {improvePerspectives.map((p) => (
+                      <div key={p.id} className="perspective-card">
+                        <div className="perspective-card__header">
+                          <span>{p.icon}</span>
+                          <span>{p.label}</span>
+                        </div>
+                        {p.summary && <p className="perspective-card__summary">{p.summary}</p>}
+                        {p.error && (
+                          <div className="violation" role="alert">
+                            <p>{p.error}</p>
+                          </div>
+                        )}
+                        {p.findings.length === 0 ? (
+                          !p.error && <p className="hint">No issues from this perspective.</p>
+                        ) : (
+                          p.findings.map((f, i) => (
+                            <div key={i} className={`finding finding--${f.severity}`}>
+                              <span className="finding__title">
+                                {IMPROVE_SEV_ICON[f.severity] ?? "ℹ️"} {f.kind.replace(/_/g, " ")}
+                                <span
+                                  className={`finding__source finding__source--${f.source}`}
+                                  title={
+                                    f.source === "ai"
+                                      ? "Flagged by this persona's AI review"
+                                      : "Flagged by the deterministic checks"
+                                  }
+                                >
+                                  {f.source === "ai" ? "AI" : "check"}
+                                </span>
+                              </span>
+                              <p className="finding__detail">{f.message}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {improveFindings!.map((f, i) => (
                   <div key={i} className={`finding finding--${f.severity}`}>
                     <span className="finding__title">
