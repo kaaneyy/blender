@@ -18,3 +18,6 @@ exports/
 .DS_Store
 .idea/
 .vscode/
+
+# transient agent worktrees (created by /improve worker isolation)
+.claude/worktrees/
