@@ -107,31 +107,52 @@ def apply_structure(prims: List[Primitive], spec: dict) -> List[Primitive]:
 
 # ── transform pass (move / rotate / scale) ────────────────────────────────
 
-def _scale_params(source: dict, s: Vec3) -> dict:
+def _scale_params(source: dict, f: Vec3) -> dict:
+    """Scale a primitive's LOCAL dimensions by per-local-axis factors ``f``
+    (see ``_scale_factors`` — for identity rotation ``f`` is exactly the
+    caller's world-axis scale ``s``, so unrotated behavior is unchanged)."""
     params = dict(source)
-    rxy = (s[0] + s[1]) / 2
+    rxy = (f[0] + f[1]) / 2
 
-    def scl(key: str, f: float) -> None:
+    def scl(key: str, factor: float) -> None:
         v = params.get(key)
         if isinstance(v, (int, float)):
-            params[key] = v * f
+            params[key] = v * factor
 
     if "size" in params:
         sx, sy, sz = params["size"]
-        params["size"] = (sx * s[0], sy * s[1], sz * s[2])
+        params["size"] = (sx * f[0], sy * f[1], sz * f[2])
     for key in ("radius", "radius_bottom", "radius_top", "radius_end", "wall"):
         scl(key, rxy)
-    scl("depth", s[2])
+    scl("depth", f[2])
     if isinstance(params.get("path"), list):
-        params["path"] = [(x * s[0], y * s[1], z * s[2]) for x, y, z in params["path"]]
+        params["path"] = [(x * f[0], y * f[1], z * f[2]) for x, y, z in params["path"]]
     for key in ("profile_start", "profile_end"):
         prof = params.get(key)
         if isinstance(prof, dict):
-            params[key] = {**prof, "w": prof["w"] * s[0], "h": prof["h"] * s[1]}
+            params[key] = {**prof, "w": prof["w"] * f[0], "h": prof["h"] * f[1]}
     prof = params.get("profile")
     if isinstance(prof, list):
-        params["profile"] = [(r * rxy, z * s[2]) for r, z in prof]
+        params["profile"] = [(r * rxy, z * f[2]) for r, z in prof]
     return params
+
+
+def _scale_factors(s: Vec3, rotation: Vec3) -> Vec3:
+    """Per-LOCAL-axis stretch equivalent to a world-axis scale ``s`` on a
+    primitive currently rotated by ``rotation`` (Blender XYZ Euler, entering
+    the stage before the stage's own rotation is composed). For R = the
+    Blender-parity rotation matrix and S = diag(s), the local basis vector
+    e_i lands at S·R·e_i in world space, so its length is the equivalent
+    local stretch: f_i = ||S·R·e_i|| = sqrt(sum_j (s_j * R[j][i])^2).
+    Exact (f == s) for identity rotation. For rotations that aren't
+    axis-aligned this is the best diagonal approximation — a true
+    non-uniform scale of a rotated solid is a shear, which primitives
+    (box/cylinder/etc, defined by size/radius/depth) can't represent."""
+    m = _euler_xyz_matrix(rotation)
+    return tuple(
+        math.sqrt(sum((s[j] * m[j][i]) ** 2 for j in range(3)))
+        for i in range(3)
+    )
 
 
 def _apply_stage(location: Vec3, rotation: Vec3, params: dict, pivot: Vec3,
@@ -144,13 +165,15 @@ def _apply_stage(location: Vec3, rotation: Vec3, params: dict, pivot: Vec3,
         (location[1] - pivot[1]) * s[1],
         (location[2] - pivot[2]) * s[2],
     )
+    rotation_in = rotation
     if rot is not None:
         r_mat = _euler_xyz_matrix(rot)
         rel = _mat_vec(r_mat, rel)
         composed = _mat_mul(r_mat, _euler_xyz_matrix(rotation))
         rotation = _euler_from_matrix(composed)
     if scl is not None:
-        params = _scale_params(params, s)
+        f = _scale_factors(s, rotation_in)
+        params = _scale_params(params, f)
     return (
         (pivot[0] + rel[0], pivot[1] + rel[1], pivot[2] + rel[2]),
         rotation,

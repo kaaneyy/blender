@@ -64,7 +64,7 @@ const CONNECTION_TYPES = new Set([
 /** Blender-parity Euler XYZ rotation matrix (mirror of hardware.py):
  * R = Rz·Ry·Rx, X applied first about fixed axes — how Blender interprets
  * `rotation_euler` and how the preview renders (Three Euler order 'ZYX'). */
-function eulerXyzMatrix(rot: Vec3): number[][] {
+export function eulerXyzMatrix(rot: Vec3): number[][] {
   const [x, y, z] = rot;
   const c1 = Math.cos(x), s1 = Math.sin(x);
   const c2 = Math.cos(y), s2 = Math.sin(y);

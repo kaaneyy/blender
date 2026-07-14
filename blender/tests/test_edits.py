@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 import blender.builders  # noqa: F401
-from blender.builders.base import compute_primitives
+from blender.builders.base import Primitive, compute_primitives
 from blender.builders.edits import (
     apply_transforms,
     component_pivot,
     _euler_xyz_matrix,
     _euler_from_matrix,
     _mat_mul,
+    _scale_factors,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -178,3 +179,67 @@ def test_no_edits_is_identity():
     spec = load("street_light.json")
     prims = compute_primitives(spec)
     assert apply_transforms(prims, {}) is prims  # fast path returns input
+
+
+class TestRotationAwareScale:
+    """A component/part scale edit applies world-axis factors s; a member
+    rotated off-axis must stretch along its correct LOCAL axes (f = S·R·e_i
+    lengths, not s directly), or scaled bench-like structures tear apart."""
+
+    def test_rotated_cylinder_stretches_along_its_own_axis(self):
+        # cylinder lying along world Y (rotation (pi/2, 0, 0)), like a bench
+        # stretcher spanning between two legs at y = +-1.0
+        cyl = Primitive(
+            kind="cylinder", name="stretcher", component="frame",
+            location=(0.0, 0.0, 0.5), rotation=(math.pi / 2, 0.0, 0.0),
+            params={"radius": 0.05, "depth": 2.0},
+        )
+        leg_a = Primitive(
+            kind="box", name="leg_a", component="frame",
+            location=(0.0, -1.0, 0.0), params={"size": (0.1, 0.1, 1.0)},
+        )
+        leg_b = Primitive(
+            kind="box", name="leg_b", component="frame",
+            location=(0.0, 1.0, 0.0), params={"size": (0.1, 0.1, 1.0)},
+        )
+        spec = {"edits": {"scales": {"frame": [1.0, 2.0, 1.0]}}}
+        out = {p.name: p for p in apply_transforms([cyl, leg_a, leg_b], spec)}
+        # world-Y span doubled to match the legs (now at y = +-2.0)
+        assert out["stretcher"].params["depth"] == pytest.approx(4.0)
+        # radius unaffected: local axes 0/1 (both perpendicular to world Y
+        # after the rotation) see factor 1 from an all-XZ-preserving scale
+        assert out["stretcher"].params["radius"] == pytest.approx(0.05)
+        # legs actually ended up at y = +-2.0, confirming the stretcher would
+        # now reach them
+        assert out["leg_a"].location[1] == pytest.approx(-2.0)
+        assert out["leg_b"].location[1] == pytest.approx(2.0)
+
+    def test_box_rotated_about_z_grows_local_y_not_local_x(self):
+        box = Primitive(
+            kind="box", name="panel", component="frame",
+            location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, math.pi / 2),
+            params={"size": (1.0, 0.4, 0.2)},
+        )
+        spec = {"edits": {"scales": {"frame": [2.0, 1.0, 1.0]}}}
+        out = apply_transforms([box], spec)[0]
+        # world-X scale becomes a LOCAL-Y stretch once rotated 90 deg about Z
+        assert out.params["size"][0] == pytest.approx(1.0)
+        assert out.params["size"][1] == pytest.approx(0.8)
+        assert out.params["size"][2] == pytest.approx(0.2)
+
+    def test_unrotated_box_keeps_current_behavior(self):
+        box = Primitive(
+            kind="box", name="panel", component="frame",
+            location=(0.0, 0.0, 0.0), params={"size": (1.0, 0.4, 0.2)},
+        )
+        spec = {"edits": {"scales": {"frame": [2.0, 1.0, 1.0]}}}
+        out = apply_transforms([box], spec)[0]
+        assert out.params["size"][0] == pytest.approx(2.0)
+        assert out.params["size"][1] == pytest.approx(0.4)
+        assert out.params["size"][2] == pytest.approx(0.2)
+
+    def test_scale_factors_identity_rotation_equals_s(self):
+        s = (1.5, 2.0, 0.5)
+        f = _scale_factors(s, (0.0, 0.0, 0.0))
+        for a, b in zip(f, s):
+            assert math.isclose(a, b, abs_tol=1e-9)

@@ -17,7 +17,7 @@
  * exports match. */
 import * as THREE from "three";
 import type { AssetSpec, Primitive, SpecEdits, Vec3 } from "../types";
-import { aabb } from "./hardware";
+import { aabb, eulerXyzMatrix } from "./hardware";
 
 const ZERO: Vec3 = [0, 0, 0];
 const ONE: Vec3 = [1, 1, 1];
@@ -82,41 +82,64 @@ export function applyStructure(prims: Primitive[], spec: AssetSpec): Primitive[]
   return out;
 }
 
-/** Approximate a per-axis scale on a primitive's own dimensions. Exact for
+/** Per-LOCAL-axis stretch equivalent to a world-axis scale `s` on a
+ * primitive currently rotated by `rotation` (Blender XYZ Euler, entering the
+ * stage before the stage's own rotation is composed). For rotation matrix R
+ * (eulerXyzMatrix) and S = diag(s), the local basis vector e_i lands at
+ * S·R·e_i in world space, so its length is the equivalent local stretch:
+ * f_i = ||S·R·e_i|| = sqrt(sum_j (s_j * R[j][i])^2). Exact (f === s) for
+ * identity rotation. For rotations that aren't axis-aligned this is the
+ * best diagonal approximation — a true non-uniform scale of a rotated solid
+ * is a shear, which primitives (box/cylinder/etc, defined by
+ * size/radius/depth) can't represent. Mirror of edits.py _scale_factors. */
+function scaleFactors(s: Vec3, rotation: Vec3): Vec3 {
+  const m = eulerXyzMatrix(rotation);
+  const f: Vec3 = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    let sum = 0;
+    for (let j = 0; j < 3; j++) sum += (s[j] * m[j][i]) ** 2;
+    f[i] = Math.sqrt(sum);
+  }
+  return f;
+}
+
+/** Scale a primitive's LOCAL dimensions by per-local-axis factors `f` (see
+ * scaleFactors — for identity rotation `f` is exactly the caller's
+ * world-axis scale `s`, so unrotated behavior is unchanged). Exact for
  * axis-aligned boxes; round parts scale radius by the mean of the two
  * in-plane axes and length by the third (an ellipse can't be represented, so
  * this is a faithful-enough preview/export). */
-function scaleParams(source: Primitive["params"], s: Vec3): Primitive["params"] {
+function scaleParams(source: Primitive["params"], f: Vec3): Primitive["params"] {
   const params = { ...source };
-  const rxy = (s[0] + s[1]) / 2;
+  const rxy = (f[0] + f[1]) / 2;
   if (params.size) {
-    params.size = [params.size[0] * s[0], params.size[1] * s[1], params.size[2] * s[2]];
+    params.size = [params.size[0] * f[0], params.size[1] * f[1], params.size[2] * f[2]];
   }
   if (typeof params.radius === "number") params.radius *= rxy;
   if (typeof params.radius_bottom === "number") params.radius_bottom *= rxy;
   if (typeof params.radius_top === "number") params.radius_top *= rxy;
   if (typeof params.radius_end === "number") params.radius_end *= rxy;
   if (typeof params.wall === "number") params.wall *= rxy;
-  if (typeof params.depth === "number") params.depth *= s[2];
+  if (typeof params.depth === "number") params.depth *= f[2];
   if (params.path) {
-    params.path = params.path.map(([x, y, z]) => [x * s[0], y * s[1], z * s[2]] as Vec3);
+    params.path = params.path.map(([x, y, z]) => [x * f[0], y * f[1], z * f[2]] as Vec3);
   }
   if (params.profile_start) {
     params.profile_start = {
       ...params.profile_start,
-      w: params.profile_start.w * s[0],
-      h: params.profile_start.h * s[1],
+      w: params.profile_start.w * f[0],
+      h: params.profile_start.h * f[1],
     };
   }
   if (params.profile_end) {
     params.profile_end = {
       ...params.profile_end,
-      w: params.profile_end.w * s[0],
-      h: params.profile_end.h * s[1],
+      w: params.profile_end.w * f[0],
+      h: params.profile_end.h * f[1],
     };
   }
   if (Array.isArray(params.profile)) {
-    params.profile = params.profile.map(([r, z]) => [r * rxy, z * s[2]] as [number, number]);
+    params.profile = params.profile.map(([r, z]) => [r * rxy, z * f[2]] as [number, number]);
   }
   return params;
 }
@@ -141,6 +164,7 @@ function applyStage(
     (st.location[1] - pivot[1]) * s[1],
     (st.location[2] - pivot[2]) * s[2],
   ];
+  const rotationIn = st.rotation;
   let rotation = st.rotation;
   if (rot) {
     const rMat = new THREE.Matrix4().makeRotationFromEuler(
@@ -157,7 +181,7 @@ function applyStage(
   return {
     location: [pivot[0] + rel[0], pivot[1] + rel[1], pivot[2] + rel[2]],
     rotation,
-    params: scl ? scaleParams(st.params, s) : st.params,
+    params: scl ? scaleParams(st.params, scaleFactors(s, rotationIn)) : st.params,
   };
 }
 
