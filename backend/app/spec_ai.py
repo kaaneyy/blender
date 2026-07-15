@@ -73,8 +73,8 @@ class SpecGenerationError(RuntimeError):
     """LLM produced output that could not be turned into a valid spec.
 
     ``kind`` labels the failure family (truncated / not_json / schema /
-    build / buildability / provider / unknown) and ``hint`` carries the
-    targeted correction instruction the retry prompt hands back to the
+    build / buildability / scale / provider / unknown) and ``hint`` carries
+    the targeted correction instruction the retry prompt hands back to the
     model — the difference between "error, try again" and telling it
     exactly what to change."""
 
@@ -136,6 +136,11 @@ CONNECTION RULES (think like a fabricator — every joint must be buildable in r
 - Light non-structural furniture must NOT get industrial anchors: declare {{"a": "<leg component>", "b": "ground", "type": "none"}}. Only structural verticals at grade get "anchor_base".
 - Still model load-path geometry as primitives: cross rails or stretchers between legs so seat/deck boards have something to bolt to; brackets or collars where members meet at right angles. A slat can NOT attach to a leg it never touches — add the rail.
 - Nothing may extend below z=0; grade-level anchorage comes from an "anchor_base" connection (or a modeled plate/footing AT z=0).
+
+DIMENSIONAL CONSISTENCY (every real-world feature keeps its real-world size)
+- Each named feature is sized from ITS OWN real-world anchor dimension, regardless of what it's attached to — NEVER shrunk to decorate the primary structure or grown to dominate it. A solar panel bolted to a 3.7 m pergola is still a full-size solar panel, not a seated ornament and not a canopy-sized slab.
+- Anchor sizes (use these as the real-world scale for that feature): solar panel ≈ 1.65 x 1.0 x 0.04 m; luminaire head 0.6-0.8 m; bench seat height ≈ 0.45 m; planter box 0.4-1.2 m; bike hoop ≈ 0.8 x 0.75 m.
+- When a request combines multiple features ("pergola for 4 people with solar panel"), size EACH one independently from its own real-world anchor — the host structure's scale never overrides a feature's own real dimensions.
 
 MATERIALS
 - Presets: {", ".join(MATERIAL_PRESETS)}.
@@ -699,15 +704,35 @@ def _build_hint(exc: Exception, spec: dict) -> str:
     return msg
 
 
+def _scale_findings(prims: list, spec: dict) -> list:
+    """Relative/real-world scale check (``check_scale_sanity`` in the
+    sibling ``blender.builders.connectivity`` module — built independently
+    in a separate worktree). Imported LAZILY so this module never
+    hard-depends on that change landing first: any import or attribute
+    problem degrades to no scale findings at all (zero behavior change),
+    never a crash. The checker itself is contracted to never raise for
+    valid prims, but the call is still guarded defensively for the same
+    deploy-order safety."""
+    try:
+        from blender.builders.connectivity import check_scale_sanity
+    except (ImportError, AttributeError):
+        return []
+    try:
+        return check_scale_sanity(prims, spec) or []
+    except Exception:
+        return []
+
+
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
-    """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3), and
+    """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3),
     buildability-check (contact graph: floating parts, below-grade geometry,
-    dead declarations). Every failure raises a CLASSIFIED
-    :class:`SpecGenerationError` whose hint tells the model exactly what to
-    fix. Floating parts raise — the deterministic findings feed the retry —
-    unless ``lenient_buildability`` (the final attempt), in which case
-    they're accepted and surfaced as violations instead, so a stubborn
-    generation never bricks."""
+    dead declarations), and a relative-scale sanity check (mis-sized
+    features like a seated solar panel on a pergola). Every failure raises
+    a CLASSIFIED :class:`SpecGenerationError` whose hint tells the model
+    exactly what to fix. Floating parts and scale outliers raise — the
+    deterministic findings feed the retry — unless ``lenient_buildability``
+    (the final attempt), in which case they're accepted and surfaced as
+    violations instead, so a stubborn generation never bricks."""
     stripped = _strip_fences(raw)
     try:
         spec = json.loads(stripped)
@@ -778,11 +803,25 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
             ),
         )
 
+    scale_findings = _scale_findings(prims, result.spec)
+    if scale_findings and not lenient_buildability:
+        messages = [f.get("message", "") for f in scale_findings]
+        raise SpecGenerationError(
+            "Scale check failed: " + " ".join(messages[:4]),
+            kind="scale",
+            hint=(
+                f"Fix component scale: {' '.join(messages[:4])}. Keep "
+                "real-world dimensions for every feature."
+            ),
+        )
+
     out = result.to_dict()
     if findings:
         out["violations"] = out["violations"] + findings
         if errors:
             out["ok"] = False
+    if scale_findings:
+        out["violations"] = out["violations"] + scale_findings
     return out
 
 
@@ -1419,12 +1458,14 @@ def evaluate_perspectives(spec: dict, model: str | None = None) -> list:
 def _gather_findings(spec: dict) -> list:
     """Deterministic Python-side checks — connection audit
     (``audit_connections``), buildability contact-graph
-    (``check_buildability``), and US-code validation (``validate_spec``) —
-    normalized into a flat list of ``{severity, kind, message, ...}`` dicts
-    ready to embed in the AI prompt. A spec broken badly enough that it
-    can't even ``compute_primitives`` still yields exactly ONE
-    ``build_failure`` finding instead of crashing, so the AI has something
-    concrete to repair."""
+    (``check_buildability``), relative-scale sanity (``check_scale_sanity``,
+    lazily imported the same way as in ``_postprocess``), and US-code
+    validation (``validate_spec``) — normalized into a flat list of
+    ``{severity, kind, message, ...}`` dicts ready to embed in the AI
+    prompt. A spec broken badly enough that it can't even
+    ``compute_primitives`` still yields exactly ONE ``build_failure``
+    finding instead of crashing, so the AI has something concrete to
+    repair."""
     from blender.builders.audit import audit_connections
 
     findings: list = []
@@ -1444,6 +1485,14 @@ def _gather_findings(spec: dict) -> list:
                 "severity": f.get("severity", "error"),
                 "kind": f.get("limit_type", "buildability"),
                 "message": f.get("message", ""),
+            })
+
+        for f in _scale_findings(prims, spec):
+            findings.append({
+                "severity": f.get("severity", "warning"),
+                "kind": f.get("kind", "scale_outlier"),
+                "message": f.get("message", ""),
+                "component": f.get("component"),
             })
 
         result = validate_spec(spec)
@@ -1701,6 +1750,7 @@ _KIND_LABEL = {
     "schema": "fixing a schema violation",
     "build": "fixing geometry that doesn't build",
     "buildability": "fixing floating/unsupported parts",
+    "scale": "fixing component scale",
     "provider": "the AI provider hiccuped — retrying",
 }
 
