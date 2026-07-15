@@ -19,7 +19,7 @@ so existing violation plumbing can carry them.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .base import Primitive
 from .hardware import _aabb
@@ -30,6 +30,36 @@ CONTACT_TOL = 0.0005
 GROUND_TOL = 0.005
 #: geometry below -this (m) is flagged as below grade
 BELOW_TOL = 0.005
+
+# --------------------------------------------------------------------------
+# Scale-sanity thresholds (check_scale_sanity). Chosen against the bundled
+# examples (park_bench/pergola/street_light/bike_rack/planter): tight enough
+# to catch the "0.3 m solar panel on a 3.7 m pergola" defect, loose enough
+# that no legitimate part (finial, cap, slat, rail) trips them.
+# --------------------------------------------------------------------------
+#: a component's max dimension must be at least asset_max/this to escape
+#: "toy-scale" — the WHY repro (0.3 m panel on a 3.81 m pergola envelope) is
+#: ~12.7x smaller. NOTE: an initial guess of 25 here left legitimate small
+#: components (street_light's base_plate at ~19x, luminaire at ~12.3x the
+#: asset's max dimension) statistically indistinguishable from the repro on
+#: dimension ratio alone — 10 clears the repro (12.7x) with margin while the
+#: paired volume gate below (with a *much* wider margin: base_plate/luminaire
+#: sit at ~350-400x asset volume, the repro panel at ~12600x) is what
+#: actually keeps those legitimate parts clean
+SCALE_OUTLIER_RATIO = 10.0
+#: ALSO require the component's envelope volume be under asset_volume/this —
+#: paired with SCALE_OUTLIER_RATIO so thin-but-long parts (slats, rails,
+#: poles) AND small-but-legitimate hardware-scale parts (base plates,
+#: luminaire heads) that fail the dimension ratio alone don't false-positive
+SCALE_OUTLIER_VOLUME_RATIO = 2000.0
+#: a component whose max dimension exceeds this many times the max dimension
+#: of the rest of the asset (i.e. computed WITHOUT that component) is a
+#: giant outlier — the WHY repro's 12 m panel on the same pergola
+SCALE_GIANT_RATIO = 2.5
+#: overall asset envelope sanity bounds (m) — nothing this repo builds
+#: should be smaller than a doorknob or larger than a city block
+ENVELOPE_MAX = 30.0
+ENVELOPE_MIN = 0.2
 
 
 def _finding(kind: str, message: str, component: str = "",
@@ -191,3 +221,114 @@ def check_buildability(prims: List[Primitive], spec=None) -> List[dict]:
 
 def buildability_errors(findings: List[dict]) -> List[dict]:
     return [f for f in findings if f.get("severity") == "error"]
+
+
+# --------------------------------------------------------------------------
+# Scale sanity
+# --------------------------------------------------------------------------
+
+def _scale_finding(kind: str, message: str, component: Optional[str] = None) -> dict:
+    """Contract dict for check_scale_sanity — deliberately NOT the
+    Violation.to_dict() shape _finding() produces above (no parameter_id /
+    limit_type plumbing needed here): {severity, kind, message, component}."""
+    return {
+        "severity": "warning",
+        "kind": kind,
+        "message": message,
+        "component": component,
+    }
+
+
+def _envelope_boxes_by_component(prims: List[Primitive]) -> Dict[str, List[Tuple]]:
+    """Same non-cut, non-hardware filter as _boxes_by_component, kept
+    separate so scale-sanity stays independent of the load-path check."""
+    out: Dict[str, List[Tuple]] = {}
+    for p in prims:
+        if p.cut or p.component == "hardware":
+            continue
+        out.setdefault(p.component, []).append(_aabb(p))
+    return out
+
+
+def _union_box(boxes: List[Tuple]) -> Tuple:
+    """Union AABB ((center, half) tuple) enclosing all given AABBs."""
+    lo = [min(c[k] - h[k] for c, h in boxes) for k in range(3)]
+    hi = [max(c[k] + h[k] for c, h in boxes) for k in range(3)]
+    center = tuple((lo[k] + hi[k]) / 2 for k in range(3))
+    half = tuple((hi[k] - lo[k]) / 2 for k in range(3))
+    return (center, half)
+
+
+def _envelope_dims(box: Tuple) -> Tuple[float, float, float]:
+    """Full (not half) extents of an AABB."""
+    _, half = box
+    return (2 * half[0], 2 * half[1], 2 * half[2])
+
+
+def _envelope_volume(box: Tuple) -> float:
+    dx, dy, dz = _envelope_dims(box)
+    return dx * dy * dz
+
+
+def check_scale_sanity(prims: List[Primitive], spec=None) -> List[dict]:
+    """Flags scale-inconsistent components: a component whose envelope is
+    wildly small (scale_outlier) or wildly large (scale_giant) relative to
+    the rest of the asset, or an asset whose overall envelope is outside a
+    plausible fabrication range (envelope_extreme). Placement-only checks
+    (check_buildability, audit.py) never catch this — a 0.3 m "solar panel"
+    on a 3.7 m pergola sits fine, floats nothing, and breaks no declared
+    connection; it is just the wrong size. Never raises for a valid
+    primitive list — an empty/degenerate asset simply yields no findings."""
+    by_comp = _envelope_boxes_by_component(prims)
+    comps = sorted(by_comp)
+    if not comps:
+        return []
+
+    envelopes = {c: _union_box(boxes) for c, boxes in by_comp.items()}
+
+    findings: List[dict] = []
+
+    # ---------------------------------------------------------- envelope
+    asset_box = _union_box(list(envelopes.values()))
+    asset_max = max(_envelope_dims(asset_box))
+    asset_volume = _envelope_volume(asset_box)
+
+    if asset_max > ENVELOPE_MAX or asset_max < ENVELOPE_MIN:
+        findings.append(_scale_finding(
+            "envelope_extreme",
+            f"Overall asset envelope is {asset_max:.2f} m across the "
+            f"longest dimension — outside the plausible "
+            f"{ENVELOPE_MIN:.1f}-{ENVELOPE_MAX:.0f} m range for a "
+            f"fabricated asset.",
+        ))
+
+    # ---------------------------------------------------------- per component
+    for c in comps:
+        box = envelopes[c]
+        comp_max = max(_envelope_dims(box))
+        comp_volume = _envelope_volume(box)
+
+        if (comp_max < asset_max / SCALE_OUTLIER_RATIO
+                and comp_volume < asset_volume / SCALE_OUTLIER_VOLUME_RATIO):
+            findings.append(_scale_finding(
+                "scale_outlier",
+                f"'{c}' spans {comp_max:.2f} m on a {asset_max:.2f} m asset "
+                f"— toy-scale relative to the structure; real-world "
+                f"features keep their real dimensions.",
+                component=c,
+            ))
+
+        if len(comps) >= 2:
+            rest_box = _union_box([envelopes[o] for o in comps if o != c])
+            rest_max = max(_envelope_dims(rest_box))
+            if rest_max > 0 and comp_max > SCALE_GIANT_RATIO * rest_max:
+                findings.append(_scale_finding(
+                    "scale_giant",
+                    f"'{c}' spans {comp_max:.2f} m — {comp_max / rest_max:.1f}x "
+                    f"the {rest_max:.2f} m extent of the rest of the asset "
+                    f"— giant-scale relative to the structure; real-world "
+                    f"features keep their real dimensions.",
+                    component=c,
+                ))
+
+    return findings

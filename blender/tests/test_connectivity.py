@@ -1,14 +1,22 @@
 """Tests for the buildability / load-path validator (connectivity.py):
 contact graph, floating-part detection with nearest support + gap, below-
-grade geometry, and dead declared connections."""
+grade geometry, and dead declared connections; plus the deterministic
+scale-sanity checker (check_scale_sanity)."""
 import json
 from pathlib import Path
 
+import pytest
+
 import blender.builders  # noqa: F401
 from blender.builders.base import compute_primitives
-from blender.builders.connectivity import buildability_errors, check_buildability
+from blender.builders.connectivity import (
+    buildability_errors,
+    check_buildability,
+    check_scale_sanity,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE_NAMES = sorted(p.name for p in (REPO_ROOT / "examples").glob("*.json"))
 
 
 def load(name):
@@ -17,6 +25,10 @@ def load(name):
 
 def findings_for(spec):
     return check_buildability(compute_primitives(spec), spec)
+
+
+def scale_findings_for(spec):
+    return check_scale_sanity(compute_primitives(spec), spec)
 
 
 class TestLoadPath:
@@ -97,3 +109,111 @@ class TestDeclarations:
         spec["connections"] = [{"a": "frame", "b": "ground", "type": "none"}]
         findings = findings_for(spec)
         assert not any(f["limit_type"] == "unmatched_declaration" for f in findings)
+
+
+def _pergola_with_solar(size):
+    """The WHY repro: pergola.json (default connection_hardware=true) plus a
+    seated 'solar' box component of the given (w, d, h) resting on the front
+    beam. Scale is the only thing wrong with it — it is fully supported and
+    declares no connections, so check_buildability/audit are both silent."""
+    spec = load("pergola.json")
+    spec["primitives"].append({
+        "kind": "box", "name": "panel", "component": "solar",
+        "material_slot": "beams",
+        "location": [0, "span_y/2", "post_height + beam_depth + 0.05"],
+        "params": {"size": list(size)},
+    })
+    return spec
+
+
+class TestScaleSanity:
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_bundled_examples_are_scale_clean(self, name):
+        # false-positive gate: every shipped example must produce zero scale
+        # findings — a neutered check that always returns [] would also pass
+        # this alone, which is why the toy/giant/envelope tests below assert
+        # real findings on purpose-built reproductions.
+        findings = scale_findings_for(load(name))
+        assert findings == [], (name, findings)
+
+    def test_toy_panel_is_a_scale_outlier(self):
+        # reproduces the bug report: a 0.3x0.2x0.05 m "solar panel" seated on
+        # a ~3.7 m pergola is toy-scale relative to the structure.
+        spec = _pergola_with_solar((0.3, 0.2, 0.05))
+        findings = scale_findings_for(spec)
+        outliers = [f for f in findings if f["kind"] == "scale_outlier"]
+        assert len(outliers) == 1
+        finding = outliers[0]
+        assert finding["component"] == "solar"
+        assert finding["severity"] == "warning"
+        assert "solar" in finding["message"]
+        assert "0.30 m" in finding["message"]
+        # no other scale finding should fire alongside it
+        assert findings == outliers
+
+    def test_giant_panel_is_a_scale_giant(self):
+        # the inverse bug: a 12x9x0.08 m "solar panel" dwarfs the same
+        # pergola it's supposedly mounted on.
+        spec = _pergola_with_solar((12, 9, 0.08))
+        findings = scale_findings_for(spec)
+        giants = [f for f in findings if f["kind"] == "scale_giant"]
+        assert len(giants) == 1
+        finding = giants[0]
+        assert finding["component"] == "solar"
+        assert finding["severity"] == "warning"
+        assert "solar" in finding["message"]
+
+    def test_oversized_envelope_is_flagged(self):
+        spec = {
+            "asset_type": "custom", "name": "Huge", "units": "metric",
+            "code_mode": "advisory", "parameters": [], "toggles": [],
+            "materials": [{"slot": "frame", "preset": "wood_slat"}],
+            "components": ["frame"], "connections": [],
+            "primitives": [
+                {"kind": "box", "name": "slab", "component": "frame",
+                 "material_slot": "frame", "location": [0, 0, 20],
+                 "params": {"size": [40, 5, 5]}},
+            ],
+        }
+        findings = scale_findings_for(spec)
+        extreme = [f for f in findings if f["kind"] == "envelope_extreme"]
+        assert len(extreme) == 1
+        assert extreme[0]["component"] is None
+        assert extreme[0]["severity"] == "warning"
+
+    def test_hardware_and_cut_prims_never_contribute(self):
+        # connection_hardware is already on for pergola.json (bolts/washers
+        # get generated as tiny 'hardware'-component prims); a giant cut
+        # prim (negative space) is added on top to prove neither kind
+        # pollutes the envelope math.
+        spec = load("pergola.json")
+        spec["primitives"].append({
+            "kind": "box", "name": "phantom_cut", "component": "posts",
+            "material_slot": "posts", "cut": True,
+            "location": [0, 0, 5], "params": {"size": [100, 100, 100]},
+        })
+        findings = scale_findings_for(spec)
+        assert findings == []
+
+    def test_never_raises_on_valid_primitives(self):
+        # a spec with a single tiny grounded component and no siblings must
+        # not raise even though most ratio guards divide by other quantities
+        spec = {
+            "asset_type": "custom", "name": "Lonely", "units": "metric",
+            "code_mode": "advisory", "parameters": [], "toggles": [],
+            "materials": [{"slot": "frame", "preset": "wood_slat"}],
+            "components": ["frame"], "connections": [],
+            "primitives": [
+                {"kind": "box", "name": "cube", "component": "frame",
+                 "material_slot": "frame", "location": [0, 0, 0.05],
+                 "params": {"size": [0.1, 0.1, 0.1]}},
+            ],
+        }
+        findings = check_scale_sanity(compute_primitives(spec), spec)
+        assert isinstance(findings, list)
+
+    def test_neutered_check_would_fail_this_suite(self):
+        # guard against a no-op regression: at least one of the purpose-built
+        # reproductions above must yield a non-empty result.
+        spec = _pergola_with_solar((0.3, 0.2, 0.05))
+        assert scale_findings_for(spec) != []
