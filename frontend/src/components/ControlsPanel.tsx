@@ -2,6 +2,7 @@
  * switches from toggles[], material dropdowns from materials[].
  * Zero per-asset UI code. Violations render red with the code citation and
  * a "snap to code" action (T4.5). */
+import { useRef, useState, type ChangeEvent } from "react";
 import type { AssetSpec, LengthUnit, SpecMaterial, SpecParameter, UnitSystem } from "../types";
 import type { CodeViolation } from "../standards";
 import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
@@ -49,6 +50,15 @@ interface Props {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  /** Downloads the current spec as JSON (Save spec). */
+  onSave: () => void;
+  /** Reads + adopts a picked spec JSON file (Open spec…); resolves to an
+   * error message on a bad/invalid file, or null on success. */
+  onOpenFile: (file: File) => Promise<string | null>;
+  /** True right after app init when the current spec was restored from the
+   * autosave rather than starting from the bundled default. */
+  restoredNotice: boolean;
+  onDismissRestoredNotice: () => void;
 }
 
 /** Per-slot material editor: preset dropdown + color / reflection
@@ -240,10 +250,24 @@ export default function ControlsPanel({
   canRedo,
   onUndo,
   onRedo,
+  onSave,
+  onOpenFile,
+  restoredNotice,
+  onDismissRestoredNotice,
 }: Props) {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "");
   const undoShortcut = isMac ? "⌘Z" : "Ctrl+Z";
   const redoShortcut = isMac ? "⇧⌘Z" : "Ctrl+Shift+Z";
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file next time
+    if (!file) return;
+    setOpenError(null);
+    const err = await onOpenFile(file);
+    if (err) setOpenError(err);
+  };
   const hardwareOn =
     spec.toggles?.find((t) => t.id === "connection_hardware")?.value ?? false;
   const visibleToggles = (spec.toggles ?? []).filter(
@@ -283,6 +307,18 @@ export default function ControlsPanel({
           </div>
         </div>
       </div>
+      {restoredNotice && (
+        <div className="notice notice--restored" role="status">
+          <p>Restored your last session — Reset to defaults discards it.</p>
+          <button
+            className="notice__dismiss"
+            onClick={onDismissRestoredNotice}
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {!locked && (
         <p className="hint hint--unlock">
           Limits unlocked: sliders reach far beyond the suggested ranges and
@@ -372,6 +408,37 @@ export default function ControlsPanel({
       {spec.materials?.map((m) => (
         <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
       ))}
+
+      {/* ── save / open (Brief: Save / Open / autosave) ── */}
+      <div className="file-row">
+        <button
+          className="reset"
+          onClick={onSave}
+          title="Download this design as spec.json — the exact file the Blender export pipeline (build_cli.py / blender -b -P blender/build_cli.py) reads."
+        >
+          💾 Save spec
+        </button>
+        <button
+          className="reset"
+          onClick={() => fileInputRef.current?.click()}
+          title="Load a spec JSON file (e.g. one from Save spec, or from examples/) back into the app."
+        >
+          📂 Open spec…
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="visually-hidden"
+          onChange={handleFileChange}
+        />
+      </div>
+      {openError && (
+        <div className="violation" role="alert">
+          <p>{openError}</p>
+        </div>
+      )}
+      {/* ── end save / open ── */}
 
       <div className="history-row">
         <button

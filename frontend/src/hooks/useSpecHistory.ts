@@ -33,6 +33,12 @@ interface HistoryState<T> {
 export interface SpecHistory<T> {
   spec: T;
   setSpec: (update: Updater<T>) => void;
+  /** Force the NEXT setSpec call to open a fresh history entry no matter how
+   * recently the previous one landed. Callers that swap in a whole new spec
+   * from outside the normal edit flow (loading a file, adopting an AI
+   * result) call this first so the swap can never silently coalesce into
+   * whatever burst of slider/gizmo edits happened to precede it. */
+  commitBoundary: () => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -69,6 +75,10 @@ export function useSpecHistory<T>(init: () => T): SpecHistory<T> {
     });
   }, []);
 
+  const commitBoundary = useCallback(() => {
+    lastEditAt.current = 0;
+  }, []);
+
   const undo = useCallback(() => {
     setState((s) => {
       if (s.past.length === 0) return s;
@@ -93,6 +103,7 @@ export function useSpecHistory<T>(init: () => T): SpecHistory<T> {
   return {
     spec: state.present,
     setSpec,
+    commitBoundary,
     undo,
     redo,
     canUndo: state.past.length > 0,
