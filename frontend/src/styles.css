@@ -257,6 +257,17 @@ button:disabled {
   gap: 6px;
 }
 
+/* ── undo/redo history controls (Brief: spec editor undo/redo) ── */
+.history-row {
+  display: flex;
+  gap: 6px;
+}
+
+.history-row .reset {
+  flex: 1;
+}
+/* ── end undo/redo history controls ── */
+
 .lock-toggle {
   background: var(--panel);
   border: 1px solid var(--border-2);

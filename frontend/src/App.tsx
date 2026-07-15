@@ -16,6 +16,7 @@ import {
   type Perspective,
 } from "./api";
 import { checkSpec } from "./standards";
+import { useSpecHistory } from "./hooks/useSpecHistory";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import PromptPanel from "./components/PromptPanel";
@@ -56,7 +57,14 @@ function changedComponents(before: Primitive[], after: Primitive[]): Set<string>
 }
 
 export default function App() {
-  const [spec, setSpec] = useState<AssetSpec>(() => structuredClone(defaultSpec));
+  const {
+    spec,
+    setSpec,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+  } = useSpecHistory<AssetSpec>(() => structuredClone(defaultSpec));
   const [displayUnits, setDisplayUnits] = useState<UnitSystem>(defaultSpec.units);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -96,6 +104,36 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("af-theme", theme);
   }, [theme]);
+
+  // ── global undo/redo shortcuts: Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and
+  // Ctrl+Y redo. Ignored while the user is typing in a text field so the
+  // prompt box's own text-undo isn't hijacked into spec-undo. ──
+  useEffect(() => {
+    const isTextEntry = (el: EventTarget | null) => {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTextEntry(e.target)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && e.shiftKey) {
+        e.preventDefault();
+        redo();
+      } else if (key === "z") {
+        e.preventDefault();
+        undo();
+      } else if (key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [undo, redo]);
 
   const primitives = useMemo(() => computePrimitives(spec), [spec]);
   const violations = useMemo(() => checkSpec(spec), [spec]);
@@ -657,6 +695,10 @@ export default function App() {
               setSpec(structuredClone(defaultSpec));
               setSelected(null);
             }}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={undo}
+            onRedo={redo}
           />
         )}
       </aside>

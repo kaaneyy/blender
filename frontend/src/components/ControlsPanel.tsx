@@ -43,6 +43,12 @@ interface Props {
   locked: boolean;
   onLock: () => void;
   onReset: () => void;
+  /** Spec-editor undo/redo (Ctrl+Z / Ctrl+Shift+Z, Cmd on Mac) — mirrors
+   * the same history the keyboard shortcuts drive. */
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 /** Per-slot material editor: preset dropdown + color / reflection
@@ -230,7 +236,14 @@ export default function ControlsPanel({
   locked,
   onLock,
   onReset,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: Props) {
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "");
+  const undoShortcut = isMac ? "⌘Z" : "Ctrl+Z";
+  const redoShortcut = isMac ? "⇧⌘Z" : "Ctrl+Shift+Z";
   const hardwareOn =
     spec.toggles?.find((t) => t.id === "connection_hardware")?.value ?? false;
   const visibleToggles = (spec.toggles ?? []).filter(
@@ -360,6 +373,24 @@ export default function ControlsPanel({
         <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
       ))}
 
+      <div className="history-row">
+        <button
+          className="reset"
+          onClick={onUndo}
+          disabled={!canUndo}
+          title={`Undo (${undoShortcut})`}
+        >
+          ↩︎ Undo
+        </button>
+        <button
+          className="reset"
+          onClick={onRedo}
+          disabled={!canRedo}
+          title={`Redo (${redoShortcut} or Ctrl+Y)`}
+        >
+          ↪︎ Redo
+        </button>
+      </div>
       <button className="reset" onClick={onReset}>
         Reset to defaults
       </button>
