@@ -257,6 +257,70 @@ button:disabled {
   gap: 6px;
 }
 
+/* ── undo/redo history controls (Brief: spec editor undo/redo) ── */
+.history-row {
+  display: flex;
+  gap: 6px;
+}
+
+.history-row .reset {
+  flex: 1;
+}
+/* ── end undo/redo history controls ── */
+
+/* ── save / open / autosave (Brief: Save / Open / autosave) ── */
+.file-row {
+  display: flex;
+  gap: 6px;
+}
+
+.file-row .reset {
+  flex: 1;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.notice p {
+  margin: 0;
+  flex: 1;
+}
+
+.notice__dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+
+.notice--restored {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--text);
+}
+/* ── end save / open / autosave ── */
+
 .lock-toggle {
   background: var(--panel);
   border: 1px solid var(--border-2);
@@ -1133,6 +1197,12 @@ hr {
 .night-note {
   opacity: 0.6;
   font-weight: 400;
+}
+
+/* .glb download failure notice — transient, self-dismisses */
+.tour-hint--error {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* viewport labels -------------------------------------------------------- */

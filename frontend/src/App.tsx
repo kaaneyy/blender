@@ -16,6 +16,7 @@ import {
   type Perspective,
 } from "./api";
 import { checkSpec } from "./standards";
+import { useSpecHistory } from "./hooks/useSpecHistory";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import PromptPanel from "./components/PromptPanel";
@@ -38,6 +39,66 @@ function initialTheme(): Theme {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+// ── autosave / restore-on-init (Brief: Save / Open / autosave) ──
+/** localStorage key the current spec autosaves to. */
+const AUTOSAVE_KEY = "af-spec-autosave";
+/** How long after the last spec change to wait before writing autosave —
+ * long enough that a slider drag doesn't hammer localStorage on every tick. */
+const AUTOSAVE_DEBOUNCE_MS = 800;
+
+/** Pure "does this spec actually build?" check — the same validation
+ * `adoptSpec` runs on every AI/Open swap, factored out so the app-init path
+ * (reading a possibly-stale/corrupt autosave, before the component and its
+ * state even exist) can share it without depending on any component state.
+ * Returns an error string on invalid specs, or null when it's safe to adopt. */
+function validateSpecForAdoption(candidate: AssetSpec): string | null {
+  try {
+    computePrimitives(candidate);
+    return null;
+  } catch (e) {
+    return `The generated spec has invalid geometry: ${
+      e instanceof Error ? e.message : String(e)
+    }`;
+  }
+}
+
+/** Read + validate the autosaved spec, if any. A corrupt or invalid stored
+ * value is discarded silently (the key is cleared) so it can never come back
+ * to bite a later load. Any localStorage failure (quota, private mode,
+ * disabled storage) degrades to "nothing to restore" rather than crashing. */
+function loadAutosavedSpec(): AssetSpec | null {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AssetSpec;
+    if (validateSpecForAdoption(parsed) !== null) {
+      localStorage.removeItem(AUTOSAVE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    try {
+      localStorage.removeItem(AUTOSAVE_KEY);
+    } catch {
+      /* storage unavailable — nothing to clear, nothing to crash */
+    }
+    return null;
+  }
+}
+
+/** Filename stem for "Save spec": lowercased, spaces→underscores, anything
+ * outside [a-z0-9_-] stripped. Falls back to "asset" if that leaves nothing
+ * (e.g. a name that's all punctuation/emoji). */
+function sanitizeFileStem(raw: string): string {
+  const stem = raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_-]/g, "");
+  return stem || "asset";
+}
+// ── end autosave / restore-on-init ──
+
 /** Components whose parts moved, appeared, or vanished between two builds —
  * what the fix preview highlights so the user sees exactly what changes. */
 function changedComponents(before: Primitive[], after: Primitive[]): Set<string> {
@@ -56,12 +117,33 @@ function changedComponents(before: Primitive[], after: Primitive[]): Set<string>
 }
 
 export default function App() {
-  const [spec, setSpec] = useState<AssetSpec>(() => structuredClone(defaultSpec));
-  const [displayUnits, setDisplayUnits] = useState<UnitSystem>(defaultSpec.units);
+  // Computed once, before history exists: an autosave (if present and
+  // valid) becomes the history's INITIAL present, not an edit applied on
+  // top of the default — so an undo right after restore has nothing to
+  // undo. See loadAutosavedSpec above.
+  const [{ initialSpec, wasRestored }] = useState(() => {
+    const restored = loadAutosavedSpec();
+    return restored
+      ? { initialSpec: restored, wasRestored: true }
+      : { initialSpec: defaultSpec, wasRestored: false };
+  });
+  const {
+    spec,
+    setSpec,
+    commitBoundary,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+  } = useSpecHistory<AssetSpec>(() => structuredClone(initialSpec));
+  const [displayUnits, setDisplayUnits] = useState<UnitSystem>(initialSpec.units);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [tourId, setTourId] = useState(0);
   const [homeId, setHomeId] = useState(0);
+  /** "Restored your last session" notice, dismissible; also cleared by
+   * Reset to defaults (which also drops the stored autosave itself). */
+  const [restoredNotice, setRestoredNotice] = useState(wasRestored);
 
   // ── connection check: report, per-finding selection, hover preview.
   // "local" = the deterministic auditor (recomputed live); "ai" = the AI
@@ -96,6 +178,51 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("af-theme", theme);
   }, [theme]);
+
+  // ── autosave: debounced write of the current spec to localStorage, so a
+  // refresh never destroys work-in-progress. Any storage failure (quota,
+  // private browsing) degrades silently to "no autosave" rather than
+  // crashing the app. ──
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(spec));
+      } catch {
+        /* quota exceeded / storage disabled — autosave is best-effort */
+      }
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [spec]);
+
+  // ── global undo/redo shortcuts: Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and
+  // Ctrl+Y redo. Ignored while the user is typing in a text field so the
+  // prompt box's own text-undo isn't hijacked into spec-undo. ──
+  useEffect(() => {
+    const isTextEntry = (el: EventTarget | null) => {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTextEntry(e.target)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && e.shiftKey) {
+        e.preventDefault();
+        redo();
+      } else if (key === "z") {
+        e.preventDefault();
+        undo();
+      } else if (key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [undo, redo]);
 
   const primitives = useMemo(() => computePrimitives(spec), [spec]);
   const violations = useMemo(() => checkSpec(spec), [spec]);
@@ -423,22 +550,53 @@ export default function App() {
           spec.edits.duplicates?.length)),
   );
 
-  /** Swap in an AI-generated spec — but only if it actually builds, so a
-   * bad spec can never blank the viewport. Returns an error string to show
-   * in the prompt panel, or null on success. */
+  /** Swap in an AI-generated (or file-opened) spec — but only if it actually
+   * builds, so a bad spec can never blank the viewport. Returns an error
+   * string to show in the prompt panel, or null on success. A full spec
+   * swap is always its own undo step: commitBoundary() guarantees it can
+   * never coalesce into whatever edit burst happened to precede it. */
   const adoptSpec = (newSpec: AssetSpec): string | null => {
-    try {
-      computePrimitives(newSpec);
-    } catch (e) {
-      return `The generated spec has invalid geometry: ${
-        e instanceof Error ? e.message : String(e)
-      }`;
-    }
+    const err = validateSpecForAdoption(newSpec);
+    if (err) return err;
+    commitBoundary();
     setSpec(newSpec);
     setSelected(null);
     setDisplayUnits(newSpec.units ?? "imperial");
     setHomeId((h) => h + 1); // glide the camera to frame the new asset
     return null;
+  };
+
+  /** "📂 Open spec": read a picked file, parse it, and adopt it through the
+   * exact same validated path as an AI-generated spec — Open reads back
+   * exactly what Save writes out. Never partially applies: parse/validate
+   * failures leave the current spec untouched. */
+  const openSpecFile = async (file: File): Promise<string | null> => {
+    let parsed: AssetSpec;
+    try {
+      const text = await file.text();
+      parsed = JSON.parse(text) as AssetSpec;
+    } catch (e) {
+      return `Couldn't read "${file.name}": ${e instanceof Error ? e.message : String(e)}`;
+    }
+    return adoptSpec(parsed);
+  };
+
+  /** "💾 Save spec": download the current design as the JSON file the
+   * documented Blender export pipeline (build_cli.py) consumes directly. */
+  const saveSpecFile = () => {
+    const filename = `${sanitizeFileStem(spec.name || spec.asset_type)}.json`;
+    const blob = new Blob([JSON.stringify(spec, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   };
 
   const isCustomAsset = Boolean(spec.primitives?.length);
@@ -656,7 +814,21 @@ export default function App() {
             onReset={() => {
               setSpec(structuredClone(defaultSpec));
               setSelected(null);
+              setRestoredNotice(false);
+              try {
+                localStorage.removeItem(AUTOSAVE_KEY);
+              } catch {
+                /* storage unavailable — nothing to clear */
+              }
             }}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={undo}
+            onRedo={redo}
+            onSave={saveSpecFile}
+            onOpenFile={openSpecFile}
+            restoredNotice={restoredNotice}
+            onDismissRestoredNotice={() => setRestoredNotice(false)}
           />
         )}
       </aside>

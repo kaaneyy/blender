@@ -9,6 +9,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type { AssetSpec, Primitive, UnitSystem, Vec3 } from "../types";
 import { aabb, resolveMaterial, specParams, preEditPrimitives, componentPivot } from "../builders";
 import { formatLength } from "../units";
@@ -53,6 +54,61 @@ interface ViewportApi {
   sideView(): void;
   faceNorth(): void;
   screenshot(): void;
+  /** Export the asset-only subtree as a binary .glb and trigger a browser
+   * download under `filename`. */
+  exportGlb(filename: string): void;
+}
+
+/** Object3D `.type` values that must never end up inside a GLB export of the
+ * asset — viewport chrome (lights, grid/ground helpers, gizmo pieces,
+ * dimension lines) lives outside the asset group by construction, but this
+ * is a cheap defensive check run on the export clone right before
+ * serializing, so a future regression fails loudly instead of shipping a
+ * bad export. Pure and Three-free (duck-typed) so it's checkable without a
+ * renderer by feeding it plain {type, name, children} objects — no THREE.js
+ * scene or DOM required. */
+const FORBIDDEN_EXPORT_TYPES = new Set([
+  "Light",
+  "PointLight",
+  "DirectionalLight",
+  "AmbientLight",
+  "SpotLight",
+  "HemisphereLight",
+  "GridHelper",
+  "Line",
+  "Line2",
+  "LineSegments",
+]);
+
+interface ExportNodeLike {
+  type: string;
+  name: string;
+  children?: readonly ExportNodeLike[];
+}
+
+/** Pure: walks a node tree (real Object3D or a plain duck-typed stand-in)
+ * and returns the name/type of the first disallowed node found, or null if
+ * the subtree is clean. */
+export function findForbiddenExportNode(node: ExportNodeLike): string | null {
+  if (FORBIDDEN_EXPORT_TYPES.has(node.type)) return node.name || node.type;
+  for (const child of node.children ?? []) {
+    const hit = findForbiddenExportNode(child);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Pure: turn the spec's display name (or asset_type as fallback) into a
+ * safe .glb download filename — lowercase, spaces to underscores, and
+ * anything outside [a-z0-9_-] stripped outright. Falls back to "asset" if
+ * nothing survives sanitization. */
+export function sanitizeExportFilename(raw: string): string {
+  const base = raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_-]/g, "");
+  return `${base || "asset"}.glb`;
 }
 
 /** Blender Z-up point -> Three Y-up world (matches the asset group's -90° X). */
@@ -117,7 +173,9 @@ function ViewportBridge({
   sunNeedleRef,
   sunAzRef,
   homeHeightRef,
+  assetGroupRef,
   onFocusChange,
+  onExportError,
 }: {
   focusRef: React.MutableRefObject<FocusState | null>;
   apiRef: React.MutableRefObject<ViewportApi | null>;
@@ -125,7 +183,12 @@ function ViewportBridge({
   sunNeedleRef: React.RefObject<HTMLDivElement>;
   sunAzRef: React.MutableRefObject<number>;
   homeHeightRef: React.MutableRefObject<number>;
+  /** Wraps only the rendered asset primitives (see the `assetGroupRef` group
+   * in the main render tree) — no lights, grid/ground, silhouette, dimension
+   * lines, or gizmo widgets. That's what gets exported. */
+  assetGroupRef: React.RefObject<THREE.Group>;
   onFocusChange: (fp: FocusPoint | null) => void;
+  onExportError: (message: string) => void;
 }) {
   const lastHeadRef = useRef<FocusPoint | null>(null);
   const camera = useThree((s) => s.camera);
@@ -222,13 +285,54 @@ function ViewportBridge({
         a.download = "assetforge.png";
         a.click();
       },
+      exportGlb(filename) {
+        const assetRoot = assetGroupRef.current;
+        if (!assetRoot) {
+          onExportError("Nothing to export yet.");
+          return;
+        }
+        try {
+          // Clone so the live scene is untouched (materials/geometries are
+          // shared by reference — fine for a read-only export walk). Wrap in
+          // a fresh group carrying the same Z-up -> Y-up rotation the asset
+          // renders under, so the exported file matches what's on screen
+          // instead of coming out on its side.
+          const clone = assetRoot.clone(true);
+          const bad = findForbiddenExportNode(clone as unknown as ExportNodeLike);
+          if (bad) throw new Error(`export subtree contains a non-asset node: ${bad}`);
+          const wrapper = new THREE.Group();
+          wrapper.rotation.set(-Math.PI / 2, 0, 0);
+          wrapper.add(clone);
+          const exporter = new GLTFExporter();
+          exporter.parse(
+            wrapper,
+            (result) => {
+              const blob = new Blob([result as ArrayBuffer], { type: "model/gltf-binary" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              a.click();
+              URL.revokeObjectURL(url);
+            },
+            (err) => {
+              console.error("GLB export failed", err);
+              onExportError("Could not export .glb — see console for details.");
+            },
+            { binary: true },
+          );
+        } catch (err) {
+          console.error("GLB export failed", err);
+          onExportError("Could not export .glb — see console for details.");
+        }
+      },
     };
     apiRef.current = api;
     if (!homedRef.current) {
       homedRef.current = true;
       api.home();
     }
-  }, [controls, camera, gl, apiRef, focusRef, homeHeightRef]);
+  }, [controls, camera, gl, apiRef, focusRef, homeHeightRef, assetGroupRef, onExportError]);
 
   useFrame((state, dt) => {
     if (!controls) return;
@@ -412,6 +516,17 @@ export default function Viewport({
   const apiRef = useRef<ViewportApi | null>(null);
   const compassRef = useRef<HTMLDivElement>(null);
   const sunNeedleRef = useRef<HTMLDivElement>(null);
+  // Wraps only the rendered asset primitives (+ the live edit-gizmo proxy,
+  // when a transform tool is dragging) — never lights, grid/ground,
+  // silhouette, dimension lines, or the gizmo widget itself. This is the
+  // subtree the .glb download exports.
+  const assetGroupRef = useRef<THREE.Group>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!exportNotice) return;
+    const t = window.setTimeout(() => setExportNotice(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [exportNotice]);
   const primsRef = useRef(primitives);
   primsRef.current = primitives;
   const homeHeightRef = useRef(heightM);
@@ -586,45 +701,51 @@ export default function Viewport({
 
         {/* asset is authored Z-up; rotate into Three's Y-up world */}
         <group rotation={[-Math.PI / 2, 0, 0]}>
-          <AssetMesh
-            primitives={primitives}
-            spec={spec}
-            selected={selected}
-            onSelect={onSelect}
-            tourJoint={tourJoint}
-            wireframe={wireframe}
-            explode={exploded}
-            lightsOn={lightsOn}
-            editingKey={editData ? editKey : null}
-            flash={flash}
-          />
-          {editData && editKey && (
-            <group
-              key={`${editKey}-${tool}`}
-              ref={setGizmoTarget}
-              position={[
-                editData.pivot[0] + curOffset[0],
-                editData.pivot[1] + curOffset[1],
-                editData.pivot[2] + curOffset[2],
-              ]}
-              rotation={new THREE.Euler(curRotation[0], curRotation[1], curRotation[2], "ZYX")}
-              scale={curScale}
-            >
-              {editData.prims.map((prim) => (
-                <PrimitiveMesh
-                  key={`${prim.component}/${prim.name}`}
-                  prim={prim}
-                  spec={spec}
-                  selected={{ component: prim.component }}
-                  onSelect={() => {}}
-                  tourJoint={null}
-                  wireframe={wireframe}
-                  lightsOn={lightsOn}
-                  explodeOffset={[-editData.pivot[0], -editData.pivot[1], -editData.pivot[2]]}
-                />
-              ))}
-            </group>
-          )}
+          {/* asset-only subtree: what the .glb export reads (see
+              assetGroupRef above) — deliberately excludes lights, grid,
+              ground, silhouette, dims, and the gizmo widget, all of which
+              render as siblings outside this group. */}
+          <group ref={assetGroupRef}>
+            <AssetMesh
+              primitives={primitives}
+              spec={spec}
+              selected={selected}
+              onSelect={onSelect}
+              tourJoint={tourJoint}
+              wireframe={wireframe}
+              explode={exploded}
+              lightsOn={lightsOn}
+              editingKey={editData ? editKey : null}
+              flash={flash}
+            />
+            {editData && editKey && (
+              <group
+                key={`${editKey}-${tool}`}
+                ref={setGizmoTarget}
+                position={[
+                  editData.pivot[0] + curOffset[0],
+                  editData.pivot[1] + curOffset[1],
+                  editData.pivot[2] + curOffset[2],
+                ]}
+                rotation={new THREE.Euler(curRotation[0], curRotation[1], curRotation[2], "ZYX")}
+                scale={curScale}
+              >
+                {editData.prims.map((prim) => (
+                  <PrimitiveMesh
+                    key={`${prim.component}/${prim.name}`}
+                    prim={prim}
+                    spec={spec}
+                    selected={{ component: prim.component }}
+                    onSelect={() => {}}
+                    tourJoint={null}
+                    wireframe={wireframe}
+                    lightsOn={lightsOn}
+                    explodeOffset={[-editData.pivot[0], -editData.pivot[1], -editData.pivot[2]]}
+                  />
+                ))}
+              </group>
+            )}
+          </group>
         </group>
 
         {/* gizmo widget at scene root (outside the Z-up group) so its axes
@@ -656,7 +777,9 @@ export default function Viewport({
           sunNeedleRef={sunNeedleRef}
           sunAzRef={sunAzRef}
           homeHeightRef={homeHeightRef}
+          assetGroupRef={assetGroupRef}
           onFocusChange={(fp) => setTourJoint(fp?.joint ?? null)}
+          onExportError={setExportNotice}
         />
       </Canvas>
 
@@ -727,6 +850,20 @@ export default function Viewport({
           title="Screenshot (download PNG)"
         >
           📷
+        </button>
+        <button
+          className="nav-btn"
+          onClick={() => {
+            try {
+              apiRef.current?.exportGlb(sanitizeExportFilename(spec.name || spec.asset_type));
+            } catch (err) {
+              console.error("GLB export failed", err);
+              setExportNotice("Could not export .glb — see console for details.");
+            }
+          }}
+          title="Download 3D model (.glb)"
+        >
+          ⬇
         </button>
       </div>
 
@@ -799,6 +936,7 @@ export default function Viewport({
             : "click a part to select · drag orbit · WASD move · Q/E down/up"}
       </div>
       {banner && <div className="tour-hint tour-hint--check">{banner}</div>}
+      {exportNotice && <div className="tour-hint tour-hint--error">{exportNotice}</div>}
       {touring && <div className="tour-hint">🔩 Touring connection points…</div>}
       {lightsOn && emitters.length > 0 && (
         <div className="tour-hint tour-hint--night">
