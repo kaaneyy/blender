@@ -1389,6 +1389,87 @@ hr {
   color: var(--accent);
 }
 
+/* Panel discussion: peer reactions quoted under a perspective card's own
+ * findings, plus the panel-wide consensus banner shown above all four
+ * cards. Both are additive and quiet — annotations, not new findings — so
+ * they reuse the existing finding/code-status color vocabulary rather than
+ * introducing new colors. */
+.consensus-banner {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--panel-3);
+}
+
+.consensus-banner__title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.consensus-banner__summary {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.consensus-banner__priorities {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.consensus-banner__priorities li {
+  margin-bottom: 2px;
+}
+
+.peer-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-2);
+}
+
+.peer-note {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.peer-note__icon {
+  flex-shrink: 0;
+}
+
+.peer-note__stance {
+  flex-shrink: 0;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.peer-note__stance--concur {
+  color: var(--ok-text);
+}
+
+.peer-note__stance--dispute {
+  color: var(--danger-text);
+}
+
+.peer-note__stance--refine {
+  color: var(--text-muted);
+}
+
+.peer-note__text {
+  overflow-wrap: anywhere;
+}
+
 .check-apply {
   position: relative;
   margin-top: 4px;
