@@ -224,6 +224,334 @@ def buildability_errors(findings: List[dict]) -> List[dict]:
 
 
 # --------------------------------------------------------------------------
+# Embedded-part detection (check_embedded_parts)
+# --------------------------------------------------------------------------
+#: fraction of a component's total AABB volume that must lie inside OTHER
+#: components' boxes before it is flagged as rammed-through/intersected
+#: geometry rather than a seated joint. A proper fabrication embed (the
+#: repo's own convention: 10-20mm seating, e.g. pergola.json's beams sit
+#: "post_height + beam_depth/2 - 0.02" — a 20mm overlap into a multi-meter
+#: beam/post) puts a fraction on the order of 0.02-0.001, far below this;
+#: park_bench.json's slat/rail embeds (also ~10-20mm into meter-scale
+#: frame members) land in the same range. 0.6 leaves a wide margin between
+#: legitimate joints and the "AI intersected the whole part" defect (which
+#: reproduces at fractions approaching 1.0).
+EMBED_OVERLAP_RATIO = 0.6
+
+#: A component that RAMS THROUGH a thin host (poking out both sides) can
+#: have a *low* self-volume-inside-host fraction (the host may be much
+#: thinner than the piercing part is long) and so evades EMBED_OVERLAP_RATIO
+#: entirely. This constant instead asks: does the pair's AABB overlap span
+#: nearly the host's FULL extent along >=2 axes, with the piercing part
+#: overrunning the host on BOTH sides along at least one of those axes?
+#: Verified against the repo's own legitimate joints (see
+#: TestPiercedParts in test_connectivity.py for the measured numbers):
+#: pergola post<->beam (a 20mm bottom-face embed) and rafter<->beam (a
+#: seated-on-top joint) each pierce only 1 host axis at ratio 1.0 in either
+#: direction — never 2 — so they stay clean regardless of how tight this
+#: fraction is; 0.95 leaves headroom for a joint whose face dimensions
+#: aren't pixel-perfectly aligned with its host while still catching a
+#: part sized to reach all the way across a host's cross-section.
+PIERCE_AXIS_FRACTION = 0.95
+#: A SEPARATE false positive the axis/both-sides rule alone cannot rule
+#: out: a small part flush-mounted on the SIDE of a much larger box (e.g.
+#: a sign bracket 20mm-embedded into a post's face) is narrower than its
+#: host on the two non-insertion axes essentially by definition — its own
+#: cross-section is a strict subset of the big member's, so those two axes
+#: read as "spans ~100% of HOST's extent, HOST overruns on both sides"
+#: with HOST and PIERCER swapped (measured: pergola's own post<->cap
+#: synthetic joint gave axis ratios 1.0/1.0 on y/z from the "post pierces
+#: cap" direction — mathematically identical in shape to the true lantern
+#: repro, despite being a normal small-bracket-on-a-post attachment).
+#: What actually differs: in a genuine ramming-through, the HOST is the
+#: pre-existing, comparably-or-more substantial member — never something
+#: whose own volume is dwarfed by the "piercer" it supposedly can't
+#: contain. Requiring the host prim's volume be at least this fraction of
+#: the piercer prim's volume (0.0126 for the post/cap false positive vs.
+#: ~2.85 for the true beam/lantern repro, see TestPiercedParts) rules out
+#: "the big pre-existing member's cross-section swallows a small attached
+#: bracket" without weakening the axis/both-sides rule itself.
+PIERCE_MIN_HOST_VOLUME_RATIO = 0.5
+#: (x, y, z) axis labels used in pierced_part axis lists/messages.
+_AXES = ("x", "y", "z")
+#: float-noise guard so a flush-fit face (embed offset 0, coordinates
+#: equal up to rounding) is never misread as "overrunning both sides" —
+#: real fabrication embeds are orders of magnitude larger than this.
+_PIERCE_EPS = 1e-6
+
+
+def _minmax(box: Tuple) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """(center, half) -> (lo, hi) corners."""
+    center, half = box
+    lo = tuple(center[k] - half[k] for k in range(3))
+    hi = tuple(center[k] + half[k] for k in range(3))
+    return lo, hi
+
+
+def _box_volume(minmax: Tuple) -> float:
+    lo, hi = minmax
+    return max(0.0, hi[0] - lo[0]) * max(0.0, hi[1] - lo[1]) * max(0.0, hi[2] - lo[2])
+
+
+def _intersection_volume(a: Tuple, b: Tuple) -> float:
+    """Volume of the (axis-aligned, exact) intersection of two (lo, hi) boxes."""
+    (a_lo, a_hi), (b_lo, b_hi) = a, b
+    vol = 1.0
+    for k in range(3):
+        d = min(a_hi[k], b_hi[k]) - max(a_lo[k], b_lo[k])
+        if d <= 0:
+            return 0.0
+        vol *= d
+    return vol
+
+
+def _box_prims_by_component(prims: List[Primitive]) -> Dict[str, List[Tuple]]:
+    """Same non-cut, non-'hardware' filter as _boxes_by_component, further
+    restricted to kind == 'box' — used only by the pierced_part signature
+    (see check_embedded_parts). "Extends beyond the host on both sides" is
+    a geometrically EXACT claim for a box's AABB, but hardware._aabb's
+    'exact' AABB for round/swept kinds (cylinder, cone, tube, sweep,
+    lathe, loft, ...) is still a bounding box that is loose at the
+    corners — a bracket merely touching a round pole's surface can sit
+    entirely inside the pole's SQUARE bounding box without touching any
+    actual pole material. That looseness reads as "pierces on 2+ axes,
+    overrunning both sides" even though nothing physically ranned through
+    anything (measured false positives: bike_rack.json's thin base
+    channel plate vs. its round swept hoops, and street_light.json's
+    round pole vs. its tube/sweep/loft-built arm mount — both clean once
+    restricted to box-only pairs, see TestPiercedParts). Box-only pairs
+    keep the both-sides overrun claim trustworthy while still catching the
+    box-vs-box repro this signature exists for."""
+    out: Dict[str, List[Tuple]] = {}
+    for p in prims:
+        if p.cut or p.component == "hardware" or p.kind != "box":
+            continue
+        out.setdefault(p.component, []).append(_aabb(p))
+    return out
+
+
+def _prim_pierce_axes(piercer: Tuple, host: Tuple) -> List[str]:
+    """If `piercer` (lo, hi) rams through `host` (lo, hi) — its overlap with
+    the host spans >= PIERCE_AXIS_FRACTION of the host's own extent on at
+    least 2 axes, AND on at least one of those axes the piercer's box
+    extends beyond the host on BOTH sides (not just a flush face or a
+    corner-fit) — return the sorted list of pierced axis names. Returns []
+    if the two boxes don't even overlap, or don't meet the pierce
+    criteria (e.g. a legitimate 10-20mm face embed, which pierces at most
+    1 axis at full ratio: the joint axis is flush/embedded, the other two
+    are just "part sits within host's footprint on that axis", not a
+    through-and-through overrun; or a small part flush-mounted on a much
+    larger host's face, which fails the host-volume floor below)."""
+    p_lo, p_hi = piercer
+    h_lo, h_hi = host
+
+    # a genuine host is never volumetrically dwarfed by what supposedly
+    # can't contain it — see PIERCE_MIN_HOST_VOLUME_RATIO
+    if _box_volume(host) < _box_volume(piercer) * PIERCE_MIN_HOST_VOLUME_RATIO:
+        return []
+
+    overlaps = [0.0, 0.0, 0.0]
+    for k in range(3):
+        ov = min(p_hi[k], h_hi[k]) - max(p_lo[k], h_lo[k])
+        if ov <= 0:
+            return []  # boxes don't actually intersect
+        overlaps[k] = ov
+
+    pierced: List[str] = []
+    both_sides: List[str] = []
+    for k, name in enumerate(_AXES):
+        h_ext = h_hi[k] - h_lo[k]
+        if h_ext <= 0:
+            continue
+        if overlaps[k] / h_ext >= PIERCE_AXIS_FRACTION:
+            pierced.append(name)
+            if p_lo[k] < h_lo[k] - _PIERCE_EPS and p_hi[k] > h_hi[k] + _PIERCE_EPS:
+                both_sides.append(name)
+
+    if len(pierced) >= 2 and both_sides:
+        return pierced
+    return []
+
+
+def _none_declared_pairs(spec) -> set:
+    """Component-name pairs (as frozensets) the spec explicitly declares
+    with {"type": "none"} — the repo's existing vocabulary for "these two
+    are known to coexist without a fabrication joint" (CLAUDE.md: "type:
+    'none' suppresses a joint"). e.g. planter.json declares
+    {"a": "planting", "b": "urn", "type": "none"} because potting soil is
+    *meant* to sit fully inside the hollow urn's coarse AABB envelope —
+    that is nesting-by-design, not the ramming-through-solid-geometry
+    defect this check exists to catch, so such declared pairs are exempt."""
+    pairs = set()
+    if not isinstance(spec, dict):
+        return pairs
+    for d in spec.get("connections") or []:
+        if not isinstance(d, dict) or d.get("type") != "none":
+            continue
+        a, b = d.get("a"), d.get("b")
+        if not isinstance(a, str) or not isinstance(b, str):
+            continue
+        if a == "ground" or b == "ground":
+            continue
+        pairs.add(frozenset((a.split("/")[0], b.split("/")[0])))
+    return pairs
+
+
+def check_embedded_parts(prims: List[Primitive], spec=None) -> List[dict]:
+    """Flags two geometry signatures of "the AI just intersected the added
+    part with the rest of the model" instead of seating it with a modest
+    fabrication embed:
+
+    * kind "embedded_part" — a component whose volume sits MOSTLY INSIDE
+      other components' boxes (>= EMBED_OVERLAP_RATIO by volume). Catches
+      a part buried whole inside a much bigger host.
+    * kind "pierced_part" — a component that rams clean THROUGH a host,
+      exiting both sides, even when the host is thin enough that the
+      piercer's self-volume-inside-host fraction stays low (e.g. a long
+      part skewered through a thin beam scores low on volume fraction but
+      is exactly the same defect). See _prim_pierce_axes.
+
+    Both share this dict shape: {severity: "warning", kind: str,
+    message: str (contains both component names and, for pierced_part,
+    the pierced axes), component: str (the offending/piercing component)}.
+
+    Per-component AABBs come from non-cut, non-'hardware' prims via
+    hardware._aabb, same filter as check_buildability/check_scale_sanity.
+    AABBs are exact for boxes/spheres/tubes and oriented cylinders/cones,
+    and tight-rotated-corner for other rotated constructed kinds (see
+    hardware._aabb / _rotated_aabb) — a rotated prim contributes its WORLD
+    AABB, which can slightly over-estimate true overlap for non-box shapes
+    tilted off-axis. That is a pre-existing property of _aabb shared with
+    the other connectivity checks, not something this check introduces.
+
+    APPROXIMATION: for each primitive box belonging to component C, this
+    takes the single LARGEST intersection volume against any one other
+    component's primitive box (the "per-prim max-over-other-boxes"
+    approximation the brief allows as an alternative to full box-union
+    volume), then sums across C's prims and divides by the sum of C's own
+    prim volumes. Taking a max (not a sum) over other boxes per prim
+    guarantees no double-counting when multiple other components overlap
+    the same region, so the resulting fraction can never exceed 1.0.
+    BIAS: this can UNDERESTIMATE true overlap when a single primitive of C
+    straddles two (or more) other components' boxes with no single other
+    box covering the majority of it — e.g. a part that is ~50% inside a
+    beam and ~50% inside an adjacent, non-overlapping post would score
+    ~50%, not the true ~100% total-embedded fraction. This bias only
+    under-flags that rarer straddling case; it never over-flags a
+    legitimate seated joint (which has no single other box anywhere near
+    covering it).
+
+    EXEMPTION: a component pair the spec explicitly declares with
+    {"type": "none"} (see _none_declared_pairs) is skipped entirely —
+    that vocabulary already means "these two are known to coexist without
+    a joint" (e.g. potting soil declared 'none' against its urn: it is
+    *meant* to sit inside the container's coarse AABB envelope, which is
+    nesting-by-design rather than the ramming-through-solid defect this
+    check targets). Without this exemption a hollow container modeled as
+    a single lathe/tube primitive looks, by AABB alone, indistinguishable
+    from solid stock — hardware._aabb has no concept of "hollow".
+
+    Never raises for a valid primitive list. Skips cut prims, the
+    'hardware' component (same filter as the load-path/scale checks
+    above), and specs with fewer than two components (nothing to embed
+    into)."""
+    by_comp = _boxes_by_component(prims)
+    comps = sorted(by_comp)
+    if len(comps) < 2:
+        return []
+
+    minmax_by_comp = {c: [_minmax(box) for box in boxes] for c, boxes in by_comp.items()}
+    exempt_pairs = _none_declared_pairs(spec)
+
+    findings: List[dict] = []
+    for c in comps:
+        c_boxes = minmax_by_comp[c]
+        total_volume = sum(_box_volume(b) for b in c_boxes)
+        if total_volume <= 0:
+            continue
+
+        overlap_volume = 0.0
+        contributions: Dict[str, float] = {}
+        for pb in c_boxes:
+            best_vol = 0.0
+            best_other: Optional[str] = None
+            for o in comps:
+                if o == c or frozenset((c, o)) in exempt_pairs:
+                    continue
+                for ob in minmax_by_comp[o]:
+                    v = _intersection_volume(pb, ob)
+                    if v > best_vol:
+                        best_vol = v
+                        best_other = o
+            if best_other is not None:
+                overlap_volume += best_vol
+                contributions[best_other] = contributions.get(best_other, 0.0) + best_vol
+
+        fraction = overlap_volume / total_volume
+        if fraction >= EMBED_OVERLAP_RATIO:
+            other = max(contributions, key=contributions.get)
+            findings.append({
+                "severity": "warning",
+                "kind": "embedded_part",
+                "message": (
+                    f"Component '{c}' is {fraction * 100:.0f}% embedded inside "
+                    f"component '{other}' (by AABB volume) — this looks like "
+                    f"intersected/rammed-through geometry rather than a seated "
+                    f"joint. Pull '{c}' back so it only overlaps '{other}' by a "
+                    f"modest 10-20mm fabrication embed."
+                ),
+                "component": c,
+            })
+
+    # ---------------------------------------------------- pierced-through
+    # A part that rams clean through a THIN host (poking out both sides)
+    # can have a low self-volume-inside-host fraction — the embed check
+    # above misses it entirely when the host is thin relative to the
+    # piercing part's length. Checked per ordered (piercer, host) component
+    # pair, at the primitive level (not merged per-component envelopes, so
+    # one beam among several doesn't get its extent inflated by unrelated
+    # siblings), restricted to box-kind prims on BOTH sides (see
+    # _box_prims_by_component for why): the first primitive pair that
+    # satisfies _prim_pierce_axes wins the pair.
+    box_by_comp = _box_prims_by_component(prims)
+    box_comps = set(box_by_comp)
+    for c in comps:
+        if c not in box_comps:
+            continue
+        c_boxes = [_minmax(b) for b in box_by_comp[c]]
+        for o in comps:
+            if o == c or o not in box_comps or frozenset((c, o)) in exempt_pairs:
+                continue
+            o_boxes = [_minmax(b) for b in box_by_comp[o]]
+            axes_hit: List[str] = []
+            for pb in c_boxes:
+                for ob in o_boxes:
+                    axes_hit = _prim_pierce_axes(pb, ob)
+                    if axes_hit:
+                        break
+                if axes_hit:
+                    break
+            if axes_hit:
+                axes_str = " and ".join(axes_hit)
+                findings.append({
+                    "severity": "warning",
+                    "kind": "pierced_part",
+                    "message": (
+                        f"Component '{c}' pierces through component '{o}' — "
+                        f"it exits '{o}''s envelope on both sides along the "
+                        f"{axes_str} axis/axes, spanning nearly all of "
+                        f"'{o}''s extent there. This looks like "
+                        f"rammed-through/intersected geometry rather than a "
+                        f"seated joint. Pull '{c}' back so it only overlaps "
+                        f"'{o}' by a modest 10-20mm fabrication embed."
+                    ),
+                    "component": c,
+                })
+
+    return findings
+
+
+# --------------------------------------------------------------------------
 # Scale sanity
 # --------------------------------------------------------------------------
 

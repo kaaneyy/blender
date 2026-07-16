@@ -240,6 +240,57 @@ function parsePanel(raw: unknown): PanelEntry[] | undefined {
   return out;
 }
 
+/** What an AI edit (refine/focus/wizard/improve) actually touched, from a
+ * server-side diff of the spec before/after. Absent on an older backend or
+ * when the diff itself failed — callers must treat it as fully optional and
+ * degrade to today's plain "Updated ..." messaging when it's missing. */
+export interface SpecChanges {
+  added: string[];
+  removed: string[];
+  changed: string[];
+  params_changed: string[];
+  summary: string;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/** Tolerant parse of the optional `changes` envelope key: any malformed
+ * shape degrades to `undefined` rather than throw — the edit already
+ * succeeded either way, this only gates the "what changed" chat line. */
+function parseChanges(raw: unknown): SpecChanges | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  if (!isStringArray(c.added)) return undefined;
+  if (!isStringArray(c.removed)) return undefined;
+  if (!isStringArray(c.changed)) return undefined;
+  if (!isStringArray(c.params_changed)) return undefined;
+  if (typeof c.summary !== "string") return undefined;
+  return {
+    added: c.added,
+    removed: c.removed,
+    changed: c.changed,
+    params_changed: c.params_changed,
+    summary: c.summary,
+  };
+}
+
+/** Compact one-line rendering of a `changes` envelope: the backend's own
+ * summary when it wrote one, else composed from the added/changed/removed
+ * part names. Returns null when there's nothing worth showing (no changes
+ * object, or an empty diff) so callers can fall back to today's output. */
+export function summarizeChanges(changes: SpecChanges | undefined): string | null {
+  if (!changes) return null;
+  const summary = changes.summary.trim();
+  if (summary) return summary;
+  const parts: string[] = [];
+  if (changes.changed.length) parts.push(`Changed: ${changes.changed.join(", ")}`);
+  if (changes.added.length) parts.push(`Added: ${changes.added.join(", ")}`);
+  if (changes.removed.length) parts.push(`Removed: ${changes.removed.join(", ")}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
@@ -264,14 +315,14 @@ export async function refineSpecStream(
   message: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
-): Promise<AssetSpec> {
+): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
   const result = await streamPost(
     "/refine-spec-stream",
     { spec, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
-  return result.spec as AssetSpec;
+  return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
 }
 
 /** Deep-detail one named area of the current spec, keeping the rest intact. */
@@ -301,14 +352,14 @@ export async function wizardStepStream(
   message: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
-): Promise<AssetSpec> {
+): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
   const result = await streamPost(
     "/wizard-step-stream",
     { spec, step, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
-  return result.spec as AssetSpec;
+  return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
 }
 
 /** AI fabrication review of the spec's connections. The backend answers in
@@ -411,6 +462,7 @@ export interface ImproveResult {
   spec: AssetSpec;
   findings: Finding[];
   perspectives?: Perspective[];
+  changes?: SpecChanges;
 }
 
 /** Runs the app's deterministic checks against the current spec, then asks
@@ -431,7 +483,8 @@ export async function improveSpecStream(
   if (!result?.spec) throw new Error("Backend returned no spec");
   const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
   const perspectives = parsePerspectives(result.perspectives);
-  return { spec: result.spec as AssetSpec, findings, perspectives };
+  const changes = parseChanges(result.changes);
+  return { spec: result.spec as AssetSpec, findings, perspectives, changes };
 }
 
 export async function installGuideStream(

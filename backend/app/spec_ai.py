@@ -723,6 +723,197 @@ def _scale_findings(prims: list, spec: dict) -> list:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Edit-discipline enforcement — every AI edit (refine / focus / wizard step /
+# improve) reports EXACTLY what changed, the materials wizard step is
+# mechanically barred from touching geometry, and results with parts rammed
+# through existing geometry get a targeted retry instead of shipping
+# silently. See ``_run_edit``/``_edit_finalize`` below for where this wires
+# into the retry engine.
+# ---------------------------------------------------------------------------
+
+def _spec_components(spec: dict) -> set:
+    """Component names declared in ``spec``: each primitive's own
+    "component" (default "body") when ``primitives`` is present, else the
+    top-level ``components`` list (curated-builder specs, e.g. street_light,
+    carry no primitives of their own)."""
+    prims = spec.get("primitives") or []
+    if prims:
+        return {p.get("component", "body") for p in prims if isinstance(p, dict)}
+    return {c for c in (spec.get("components") or []) if isinstance(c, str)}
+
+
+def _prims_by_component(spec: dict) -> dict:
+    by_component: dict = {}
+    for p in spec.get("primitives") or []:
+        if isinstance(p, dict):
+            by_component.setdefault(p.get("component", "body"), []).append(p)
+    return by_component
+
+
+def _param_values(spec: dict) -> dict:
+    """{id: value} for every parameter AND toggle — both can drive geometry
+    (expressions, visible_if), so both count toward "params_changed"."""
+    values: dict = {}
+    for key in ("parameters", "toggles"):
+        for entry in spec.get(key) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                values[entry["id"]] = entry.get("value")
+    return values
+
+
+def spec_changes(before: dict, after: dict) -> dict:
+    """Deterministic before→after diff of two AssetSpecs — the frozen
+    envelope the frontend's edit tools consume: components ``added``/
+    ``removed``, ``changed`` components (their primitive entries differ,
+    compared as normalized JSON), ``params_changed`` (parameter/toggle ids
+    whose value differs), and a one-line human ``summary`` composed from
+    whichever of those are non-empty ("No structural changes" when none
+    are). Pure and total: malformed input just yields empty sets rather
+    than raising, though callers still wrap the call (``_safe_spec_changes``)
+    since this is user-facing and must never break an edit response."""
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+
+    before_components = _spec_components(before)
+    after_components = _spec_components(after)
+    added = sorted(after_components - before_components)
+    removed = sorted(before_components - after_components)
+
+    changed = []
+    if before.get("primitives") or after.get("primitives"):
+        before_by_component = _prims_by_component(before)
+        after_by_component = _prims_by_component(after)
+        for component in sorted(before_components & after_components):
+            b = json.dumps(before_by_component.get(component, []), sort_keys=True)
+            a = json.dumps(after_by_component.get(component, []), sort_keys=True)
+            if b != a:
+                changed.append(component)
+
+    before_params = _param_values(before)
+    after_params = _param_values(after)
+    params_changed = sorted(
+        pid for pid in (set(before_params) | set(after_params))
+        if before_params.get(pid) != after_params.get(pid)
+    )
+
+    phrases = []
+    if changed:
+        phrases.append(f"changed {', '.join(changed)}")
+    if added:
+        phrases.append(f"added {', '.join(added)}")
+    if removed:
+        phrases.append(f"removed {', '.join(removed)}")
+    if params_changed:
+        phrases.append(f"adjusted {', '.join(params_changed)}")
+    summary = "; ".join(phrases) if phrases else "No structural changes"
+    if phrases:
+        summary = summary[0].upper() + summary[1:]
+
+    return {
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "params_changed": params_changed,
+        "summary": summary,
+    }
+
+
+def _safe_spec_changes(before: dict, after: dict) -> dict | None:
+    """``spec_changes``, but a diff failure never breaks the edit response —
+    the "changes" key is simply omitted."""
+    try:
+        return spec_changes(before, after)
+    except Exception:
+        return None
+
+
+def _embedded_part_findings(prims: list, spec: dict) -> list:
+    """Interpenetration check for parts rammed through existing geometry
+    (``check_embedded_parts`` in the sibling ``blender.builders.connectivity``
+    module — built independently in a separate worktree; not yet present in
+    this tree). Imported LAZILY, same deploy-order safety as
+    ``_scale_findings``: an import/attribute problem, or an unexpected
+    exception from the checker itself, degrades to no findings at all
+    rather than a crash — the checker is contracted to never raise, but the
+    call is still guarded defensively."""
+    try:
+        from blender.builders.connectivity import check_embedded_parts
+    except (ImportError, AttributeError):
+        return []
+    try:
+        return check_embedded_parts(prims, spec) or []
+    except Exception:
+        return []
+
+
+def _enforce_materials_scope(changes: dict | None, lenient: bool) -> list:
+    """The materials wizard step's directive claims geometry is untouched —
+    mechanically enforce that instead of trusting the prompt. ``changes`` is
+    the diff of the step's result against its input spec; any added/
+    removed/changed component or changed parameter/toggle value means
+    geometry moved, which is illegal for this step. Raises a classified
+    "scope" error naming exactly what was touched, unless ``lenient`` (the
+    final attempt), in which case it degrades to a warning finding instead
+    of failing the whole step. A diff that could not be computed
+    (``changes is None``) skips the gate rather than blocking on an
+    unrelated failure."""
+    if not changes:
+        return []
+    touched = changes["added"] + changes["removed"] + changes["changed"]
+    if not touched and not changes["params_changed"]:
+        return []
+    parts = []
+    if touched:
+        parts.append(f"component(s) {', '.join(touched)}")
+    if changes["params_changed"]:
+        parts.append(f"parameter/toggle value(s) {', '.join(changes['params_changed'])}")
+    what = " and ".join(parts)
+    if lenient:
+        return [{
+            "severity": "warning",
+            "kind": "scope",
+            "message": f"Materials step changed {what}, but geometry is "
+                       f"read-only for this step. {changes['summary']}.",
+        }]
+    raise SpecGenerationError(
+        f"Materials step illegally changed {what}.",
+        kind="scope",
+        hint=(
+            "The materials step's contract: geometry is READ-ONLY — you "
+            "may change ONLY the top-level \"materials\" object (preset, "
+            f"color, metalness, roughness, uv_scale, emission, weathering, "
+            f"finish per slot). You illegally changed {what}. Return the "
+            "spec again with every component, primitive, parameter, and "
+            "toggle reverted to its EXACT previous value, keeping ONLY the "
+            "materials edits."
+        ),
+    )
+
+
+def _enforce_integration(findings: list, lenient: bool) -> list:
+    """Embedded-part findings from ``_embedded_part_findings``. Raises a
+    classified "integration" error naming the offending parts unless
+    ``lenient`` (the final attempt), in which case the findings are
+    surfaced as violations instead of failing the whole edit."""
+    if not findings:
+        return []
+    if lenient:
+        return findings
+    messages = [f.get("message", "") for f in findings if isinstance(f, dict)]
+    raise SpecGenerationError(
+        "Added/changed parts are embedded in existing geometry: "
+        + " ".join(messages[:4]),
+        kind="integration",
+        hint=(
+            " ".join(messages[:4])
+            + " Seat the part on a surface with a 10-20 mm embed and "
+            "declare a connection in \"connections\" instead of "
+            "intersecting it."
+        ),
+    )
+
+
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
     """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3),
     buildability-check (contact graph: floating parts, below-grade geometry,
@@ -733,6 +924,16 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
     deterministic findings feed the retry — unless ``lenient_buildability``
     (the final attempt), in which case they're accepted and surfaced as
     violations instead, so a stubborn generation never bricks."""
+    out, _prims = _postprocess_core(raw, code_mode, lenient_buildability)
+    return out
+
+
+def _postprocess_core(raw: str, code_mode: str,
+                      lenient_buildability: bool = False) -> tuple:
+    """Same as :func:`_postprocess` but also returns the computed
+    primitives, so edit-discipline gates that need them (the integration
+    gate's ``check_embedded_parts``) can reuse this build instead of calling
+    ``compute_primitives`` a second time."""
     stripped = _strip_fences(raw)
     try:
         spec = json.loads(stripped)
@@ -822,7 +1023,7 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
             out["ok"] = False
     if scale_findings:
         out["violations"] = out["violations"] + scale_findings
-    return out
+    return out, prims
 
 
 #: LLMError texts that are worth retrying (rate limits, provider hiccups,
@@ -900,6 +1101,51 @@ def _run(system: str, user: str, code_mode: str, model: str | None = None) -> di
     )
 
 
+def _edit_finalize(code_mode: str, input_spec: dict, *, wizard_step_key: str | None = None,
+                   integration_gate: bool = False):
+    """Build a ``finalize(raw, lenient=False)`` callable for an edit against
+    an EXISTING spec (refine / focus / wizard step / improve — never
+    ``generate_spec``, which has no "existing" geometry to diff against).
+    Shared by the non-streaming retry loop (``_run_edit``) and the streaming
+    pipeline so both enforce identically:
+
+    - always attaches ``out["changes"]`` — the diff of the result against
+      ``input_spec`` (``_safe_spec_changes``; omitted if the diff fails);
+    - when ``wizard_step_key == "materials"``, mechanically gates that step
+      on geometry staying untouched (``_enforce_materials_scope``);
+    - when ``integration_gate``, checks the result's primitives for parts
+      rammed through existing geometry (``_enforce_integration`` over
+      ``_embedded_part_findings``), reusing the primitives ``_postprocess_core``
+      already computed rather than rebuilding them."""
+    def finalize(raw: str, lenient: bool = False) -> dict:
+        out, prims = _postprocess_core(raw, code_mode, lenient_buildability=lenient)
+        changes = _safe_spec_changes(input_spec, out.get("spec"))
+        if changes is not None:
+            out["changes"] = changes
+        if wizard_step_key == "materials":
+            out["violations"] = out["violations"] + _enforce_materials_scope(changes, lenient)
+        if integration_gate:
+            findings = _embedded_part_findings(prims, out.get("spec") or {})
+            out["violations"] = out["violations"] + _enforce_integration(findings, lenient)
+        return out
+    return finalize
+
+
+def _run_edit(system: str, user: str, code_mode: str, input_spec: dict, *,
+             model: str | None = None, wizard_step_key: str | None = None,
+             integration_gate: bool = False) -> dict:
+    """Like ``_run`` but for an edit against ``input_spec`` — see
+    ``_edit_finalize`` for what that adds. Runs inside the classified retry
+    loop so a scope/integration violation triggers a targeted correction
+    prompt, not a silent ship."""
+    return _complete_with_retries(
+        system, user,
+        _edit_finalize(code_mode, input_spec, wizard_step_key=wizard_step_key,
+                       integration_gate=integration_gate),
+        model=model,
+    )
+
+
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                   clarifications: list | None = None) -> dict:
     """T2.1: natural-language prompt (+ answered clarifying questions) →
@@ -917,15 +1163,27 @@ def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = No
     return result
 
 
+def _refine_user(spec: dict, message: str) -> str:
+    return (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Apply this change and return the FULL updated AssetSpec JSON "
+        f"(keep everything else identical, including ids):\n{message}\n\n"
+        "EDIT DISCIPLINE — this is a surgical edit, not a redesign:\n"
+        "- NEVER modify components, primitives, parameters, toggles, or "
+        "materials unrelated to the request above — every unrelated change "
+        "gets caught and costs a retry.\n"
+        "- When ADDING something, seat it on a REAL surface of the named "
+        "host with a 10-20 mm embed (not floating, not merely touching, and "
+        "never driven through the host's interior) AND declare its "
+        "connection in the top-level \"connections\" array."
+    )
+
+
 def refine_spec(spec: dict, message: str, code_mode: str = "strict",
                 model: str | None = None) -> dict:
     """T2.5: current spec + chat message → modified, re-validated spec."""
-    user = (
-        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
-        f"Apply this change and return the FULL updated AssetSpec JSON "
-        f"(keep everything else identical, including ids):\n{message}"
-    )
-    return _run(_system_prompt(code_mode), user, code_mode, model=model)
+    return _run_edit(_system_prompt(code_mode), _refine_user(spec, message), code_mode, spec,
+                     model=model, integration_gate=True)
 
 
 #: Focus refinement: deep-detail ONE named area, leave the rest byte-identical.
@@ -949,7 +1207,8 @@ def _focus_user(spec: dict, area: str) -> str:
 def focus_spec(spec: dict, area: str, code_mode: str = "strict",
                model: str | None = None) -> dict:
     """Deep-detail one area of the current spec, leaving the rest untouched."""
-    return _run(_system_prompt(code_mode), _focus_user(spec, area), code_mode, model=model)
+    return _run_edit(_system_prompt(code_mode), _focus_user(spec, area), code_mode, spec,
+                     model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -994,10 +1253,13 @@ _WIZARD_DIRECTIVES = {
         "bases/finials, machined for turned fittings, sheet for housings/panels, "
         "rough for galvanized poles and concrete). Add weathering ONLY if the "
         "request implies age or setting (an old park, movie dressing). Honor any "
-        "style/material words in the original request. Do NOT change geometry, "
-        "connections, toggles, or parameters — this pass is only about how the "
-        "asset is finished. Return the FULL updated AssetSpec JSON, keeping "
-        "every id, value, and part identical outside the materials."
+        "style/material words in the original request. GEOMETRY IS READ-ONLY FOR "
+        "THIS STEP: do NOT change geometry, connections, toggles, or parameters "
+        "— every primitive, component, parameter, and toggle value must come "
+        "back byte-identical to what you were given, no exceptions. This pass "
+        "is only about how the asset is finished. Return the FULL updated "
+        "AssetSpec JSON, keeping every id, value, and part identical outside "
+        "the materials."
     ),
     "details": (
         "STEP — WORKING PARTS. Detail the functional and adjustable parts of "
@@ -1038,8 +1300,9 @@ def wizard_step(spec: dict, step: str, message: str = "",
         raise SpecGenerationError(
             f"Unknown build step {step!r} (expected one of {', '.join(WIZARD_STEP_KEYS)})"
         )
-    return _run(_system_prompt(code_mode), _wizard_user(spec, step, message),
-                code_mode, model=model)
+    return _run_edit(_system_prompt(code_mode), _wizard_user(spec, step, message),
+                     code_mode, spec, model=model, wizard_step_key=step,
+                     integration_gate=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1571,9 +1834,9 @@ def improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None
     "perspectives"."""
     findings = _gather_findings(spec)
     perspectives = evaluate_perspectives(spec, model=model)
-    result = _run(_system_prompt(code_mode),
-                 _improve_user(spec, findings, perspectives),
-                 code_mode, model=model)
+    result = _run_edit(_system_prompt(code_mode),
+                       _improve_user(spec, findings, perspectives),
+                       code_mode, spec, model=model, integration_gate=True)
     result["findings"] = findings
     result["perspectives"] = perspectives
     return result
@@ -1584,9 +1847,10 @@ def stream_improve_spec(spec: dict, code_mode: str = "strict", model: str | None
     "findings" and "perspectives" the same way."""
     findings = _gather_findings(spec)
     perspectives = evaluate_perspectives(spec, model=model)
+    edit_finalize = _edit_finalize(code_mode, spec, integration_gate=True)
 
     def finalize(raw: str, lenient: bool = False) -> dict:
-        result = _postprocess(raw, code_mode, lenient_buildability=lenient)
+        result = edit_finalize(raw, lenient)
         result["findings"] = findings
         result["perspectives"] = perspectives
         return result
@@ -1751,6 +2015,8 @@ _KIND_LABEL = {
     "build": "fixing geometry that doesn't build",
     "buildability": "fixing floating/unsupported parts",
     "scale": "fixing component scale",
+    "scope": "undoing a change outside this step's scope",
+    "integration": "fixing parts embedded in existing geometry",
     "provider": "the AI provider hiccuped — retrying",
 }
 
@@ -1851,14 +2117,9 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
 
 def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict",
                        model: str | None = None):
-    user = (
-        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
-        f"Apply this change and return the FULL updated AssetSpec JSON "
-        f"(keep everything else identical, including ids):\n{message}"
-    )
     return _stream_pipeline(
-        _system_prompt(code_mode), user,
-        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        _system_prompt(code_mode), _refine_user(spec, message),
+        _edit_finalize(code_mode, spec, integration_gate=True),
         model=model,
     )
 
@@ -1867,7 +2128,7 @@ def stream_focus_spec(spec: dict, area: str, code_mode: str = "strict",
                       model: str | None = None):
     return _stream_pipeline(
         _system_prompt(code_mode), _focus_user(spec, area),
-        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        _edit_finalize(code_mode, spec),
         model=model,
     )
 
@@ -1885,7 +2146,7 @@ def stream_wizard_step(spec: dict, step: str, message: str = "",
         return bad()
     return _stream_pipeline(
         _system_prompt(code_mode), _wizard_user(spec, step, message),
-        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        _edit_finalize(code_mode, spec, wizard_step_key=step, integration_gate=True),
         model=model,
     )
 
