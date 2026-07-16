@@ -1703,6 +1703,156 @@ def evaluate_perspectives(spec: dict, model: str | None = None) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Cross-review — the four consultants read each other's cards and react.
+#
+# ONE extra AI call (never retried — advisory, not load-bearing, exactly
+# like each persona's own evaluation above) plays the SAME four personas
+# convening as a panel: each reacts to the other three's findings (concur /
+# dispute / refine), then the panel jointly agrees on priorities. This never
+# fails the improve pass — any parse/provider failure just degrades to no
+# peer_notes/consensus, identical to today's envelope. Only called from the
+# improve wiring below, and only when there is something to react to.
+# ---------------------------------------------------------------------------
+
+#: the 3 reaction stances a peer note may take — anything else clamps to
+#: "refine" (matches PERSPECTIVE_SEVERITIES's clamp-to-default pattern).
+PEER_NOTE_STANCES = ("concur", "dispute", "refine")
+#: at most this many peer reactions kept per perspective entry.
+MAX_PEER_NOTES = 3
+#: at most this many joint priorities in the consensus.
+MAX_CONSENSUS_PRIORITIES = 3
+
+
+def _cross_review_system() -> str:
+    personas = _personas()
+    roster = "\n".join(f'- {p["label"]} ({p["id"]})' for p in personas)
+    ids = ", ".join(f'"{p["id"]}"' for p in personas)
+    return (
+        "You are the same four-person discipline panel that already wrote "
+        "individual evaluations of this asset, now convening TOGETHER to "
+        "peer-review each other's written cards:\n"
+        f"{roster}\n\n"
+        "You are given each colleague's summary and findings. For EACH "
+        "colleague's card, write at most a couple of pointed reactions "
+        "FROM THE OTHER THREE PANELISTS (never a reaction from a card's "
+        "own persona to itself) — concur when a finding is confirmed from "
+        "your discipline's angle, dispute when you believe it is wrong or "
+        "overblown (say why), refine when it is right but mis-scoped (say "
+        "how it should be scoped instead). Then, as a panel, jointly agree "
+        "on the 1-3 things that matter most across all four cards.\n\n"
+        "Return ONLY this JSON object — no prose, no markdown fences, "
+        "nothing outside it:\n"
+        '{"peer_notes": {"<persona id>": [{"from": "<a DIFFERENT persona '
+        'id>", "stance": "concur"|"dispute"|"refine", "note": "<one '
+        'pointed sentence>"}, ...]}, "consensus": {"summary": "<one or two '
+        'sentences>", "priorities": ["<agreed priority>", ...]}}\n'
+        f"Persona ids are {ids}. A card's peer_notes list must never "
+        "contain a note whose \"from\" equals that same card's own persona "
+        f"id. At most {MAX_PEER_NOTES} notes per card. \"priorities\" must "
+        f"have 1 to {MAX_CONSENSUS_PRIORITIES} items."
+    )
+
+
+def _cross_review_user(spec: dict, perspectives: list) -> str:
+    brief = _perspectives_brief(perspectives)
+    return (
+        f"AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"The four evaluations to cross-review:\n"
+        f"{json.dumps(brief, separators=(',', ':'))}"
+    )
+
+
+def _sanitize_peer_note(raw, target_id: str, valid_ids: set) -> dict | None:
+    """One reaction from another persona to ``target_id``'s card, or
+    ``None`` to drop it. Dropped when "from" is missing/unknown or equals
+    the target's own id (a card may never react to itself); stance outside
+    the 3 allowed values clamps to "refine"; note is coerced to a
+    (length-capped) string."""
+    if not isinstance(raw, dict):
+        return None
+    frm = raw.get("from")
+    if frm not in valid_ids or frm == target_id:
+        return None
+    note = str(raw.get("note") or "").strip()
+    if not note:
+        return None
+    stance = raw.get("stance")
+    if stance not in PEER_NOTE_STANCES:
+        stance = "refine"
+    return {"from": frm, "stance": stance, "note": note[:300]}
+
+
+def _sanitize_consensus(raw) -> dict | None:
+    """The panel's joint summary + priorities, or ``None`` when missing/
+    malformed (an absent/bad consensus never drops valid peer_notes — the
+    two sanitize independently)."""
+    if not isinstance(raw, dict):
+        return None
+    summary = str(raw.get("summary") or "").strip()[:400]
+    priorities_raw = raw.get("priorities")
+    priorities: list = []
+    if isinstance(priorities_raw, list):
+        for p in priorities_raw:
+            text = str(p or "").strip()[:200]
+            if text:
+                priorities.append(text)
+            if len(priorities) >= MAX_CONSENSUS_PRIORITIES:
+                break
+    if not summary or not priorities:
+        return None
+    return {"summary": summary, "priorities": priorities}
+
+
+def _cross_review_finalize(raw: str, valid_ids: set) -> tuple:
+    """Parse + sanitize the cross-review reply into ``(peer_notes_by_id,
+    consensus)``. Raises ``ValueError``/``json.JSONDecodeError`` on
+    unusable JSON — the caller turns any of that (plus a provider error)
+    into total degradation, same as a persona evaluation failing."""
+    stripped = _strip_fences(raw)
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        raise ValueError("reply was not a JSON object")
+    peer_notes_raw = data.get("peer_notes")
+    peer_notes: dict = {}
+    if isinstance(peer_notes_raw, dict):
+        for target_id, notes in peer_notes_raw.items():
+            if target_id not in valid_ids or not isinstance(notes, list):
+                continue
+            clean = []
+            for n in notes:
+                note = _sanitize_peer_note(n, target_id, valid_ids)
+                if note:
+                    clean.append(note)
+                if len(clean) >= MAX_PEER_NOTES:
+                    break
+            if clean:
+                peer_notes[target_id] = clean
+    consensus = _sanitize_consensus(data.get("consensus"))
+    return peer_notes, consensus
+
+
+def cross_review_perspectives(spec: dict, perspectives: list, model: str | None = None) -> tuple:
+    """The four personas peer-review each other's evaluation cards: ONE
+    ``complete()`` call (never retried — advisory, not load-bearing, same
+    one-shot pattern as each persona's own evaluation) that plays the whole
+    panel at once. Returns ``(peer_notes_by_id, consensus)`` where
+    ``peer_notes_by_id`` maps a perspective id to its (possibly empty) list
+    of sanitized reactions from the OTHER personas, and ``consensus`` is the
+    panel's joint ``{summary, priorities}`` or ``None``. ANY failure — a
+    provider error, invalid JSON, an unusable reply, or anything else going
+    wrong while parsing it — degrades to ``({}, None)`` instead of raising,
+    so a cross-review problem never takes down the improve pass it advises."""
+    valid_ids = {p["id"] for p in _personas()}
+    try:
+        raw = complete(_cross_review_system(), _cross_review_user(spec, perspectives),
+                       model=model, temperature=0.3, max_tokens=900)
+        peer_notes, consensus = _cross_review_finalize(raw, valid_ids)
+    except Exception:
+        return {}, None
+    return peer_notes, consensus
+
+
+# ---------------------------------------------------------------------------
 # AI spec improvement — "here is my creation and everything the Python
 # checks flagged, return a better one."
 #
@@ -1775,14 +1925,11 @@ def _gather_findings(spec: dict) -> list:
     return findings
 
 
-def _perspectives_block(perspectives: list | None) -> str:
-    """Compact JSON of the four evaluator cards plus the directive to
-    address their error/warning findings, or "" when there are none (a
-    persona-evaluation failure upstream still yields entries, so this is
-    normally always populated)."""
-    if not perspectives:
-        return ""
-    brief = [
+def _perspectives_brief(perspectives: list) -> list:
+    """The four evaluator cards' summaries + findings (kind/severity/message/
+    source), compact enough to embed in a prompt. Shared by the improve
+    prompt and the cross-review pass so both read the exact same shape."""
+    return [
         {
             "id": p.get("id"),
             "label": p.get("label"),
@@ -1794,6 +1941,16 @@ def _perspectives_block(perspectives: list | None) -> str:
         }
         for p in perspectives
     ]
+
+
+def _perspectives_block(perspectives: list | None) -> str:
+    """Compact JSON of the four evaluator cards plus the directive to
+    address their error/warning findings, or "" when there are none (a
+    persona-evaluation failure upstream still yields entries, so this is
+    normally always populated)."""
+    if not perspectives:
+        return ""
+    brief = _perspectives_brief(perspectives)
     return (
         "\n\nFour discipline experts each reviewed this asset — architecture, "
         "mechanical engineering, civil/structural engineering, and industrial "
@@ -1806,12 +1963,24 @@ def _perspectives_block(perspectives: list | None) -> str:
     )
 
 
-def _improve_user(spec: dict, findings: list, perspectives: list | None = None) -> str:
+def _consensus_block(consensus: dict | None) -> str:
+    """The panel's agreed priorities, folded into the improve prompt so the
+    cross-review pass actually steers the fix — or "" when there is no
+    (valid) consensus."""
+    if not consensus or not consensus.get("priorities"):
+        return ""
+    priorities = "; ".join(consensus["priorities"])
+    return f"\n\nThe panel's agreed priorities — address these first: {priorities}"
+
+
+def _improve_user(spec: dict, findings: list, perspectives: list | None = None,
+                  consensus: dict | None = None) -> str:
     return (
         f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
         f"The app's deterministic checks found these issues in it — FIX EVERY "
         f"ONE:\n{json.dumps(findings, separators=(',', ':'))}"
-        f"{_perspectives_block(perspectives)}\n\n"
+        f"{_perspectives_block(perspectives)}"
+        f"{_consensus_block(consensus)}\n\n"
         "Fix every finding listed above. Keep existing parameter, toggle, and "
         "material ids and their current values stable except where a finding "
         "requires a change. You may add missing \"connections\" declarations, "
@@ -1825,39 +1994,68 @@ def _improve_user(spec: dict, findings: list, perspectives: list | None = None) 
     )
 
 
+def _cross_review_and_attach(spec: dict, perspectives: list, model: str | None) -> dict | None:
+    """Runs the cross-review pass and stamps its peer_notes onto the
+    matching perspective entries IN PLACE, returning the consensus (or
+    ``None``). Skips the call entirely when every perspective evaluation
+    came back empty — nothing for the panel to react to, a valid
+    degradation rather than a wasted call. ANY cross-review failure — a
+    provider error, malformed JSON, anything — degrades to no peer_notes/
+    no consensus (``cross_review_perspectives`` never raises), so this can
+    never fail the improve pass it advises."""
+    if not any((p.get("findings") or []) for p in perspectives):
+        return None
+    peer_notes, consensus = cross_review_perspectives(spec, perspectives, model=model)
+    for entry in perspectives:
+        notes = peer_notes.get(entry.get("id"))
+        if notes:
+            entry["peer_notes"] = notes
+    return consensus
+
+
 def improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None) -> dict:
     """Current spec + the deterministic Python-side findings + the four
-    persona evaluations → an improved, re-validated spec that fixes every
-    finding. Rides the same classified retry engine as every other
-    AI-produced spec (``_run``); the findings and the four evaluator cards
-    that were fed to the AI ride along in the result as "findings" and
-    "perspectives"."""
+    persona evaluations, cross-reviewed by the same four personas as one
+    panel → an improved, re-validated spec that fixes every finding and
+    weighs what the panel agreed matters most. Rides the same classified
+    retry engine as every other AI-produced spec (``_run``); the findings,
+    the four evaluator cards (now optionally carrying peer_notes from the
+    cross-review), and the panel consensus (when the cross-review
+    succeeded) ride along in the result as "findings", "perspectives", and
+    "consensus"."""
     findings = _gather_findings(spec)
     perspectives = evaluate_perspectives(spec, model=model)
+    consensus = _cross_review_and_attach(spec, perspectives, model)
     result = _run_edit(_system_prompt(code_mode),
-                       _improve_user(spec, findings, perspectives),
+                       _improve_user(spec, findings, perspectives, consensus),
                        code_mode, spec, model=model, integration_gate=True)
     result["findings"] = findings
     result["perspectives"] = perspectives
+    if consensus:
+        result["consensus"] = consensus
     return result
 
 
 def stream_improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None):
     """Streaming twin of :func:`improve_spec` — the result envelope carries
-    "findings" and "perspectives" the same way."""
+    "findings", "perspectives" (with peer_notes when cross-review
+    succeeded), and "consensus" (when present) the same way."""
     findings = _gather_findings(spec)
     perspectives = evaluate_perspectives(spec, model=model)
+    consensus = _cross_review_and_attach(spec, perspectives, model)
     edit_finalize = _edit_finalize(code_mode, spec, integration_gate=True)
 
     def finalize(raw: str, lenient: bool = False) -> dict:
         result = edit_finalize(raw, lenient)
         result["findings"] = findings
         result["perspectives"] = perspectives
+        if consensus:
+            result["consensus"] = consensus
         return result
 
     return _stream_pipeline(
         _system_prompt(code_mode),
-        _improve_user(spec, findings, perspectives),
+        _improve_user(spec, findings, perspectives, consensus),
         finalize, model=model,
     )
 

@@ -396,11 +396,23 @@ export interface PerspectiveFinding {
   source: "checks" | "ai";
 }
 
+/** One peer reaction to a perspective card, from another discipline's
+ * evaluator — surfaced under that card's own findings so the panel reads
+ * like the consultants reviewed each other's notes. `from` is another
+ * perspective's id (never the card's own — enforced by the backend). */
+export interface PeerNote {
+  from: "architecture" | "mechanical" | "civil" | "design";
+  stance: "concur" | "dispute" | "refine";
+  note: string;
+}
+
 /** One professional-evaluator card returned by /improve-spec[-stream]:
  * a discipline (architecture/mechanical/civil/design) with what its checks
  * and its AI persona found on the pre-improvement asset. `summary` is ""
  * and `error` is set when that persona's AI call failed — the other
- * perspectives are unaffected. */
+ * perspectives are unaffected. `peer_notes` is absent on an older backend
+ * or when that card's notes were malformed — the rest of the card still
+ * renders as it does today. */
 export interface Perspective {
   id: "architecture" | "mechanical" | "civil" | "design";
   label: string;
@@ -408,9 +420,30 @@ export interface Perspective {
   summary: string;
   findings: PerspectiveFinding[];
   error: string | null;
+  peer_notes?: PeerNote[];
 }
 
 const PERSPECTIVE_IDS = new Set(["architecture", "mechanical", "civil", "design"]);
+
+/** Tolerant parse of one perspective card's optional `peer_notes`: an older
+ * backend omits it entirely, and any malformed shape degrades to
+ * `undefined` for that card only — the card's own findings still render,
+ * it just has no peer reactions shown. Capped at 3 to match the backend's
+ * own contract even if a malformed payload sends more. */
+function parsePeerNotes(raw: unknown): PeerNote[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return undefined;
+  const out: PeerNote[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return undefined;
+    const n = item as Record<string, unknown>;
+    if (typeof n.from !== "string" || !PERSPECTIVE_IDS.has(n.from)) return undefined;
+    if (n.stance !== "concur" && n.stance !== "dispute" && n.stance !== "refine") return undefined;
+    if (typeof n.note !== "string") return undefined;
+    out.push({ from: n.from as PeerNote["from"], stance: n.stance, note: n.note });
+  }
+  return out.slice(0, 3);
+}
 
 /** Tolerant parse of the optional `perspectives` envelope key: an older
  * backend omits it entirely, and any malformed shape must degrade to
@@ -450,26 +483,51 @@ function parsePerspectives(raw: unknown): Perspective[] | undefined {
       summary: p.summary,
       findings,
       error: (p.error as string | null) ?? null,
+      peer_notes: parsePeerNotes(p.peer_notes),
     });
   }
   return out;
 }
 
+/** What the panel jointly agreed matters most, over the same pre-improvement
+ * asset the four perspective cards reviewed — absent on an older backend or
+ * when the payload is malformed (`priorities` must be 1-3 short strings). */
+export interface Consensus {
+  summary: string;
+  priorities: string[];
+}
+
+/** Tolerant parse of the optional `consensus` envelope key: any malformed
+ * shape degrades to `undefined` rather than throw — the banner is simply
+ * omitted and the cards below render unaffected. */
+function parseConsensus(raw: unknown): Consensus | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  if (typeof c.summary !== "string") return undefined;
+  if (!isStringArray(c.priorities)) return undefined;
+  if (c.priorities.length < 1 || c.priorities.length > 3) return undefined;
+  return { summary: c.summary, priorities: c.priorities };
+}
+
 /** AI-improved spec plus the findings the Python checks flagged beforehand.
  * `findings` may be empty when the asset already passed every check.
- * `perspectives` is absent on an older backend that doesn't return it. */
+ * `perspectives` is absent on an older backend that doesn't return it.
+ * `consensus` likewise — absent on an older backend or a malformed payload. */
 export interface ImproveResult {
   spec: AssetSpec;
   findings: Finding[];
   perspectives?: Perspective[];
   changes?: SpecChanges;
+  consensus?: Consensus;
 }
 
 /** Runs the app's deterministic checks against the current spec, then asks
  * the AI to improve the asset in one pass. The backend returns the same
  * result envelope as /refine-spec plus `findings` — what the checks found
  * before the AI pass ran (may be empty) — and, optionally, `perspectives`:
- * four professional-evaluator cards over the same pre-improvement asset. */
+ * four professional-evaluator cards over the same pre-improvement asset,
+ * each optionally carrying `peer_notes` from the other three, plus an
+ * optional panel-wide `consensus`. */
 export async function improveSpecStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,
@@ -484,7 +542,8 @@ export async function improveSpecStream(
   const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
   const perspectives = parsePerspectives(result.perspectives);
   const changes = parseChanges(result.changes);
-  return { spec: result.spec as AssetSpec, findings, perspectives, changes };
+  const consensus = parseConsensus(result.consensus);
+  return { spec: result.spec as AssetSpec, findings, perspectives, changes, consensus };
 }
 
 export async function installGuideStream(

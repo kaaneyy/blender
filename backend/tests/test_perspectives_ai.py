@@ -20,10 +20,16 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend.app import spec_ai  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from backend.app.spec_ai import (  # noqa: E402
+    MAX_PEER_NOTES,
     MAX_PERSPECTIVE_FINDINGS,
     PERSONA_SYSTEM,
+    _cross_review_finalize,
+    _cross_review_system,
     _persona_finalize,
+    _sanitize_consensus,
+    _sanitize_peer_note,
     _sanitize_perspective_finding,
+    cross_review_perspectives,
     evaluate_perspectives,
     improve_spec,
 )
@@ -75,6 +81,44 @@ def good_persona_reply(message="AI says hi", severity="warning"):
     return json.dumps({"summary": "Looks fine overall.",
                        "findings": [{"severity": severity, "kind": "note",
                                      "message": message}]})
+
+
+def good_cross_review_reply():
+    """A cross-review reply with a self-note (must be dropped) and a bogus
+    stance (must clamp to "refine") mixed in with otherwise-valid notes."""
+    return json.dumps({
+        "peer_notes": {
+            "architecture": [
+                {"from": "architecture", "stance": "concur",
+                 "note": "self-note, must be dropped"},
+                {"from": "mechanical", "stance": "concur",
+                 "note": "Massing checks out structurally."},
+                {"from": "civil", "stance": "not_a_real_stance",
+                 "note": "Needs an anchor detail called out."},
+            ],
+            "mechanical": [
+                {"from": "design", "stance": "dispute",
+                 "note": "The bolt is fine for this load case."},
+            ],
+        },
+        "consensus": {
+            "summary": "Panel agrees the base needs reinforcement.",
+            "priorities": ["Reinforce base anchor", "Verify bolt torque"],
+        },
+    })
+
+
+def fake_complete_with_cross_review(calls, cross_review_system):
+    """A fake ``complete`` that routes persona / cross-review / main-improve
+    calls to distinct canned replies and records every call."""
+    def fake_complete(system, user, **kw):
+        calls.append((system, user))
+        if system in PERSONA_SYSTEM.values():
+            return good_persona_reply("Persona note")
+        if system == cross_review_system:
+            return good_cross_review_reply()
+        return VALID  # the main spec-generation call
+    return fake_complete
 
 
 @pytest.fixture(autouse=True)
@@ -171,21 +215,17 @@ class TestEvaluatePerspectives:
 class TestImproveSpecCarriesPerspectives:
     def test_result_carries_perspectives_and_prompt_embeds_a_finding(self, monkeypatch):
         install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
         calls = []
-
-        def fake_complete(system, user, **kw):
-            calls.append((system, user))
-            if system in PERSONA_SYSTEM.values():
-                return good_persona_reply("Persona note")
-            return VALID  # the main spec-generation call
-
-        monkeypatch.setattr(spec_ai, "complete", fake_complete)
+        monkeypatch.setattr(spec_ai, "complete",
+                            fake_complete_with_cross_review(calls, cross_review_system))
         out = improve_spec(spec_dict())
 
         assert [p["id"] for p in out["perspectives"]] == list(PERSPECTIVE_IDS)
-        # exactly one call per persona + one for the main improve pass
-        assert len(calls) == 5
-        main_calls = [u for s, u in calls if s not in PERSONA_SYSTEM.values()]
+        # one call per persona + one for cross-review + one for the main improve pass
+        assert len(calls) == 6
+        main_calls = [u for s, u in calls
+                      if s not in PERSONA_SYSTEM.values() and s != cross_review_system]
         assert len(main_calls) == 1
         assert "Bolt undersized for the load." in main_calls[0]
 
@@ -193,14 +233,186 @@ class TestImproveSpecCarriesPerspectives:
         """Regression guard: if evaluate_perspectives is dropped from
         improve_spec, "perspectives" disappears from the result."""
         install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
         monkeypatch.setattr(spec_ai, "complete",
-                            lambda system, user, **kw: (
-                                good_persona_reply() if system in PERSONA_SYSTEM.values()
-                                else VALID
-                            ))
+                            fake_complete_with_cross_review([], cross_review_system))
         out = improve_spec(spec_dict())
         assert "perspectives" in out
         assert len(out["perspectives"]) == 4
+
+
+class TestCrossReviewSanitizer:
+    """Unit-level tests for the sanitizer helpers behind
+    ``cross_review_perspectives`` — the pieces that guarantee a malformed
+    reply never leaks unsafe/self-referential data into the envelope."""
+
+    VALID_IDS = set(PERSPECTIVE_IDS)
+
+    def test_drops_self_note(self):
+        assert _sanitize_peer_note(
+            {"from": "architecture", "stance": "concur", "note": "hi"},
+            "architecture", self.VALID_IDS) is None
+
+    def test_drops_unknown_from(self):
+        assert _sanitize_peer_note(
+            {"from": "plumbing", "stance": "concur", "note": "hi"},
+            "architecture", self.VALID_IDS) is None
+
+    def test_drops_empty_note(self):
+        assert _sanitize_peer_note(
+            {"from": "mechanical", "stance": "concur", "note": "   "},
+            "architecture", self.VALID_IDS) is None
+
+    def test_clamps_bogus_stance_to_refine(self):
+        note = _sanitize_peer_note(
+            {"from": "mechanical", "stance": "furious", "note": "hi"},
+            "architecture", self.VALID_IDS)
+        assert note["stance"] == "refine"
+
+    def test_consensus_requires_summary_and_priorities(self):
+        assert _sanitize_consensus({"summary": "x"}) is None
+        assert _sanitize_consensus({"priorities": ["x"]}) is None
+        assert _sanitize_consensus("not a dict") is None
+        assert _sanitize_consensus(None) is None
+
+    def test_consensus_caps_priorities_to_three(self):
+        consensus = _sanitize_consensus(
+            {"summary": "ok", "priorities": ["a", "b", "c", "d", "e"]})
+        assert len(consensus["priorities"]) == 3
+
+    def test_finalize_drops_self_notes_and_clamps_stances(self):
+        peer_notes, consensus = _cross_review_finalize(
+            good_cross_review_reply(), self.VALID_IDS)
+        arch_notes = peer_notes["architecture"]
+        assert all(n["from"] != "architecture" for n in arch_notes)
+        assert len(arch_notes) == 2
+        civil_note = next(n for n in arch_notes if n["from"] == "civil")
+        assert civil_note["stance"] == "refine"  # was a bogus stance
+        assert consensus["priorities"] == ["Reinforce base anchor", "Verify bolt torque"]
+
+    def test_finalize_rejects_non_json(self):
+        with pytest.raises(Exception):
+            _cross_review_finalize("not json at all", self.VALID_IDS)
+
+
+class TestCrossReviewPerspectives:
+    """Integration tests for ``cross_review_perspectives`` itself and its
+    wiring into ``improve_spec``/``stream_improve_spec``."""
+
+    def test_happy_path_notes_land_and_consensus_attached(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
+        calls = []
+        monkeypatch.setattr(spec_ai, "complete",
+                            fake_complete_with_cross_review(calls, cross_review_system))
+        out = improve_spec(spec_dict())
+
+        by_id = {p["id"]: p for p in out["perspectives"]}
+        arch_notes = by_id["architecture"]["peer_notes"]
+        assert all(n["from"] != "architecture" for n in arch_notes)
+        assert {n["from"] for n in arch_notes} == {"mechanical", "civil"}
+        # the bogus stance clamped instead of being dropped
+        civil_note = next(n for n in arch_notes if n["from"] == "civil")
+        assert civil_note["stance"] == "refine"
+        assert by_id["mechanical"]["peer_notes"][0]["from"] == "design"
+        # entries the cross-review didn't mention get no peer_notes key at all
+        assert "peer_notes" not in by_id["civil"]
+        assert "peer_notes" not in by_id["design"]
+
+        assert out["consensus"]["summary"] == "Panel agrees the base needs reinforcement."
+        assert out["consensus"]["priorities"] == [
+            "Reinforce base anchor", "Verify bolt torque"]
+
+        # the improve prompt itself carries a priority string
+        main_calls = [u for s, u in calls
+                      if s not in PERSONA_SYSTEM.values() and s != cross_review_system]
+        assert "Reinforce base anchor" in main_calls[0]
+        assert "panel's agreed priorities" in main_calls[0].lower()
+
+    def test_cross_review_provider_error_degrades_silently(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
+
+        def fake_complete(system, user, **kw):
+            if system in PERSONA_SYSTEM.values():
+                return good_persona_reply("Persona note")
+            if system == cross_review_system:
+                raise spec_ai.LLMError("provider hiccup")
+            return VALID
+
+        monkeypatch.setattr(spec_ai, "complete", fake_complete)
+        out = improve_spec(spec_dict())
+
+        assert out["ok"] is True
+        assert "consensus" not in out
+        assert all("peer_notes" not in p for p in out["perspectives"])
+
+    def test_cross_review_invalid_json_degrades_silently(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
+
+        def fake_complete(system, user, **kw):
+            if system in PERSONA_SYSTEM.values():
+                return good_persona_reply("Persona note")
+            if system == cross_review_system:
+                return "not json at all"
+            return VALID
+
+        monkeypatch.setattr(spec_ai, "complete", fake_complete)
+        out = improve_spec(spec_dict())
+
+        assert out["ok"] is True
+        assert "consensus" not in out
+        assert all("peer_notes" not in p for p in out["perspectives"])
+
+    def test_all_empty_evaluations_skip_the_cross_review_call(self, monkeypatch):
+        # both the checks findings AND the persona AI findings come back
+        # empty — genuinely nothing for the panel to react to.
+        empty_entries = [dict(e, findings=[]) for e in FAKE_ENTRIES]
+        install_fake_perspectives_module(monkeypatch, entries=empty_entries)
+        cross_review_system = _cross_review_system()
+        calls = []
+        empty_persona_reply = json.dumps({"summary": "Nothing to report.", "findings": []})
+
+        def fake_complete(system, user, **kw):
+            calls.append((system, user))
+            if system in PERSONA_SYSTEM.values():
+                return empty_persona_reply
+            if system == cross_review_system:
+                return good_cross_review_reply()
+            return VALID
+
+        monkeypatch.setattr(spec_ai, "complete", fake_complete)
+        out = improve_spec(spec_dict())
+
+        assert all(len(p["findings"]) == 0 for p in out["perspectives"])
+        # the cross-review system prompt was never called
+        assert not any(s == cross_review_system for s, u in calls)
+        assert "consensus" not in out
+        assert all("peer_notes" not in p for p in out["perspectives"])
+
+    def test_direct_call_returns_empty_on_malformed_reply(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        monkeypatch.setattr(spec_ai, "complete", lambda system, user, **kw: "garbage")
+        peer_notes, consensus = cross_review_perspectives(spec_dict(), FAKE_ENTRIES)
+        assert peer_notes == {}
+        assert consensus is None
+
+    def test_max_peer_notes_per_entry_enforced(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        many_notes = json.dumps({
+            "peer_notes": {
+                "architecture": [
+                    {"from": pid, "stance": "concur", "note": f"note {i}"}
+                    for i, pid in enumerate(
+                        ["mechanical", "civil", "design"] * 3)
+                ],
+            },
+            "consensus": None,
+        })
+        monkeypatch.setattr(spec_ai, "complete", lambda system, user, **kw: many_notes)
+        peer_notes, consensus = cross_review_perspectives(spec_dict(), FAKE_ENTRIES)
+        assert len(peer_notes["architecture"]) == MAX_PEER_NOTES
 
 
 class TestEndpoint:
@@ -217,3 +429,17 @@ class TestEndpoint:
         assert [p["id"] for p in data["perspectives"]] == list(PERSPECTIVE_IDS)
         for p in data["perspectives"]:
             assert {"id", "label", "icon", "summary", "findings", "error"} <= p.keys()
+
+    def test_improve_endpoint_passes_through_peer_notes_and_consensus(self, monkeypatch):
+        install_fake_perspectives_module(monkeypatch)
+        cross_review_system = _cross_review_system()
+        monkeypatch.setattr(spec_ai, "complete",
+                            fake_complete_with_cross_review([], cross_review_system))
+        r = client.post("/api/improve-spec", json={"spec": spec_dict()})
+        assert r.status_code == 200
+        data = r.json()
+        by_id = {p["id"]: p for p in data["perspectives"]}
+        assert "peer_notes" in by_id["architecture"]
+        assert by_id["architecture"]["peer_notes"][0]["from"] != "architecture"
+        assert "consensus" in data
+        assert data["consensus"]["priorities"]

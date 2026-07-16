@@ -12,6 +12,7 @@ import {
   improveSpecStream,
   reviewConnectionsStream,
   summarizeChanges,
+  type Consensus,
   type DeepseekModel,
   type Finding,
   type Perspective,
@@ -32,6 +33,15 @@ const defaultSpec = defaultSpecJson as unknown as AssetSpec;
 /** Severity → icon for the improve findings list (same vocabulary as
  * CheckPanel's SEV_ICON; "info"/other severities fall back to ℹ️). */
 const IMPROVE_SEV_ICON: Record<string, string> = { error: "⛔", warning: "⚠️" };
+
+/** Peer-note stance → glyph + modifier class, mirroring the app's existing
+ * severity color vocabulary (ok/danger for concur/dispute; neutral for a
+ * refine — no new colors). */
+const PEER_STANCE: Record<string, { glyph: string; cls: string }> = {
+  concur: { glyph: "✓", cls: "peer-note__stance--concur" },
+  dispute: { glyph: "✗", cls: "peer-note__stance--dispute" },
+  refine: { glyph: "✎", cls: "peer-note__stance--refine" },
+};
 
 type Theme = "light" | "dark";
 
@@ -178,6 +188,9 @@ export default function App() {
   /** What the AI pass actually touched, from the backend's optional `changes`
    * diff — absent on an older backend or when the diff failed. */
   const [improveChanges, setImproveChanges] = useState<SpecChanges | undefined>(undefined);
+  /** What the panel jointly agreed matters most — absent on an older backend
+   * or a malformed payload, in which case the consensus banner is omitted. */
+  const [improveConsensus, setImproveConsensus] = useState<Consensus | undefined>(undefined);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -333,6 +346,7 @@ export default function App() {
     setImproveFindings(null);
     setImprovePerspectives(undefined);
     setImproveChanges(undefined);
+    setImproveConsensus(undefined);
     setImproveStream("");
     setImproveBusy(true);
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
@@ -346,6 +360,7 @@ export default function App() {
         setImproveFindings(result.findings);
         setImprovePerspectives(result.perspectives);
         setImproveChanges(result.changes);
+        setImproveConsensus(result.consensus);
       })
       .catch((e) => setImproveError(e instanceof Error ? e.message : String(e)))
       .finally(() => setImproveBusy(false));
@@ -356,6 +371,7 @@ export default function App() {
     setImproveFindings(null);
     setImprovePerspectives(undefined);
     setImproveChanges(undefined);
+    setImproveConsensus(undefined);
   };
 
   /** The confirmed apply — the ONLY place check fixes reach the spec. The
@@ -724,6 +740,19 @@ export default function App() {
                   below describe what it found before improving.
                 </p>
                 {improveChangesLine && <p className="hint">✏️ {improveChangesLine}</p>}
+                {improveConsensus && (
+                  <div className="consensus-banner">
+                    <div className="consensus-banner__title">🤝 Panel consensus</div>
+                    <p className="consensus-banner__summary">{improveConsensus.summary}</p>
+                    {improveConsensus.priorities.length > 0 && (
+                      <ol className="consensus-banner__priorities">
+                        {improveConsensus.priorities.map((pr, i) => (
+                          <li key={i}>{pr}</li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                )}
                 {improvePerspectives && (
                   <div className="perspectives">
                     {improvePerspectives.map((p) => (
@@ -759,6 +788,23 @@ export default function App() {
                               <p className="finding__detail">{f.message}</p>
                             </div>
                           ))
+                        )}
+                        {p.peer_notes && p.peer_notes.length > 0 && (
+                          <div className="peer-notes">
+                            {p.peer_notes.map((n, i) => {
+                              const reviewer = improvePerspectives!.find((q) => q.id === n.from);
+                              const stance = PEER_STANCE[n.stance];
+                              return (
+                                <p key={i} className="peer-note">
+                                  <span className="peer-note__icon">{reviewer?.icon ?? "🧑"}</span>
+                                  <span className={`peer-note__stance ${stance.cls}`}>
+                                    {stance.glyph}
+                                  </span>
+                                  <span className="peer-note__text">&ldquo;{n.note}&rdquo;</span>
+                                </p>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
                     ))}
