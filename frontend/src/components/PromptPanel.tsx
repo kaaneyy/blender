@@ -12,6 +12,7 @@ import {
   generateSpecStream,
   installGuideStream,
   refineSpecStream,
+  summarizeChanges,
   updateStandardsStream,
   wizardStepStream,
   MODEL_OPTIONS,
@@ -19,6 +20,7 @@ import {
   type ClarifyQuestion,
   type DeepseekModel,
   type PanelEntry,
+  type SpecChanges,
   type StandardsUpdateResult,
   type WizardStep,
 } from "../api";
@@ -75,6 +77,15 @@ function panelEntries(panel: PanelEntry[] | undefined): ChatEntry[] {
     entries.push({ role: "assetforge", text: `${p.icon} ${p.label}: ${take}` });
   }
   return entries;
+}
+
+/** Optional "✏️ what changed" chat line appended right after an AI edit,
+ * built from the backend's `changes` diff envelope — [] when there's
+ * nothing to show (no envelope from an older backend, or a failed/empty
+ * diff), so the common case renders exactly today's output. */
+function changeEntries(changes: SpecChanges | undefined): ChatEntry[] {
+  const line = summarizeChanges(changes);
+  return line ? [{ role: "assetforge", text: `✏️ ${line}` }] : [];
 }
 
 type Busy = false | "generate" | "refine" | "focus" | "guide" | "standards" | "wizard";
@@ -266,9 +277,31 @@ export default function PromptPanel({
   const guideCache = useRef<{ key: string; text: string } | null>(null);
   const violationCount = Object.keys(violations).length;
 
+  // the clarify popup is open from the moment questions are requested (shows
+  // a loading spinner) through to the user answering or skipping — not just
+  // while `clarify` itself (the loaded questions) is set.
+  const clarifyOpen = clarify !== null || clarifyBusy !== false;
+  const clarifyFirstSelectRef = useRef<HTMLSelectElement>(null);
+
   useEffect(() => {
     localStorage.setItem(MODEL_KEY, model);
   }, [model]);
+
+  // clarify popup: lock page scroll while it's mounted, restore on close.
+  useEffect(() => {
+    if (!clarifyOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [clarifyOpen]);
+
+  // clarify popup: move focus into the dialog (first question's dropdown)
+  // once the questions have loaded.
+  useEffect(() => {
+    if (clarify) clarifyFirstSelectRef.current?.focus();
+  }, [clarify]);
 
   const run = async (kind: Exclude<Busy, false>, task: () => Promise<void>) => {
     if (busy) return;
@@ -403,6 +436,18 @@ export default function PromptPanel({
     else void runGenerate(forPrompt, answers);
   };
 
+  // clarify popup: Esc = the same skip path as the backdrop/✕ click (a no-op
+  // while questions are still loading, same as those — there's no in-flight
+  // request to cancel, `finishClarify` requires `clarify` to be loaded).
+  useEffect(() => {
+    if (!clarifyOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") finishClarify(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [clarifyOpen, clarify, busy]);
+
   /** Apply a user change to the CURRENT step (stays on the same step). Form
    * is a plain refine; later steps re-run their scoped pass with the note.
    * Form/Connections are the only steps whose job is geometry/joints, so
@@ -417,7 +462,7 @@ export default function PromptPanel({
       const step = WIZARD_STEPS[wizardStep];
       const groundGeometry = step.key === "form" || step.key === "connections";
       const sent = groundGeometry ? msg + groundingBlock(spec) : msg;
-      const newSpec =
+      const { spec: newSpec, changes } =
         step.key === "form"
           ? await refineSpecStream(spec, sent, setStreamText, model)
           : await wizardStepStream(spec, step.key as WizardStep, sent, setStreamText, model);
@@ -427,6 +472,7 @@ export default function PromptPanel({
         ...c,
         { role: "you", text: `✎ ${step.title}: ${msg}` },
         { role: "assetforge", text: `Updated the ${step.title.toLowerCase()}.${statusSuffix(newSpec)}` },
+        ...changeEntries(changes),
       ]);
       setWizardMsg("");
     });
@@ -452,7 +498,7 @@ export default function PromptPanel({
       }
       const next = WIZARD_STEPS[wizardStep + 1];
       const note = next.key === "connections" ? groundingBlock(spec) : "";
-      const newSpec = await wizardStepStream(
+      const { spec: newSpec, changes } = await wizardStepStream(
         spec,
         next.key as WizardStep,
         note,
@@ -467,6 +513,7 @@ export default function PromptPanel({
           role: "assetforge",
           text: `Step ${next.n} — worked on the ${next.title.toLowerCase()}. Review, then refine or accept.${statusSuffix(newSpec)}`,
         },
+        ...changeEntries(changes),
       ]);
       setWizardMsg("");
       setWizardStep(wizardStep + 1);
@@ -495,13 +542,16 @@ export default function PromptPanel({
     run("refine", async () => {
       const msg = refineMsg.trim();
       if (!msg) return;
-      const newSpec = await refineSpecStream(spec, msg + groundingBlock(spec), setStreamText, model);
+      const { spec: newSpec, changes } = await refineSpecStream(
+        spec, msg + groundingBlock(spec), setStreamText, model,
+      );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
         ...c,
         { role: "you", text: msg },
         { role: "assetforge", text: `Updated "${newSpec.name}".${statusSuffix(newSpec)}` },
+        ...changeEntries(changes),
       ]);
       setRefineMsg("");
     });
@@ -535,13 +585,14 @@ export default function PromptPanel({
           message += `\nMachine findings to fix first:\n- ${findings.join("\n- ")}`;
         }
       }
-      const newSpec = await refineSpecStream(spec, message, setStreamText, model);
+      const { spec: newSpec, changes } = await refineSpecStream(spec, message, setStreamText, model);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
         ...c,
         { role: "you", text: `🔧 ${preset.label}` },
         { role: "assetforge", text: `Ran "${preset.label}".` },
+        ...changeEntries(changes),
       ]);
     });
 
@@ -633,11 +684,7 @@ export default function PromptPanel({
           disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
           title="Build in 4 reviewable steps: form → connections → materials → working parts"
         >
-          {clarifyBusy === "wizard"
-            ? "Preparing questions…"
-            : busy === "wizard" && wizardStep === null
-              ? "Building…"
-              : "🪄 Build step by step"}
+          {busy === "wizard" && wizardStep === null ? "Building…" : "🪄 Build step by step"}
         </button>
         <button
           className="secondary"
@@ -645,70 +692,97 @@ export default function PromptPanel({
           disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
           title="Generate the whole asset in one pass"
         >
-          {clarifyBusy === "generate"
-            ? "Preparing questions…"
-            : busy === "generate"
-              ? "Generating…"
-              : "Generate all at once"}
+          {busy === "generate" ? "Generating…" : "Generate all at once"}
         </button>
       </div>
 
-      {clarify !== null && (
-        <div className="clarify">
-          <h4 className="clarify__title">
-            🎯 {clarify.questions.length === 1 ? "One quick question" : "A few quick questions"} first
-          </h4>
-          <p className="clarify__blurb">
-            So the AI designs what you actually meant — pick an answer, type
-            your own, or leave any as “no preference”.
-          </p>
-          {clarify.questions.map((q, i) => (
-            <div key={q.id} className="clarify__q">
-              {q.persona && (
-                <span className="clarify__persona" title={q.persona.label}>
-                  {q.persona.icon} {q.persona.label}
-                </span>
-              )}
-              <span className="clarify__label">{q.question}</span>
-              <select
-                value={clarify.choices[i]}
-                onChange={(e) => setClarifyChoice(i, e.target.value)}
-                disabled={busy !== false}
+      {clarifyOpen && (
+        <div className="modal-overlay" onClick={() => finishClarify(false)}>
+          <div
+            className="modal clarify-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Clarifying questions"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal__header">
+              <h3 className="clarify__title">
+                🎯{" "}
+                {clarify
+                  ? `${clarify.questions.length === 1 ? "One quick question" : "A few quick questions"} first`
+                  : "A few quick questions first"}
+              </h3>
+              <button
+                className="close"
+                onClick={() => finishClarify(false)}
+                title="Skip and generate directly"
+                aria-label="Skip and generate directly"
               >
-                <option value="">No preference</option>
-                {q.options.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-                <option value={CUSTOM_ANSWER}>✏️ My own answer…</option>
-              </select>
-              {clarify.choices[i] === CUSTOM_ANSWER && (
-                <input
-                  type="text"
-                  className="clarify__custom"
-                  value={clarify.custom[i]}
-                  onChange={(e) => setClarifyCustom(i, e.target.value)}
-                  placeholder="type exactly what you want"
-                  maxLength={300}
-                  disabled={busy !== false}
-                />
-              )}
+                ✕
+              </button>
             </div>
-          ))}
-          <div className="clarify__actions">
-            <button onClick={() => finishClarify(true)} disabled={busy !== false}>
-              {clarify.mode === "wizard"
-                ? "🪄 Build with these answers"
-                : "Generate with these answers"}
-            </button>
-            <button
-              className="secondary"
-              onClick={() => finishClarify(false)}
-              disabled={busy !== false}
-            >
-              Skip
-            </button>
+            <div className="modal__body">
+              {clarify === null ? (
+                <div className="clarify-modal__loading">
+                  <span className="clarify-modal__spinner" aria-hidden="true" />
+                  <p>Thinking of a few quick questions…</p>
+                </div>
+              ) : (
+                <>
+                  <p className="clarify__blurb">
+                    So the AI designs what you actually meant — pick an answer, type
+                    your own, or leave any as “no preference”.
+                  </p>
+                  {clarify.questions.map((q, i) => (
+                    <div key={q.id} className="clarify__q">
+                      {q.persona && (
+                        <span className="clarify__persona" title={q.persona.label}>
+                          {q.persona.icon} {q.persona.label}
+                        </span>
+                      )}
+                      <span className="clarify__label">{q.question}</span>
+                      <select
+                        ref={i === 0 ? clarifyFirstSelectRef : undefined}
+                        value={clarify.choices[i]}
+                        onChange={(e) => setClarifyChoice(i, e.target.value)}
+                        disabled={busy !== false}
+                      >
+                        <option value="">No preference</option>
+                        {q.options.map((o) => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                        <option value={CUSTOM_ANSWER}>✏️ My own answer…</option>
+                      </select>
+                      {clarify.choices[i] === CUSTOM_ANSWER && (
+                        <input
+                          type="text"
+                          className="clarify__custom"
+                          value={clarify.custom[i]}
+                          onChange={(e) => setClarifyCustom(i, e.target.value)}
+                          placeholder="type exactly what you want"
+                          maxLength={300}
+                          disabled={busy !== false}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+              <div className="clarify__actions">
+                <button
+                  className="secondary"
+                  onClick={() => finishClarify(false)}
+                  disabled={busy !== false || clarify === null}
+                >
+                  Skip — just generate
+                </button>
+                <button onClick={() => finishClarify(true)} disabled={busy !== false || clarify === null}>
+                  {clarify?.mode === "wizard" ? "🪄 Build with these answers" : "Generate with these answers"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

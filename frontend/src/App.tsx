@@ -11,9 +11,11 @@ import type { AuditFinding, AuditReport } from "./builders";
 import {
   improveSpecStream,
   reviewConnectionsStream,
+  summarizeChanges,
   type DeepseekModel,
   type Finding,
   type Perspective,
+  type SpecChanges,
 } from "./api";
 import { checkSpec } from "./standards";
 import { useSpecHistory } from "./hooks/useSpecHistory";
@@ -173,6 +175,9 @@ export default function App() {
   const [improvePerspectives, setImprovePerspectives] = useState<Perspective[] | undefined>(
     undefined,
   );
+  /** What the AI pass actually touched, from the backend's optional `changes`
+   * diff — absent on an older backend or when the diff failed. */
+  const [improveChanges, setImproveChanges] = useState<SpecChanges | undefined>(undefined);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -226,6 +231,10 @@ export default function App() {
 
   const primitives = useMemo(() => computePrimitives(spec), [spec]);
   const violations = useMemo(() => checkSpec(spec), [spec]);
+  /** What the last "✨ Improve" pass touched, rendered as a hint line in the
+   * improve panel — null when there's no changes envelope (older backend, or
+   * an empty diff) so the panel looks exactly as it did before. */
+  const improveChangesLine = summarizeChanges(improveChanges);
 
   // the deterministic audit re-runs live while its panel is open, so the
   // report always matches the current sliders/edits — applying is still
@@ -323,6 +332,7 @@ export default function App() {
     setImproveError(null);
     setImproveFindings(null);
     setImprovePerspectives(undefined);
+    setImproveChanges(undefined);
     setImproveStream("");
     setImproveBusy(true);
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
@@ -335,6 +345,7 @@ export default function App() {
         }
         setImproveFindings(result.findings);
         setImprovePerspectives(result.perspectives);
+        setImproveChanges(result.changes);
       })
       .catch((e) => setImproveError(e instanceof Error ? e.message : String(e)))
       .finally(() => setImproveBusy(false));
@@ -344,6 +355,7 @@ export default function App() {
     setImproveError(null);
     setImproveFindings(null);
     setImprovePerspectives(undefined);
+    setImproveChanges(undefined);
   };
 
   /** The confirmed apply — the ONLY place check fixes reach the spec. The
@@ -711,6 +723,7 @@ export default function App() {
                   The asset shown now is the AI-improved version — the checks
                   below describe what it found before improving.
                 </p>
+                {improveChangesLine && <p className="hint">✏️ {improveChangesLine}</p>}
                 {improvePerspectives && (
                   <div className="perspectives">
                     {improvePerspectives.map((p) => (
