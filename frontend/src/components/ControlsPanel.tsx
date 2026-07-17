@@ -55,6 +55,10 @@ interface Props {
   /** Reads + adopts a picked spec JSON file (Open spec…); resolves to an
    * error message on a bad/invalid file, or null on success. */
   onOpenFile: (file: File) => Promise<string | null>;
+  /** Opens the "📚 Library" modal (save-as / load / fork / delete saved
+   * designs) — a separate localStorage-backed collection from the file
+   * Save/Open above and the single-slot autosave. */
+  onLibrary: () => void;
   /** True right after app init when the current spec was restored from the
    * autosave rather than starting from the bundled default. */
   restoredNotice: boolean;
@@ -252,6 +256,7 @@ export default function ControlsPanel({
   onRedo,
   onSave,
   onOpenFile,
+  onLibrary,
   restoredNotice,
   onDismissRestoredNotice,
 }: Props) {
@@ -424,6 +429,13 @@ export default function ControlsPanel({
           title="Load a spec JSON file (e.g. one from Save spec, or from examples/) back into the app."
         >
           📂 Open spec…
+        </button>
+        <button
+          className="reset"
+          onClick={onLibrary}
+          title="Save the current design to a searchable local library, or load/fork/delete a saved one."
+        >
+          📚 Library
         </button>
         <input
           ref={fileInputRef}

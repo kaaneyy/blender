@@ -24,6 +24,7 @@ import { checkSpec } from "./standards";
 import { useSpecHistory } from "./hooks/useSpecHistory";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
+import LibraryPanel from "./components/LibraryPanel";
 import PromptPanel from "./components/PromptPanel";
 import SelectionPanel from "./components/SelectionPanel";
 import VariationsPanel from "./components/VariationsPanel";
@@ -202,6 +203,11 @@ export default function App() {
   // error/variants describe the one in-flight (or last completed) request. ──
   const [variantsOpen, setVariantsOpen] = useState(false);
   const [variantsBusy, setVariantsBusy] = useState(false);
+  // ── asset library ("📚 Library"): a separate, multi-slot, tagged
+  // localStorage collection (frontend/src/library/store.ts) distinct from
+  // the single-slot autosave and the one-file Save/Open flow above.
+  // `libraryOpen` just gates whether the modal renders. ──
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [variants, setVariants] = useState<Variant[] | null>(null);
   const [variantsError, setVariantsError] = useState<string | null>(null);
 
@@ -926,6 +932,7 @@ export default function App() {
             onRedo={redo}
             onSave={saveSpecFile}
             onOpenFile={openSpecFile}
+            onLibrary={() => setLibraryOpen(true)}
             restoredNotice={restoredNotice}
             onDismissRestoredNotice={() => setRestoredNotice(false)}
           />
@@ -940,6 +947,9 @@ export default function App() {
           onClose={closeVariations}
           onRetry={startVariations}
         />
+      )}
+      {libraryOpen && (
+        <LibraryPanel spec={spec} onAdopt={adoptSpec} onClose={() => setLibraryOpen(false)} />
       )}
     </div>
   );

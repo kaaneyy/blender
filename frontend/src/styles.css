@@ -1635,3 +1635,151 @@ hr {
   opacity: 0.55;
   cursor: default;
 }
+
+/* asset library ("📚 Library": save-as / load / fork / delete) -----------
+ * Reuses .modal-overlay/.modal/.modal__header/.modal__body chrome above;
+ * this block only adds the library-specific save form, search/tag filter,
+ * and row list. */
+
+.library-modal {
+  width: min(600px, calc(100vw - 32px));
+}
+
+.library-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.library-save h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.library-save__row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.library-save__name {
+  flex: 1;
+  min-width: 100px;
+}
+
+.library-save__tags {
+  flex: 2;
+  min-width: 140px;
+}
+
+.library-save__row input {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.library-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.library-search {
+  width: 100%;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.library-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.library-tag-chip {
+  background: var(--panel-3);
+  color: var(--text-muted);
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.library-tag-chip.is-active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.library-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.library-row__info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.library-row__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-row__tags {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-row__time {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.library-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.library-row__actions button {
+  padding: 6px 9px;
+  font-size: 11px;
+}
+
+.library-row__actions button:not(.reset) {
+  background: var(--panel-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
