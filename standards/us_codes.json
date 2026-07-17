@@ -2,7 +2,17 @@
   "_meta": {
     "description": "US-code dimensional limits per asset_type. Hard min/max plus defaults, each with a source citation. Values are authored in the unit given per rule; the validator converts as needed.",
     "disclaimer": "Design-reference values compiled from public standards (AASHTO, MUTCD, ADA, IBC) and typical DOT drawings. Verify against the governing local code before construction use.",
-    "version": 1
+    "version": 1,
+    "code_authorities": {
+      "ADA": "Americans with Disabilities Act (ADA) Standards for Accessible Design, 2010 — federal civil-rights law setting minimum accessibility requirements for the built environment.",
+      "AIA": "American Institute of Architects — professional architectural body publishing design guidelines and graphic standards; not itself a numbered dimensional code, so it is never cited as a code_ref here.",
+      "IBC": "International Building Code, published by the International Code Council (ICC) — the model building code most US jurisdictions adopt (often with local amendments).",
+      "ANSI_A117.1": "ICC/ANSI A117.1 Standard for Accessible and Usable Buildings and Facilities — the technical accessibility standard IBC incorporates by reference; largely harmonized with the ADA Standards.",
+      "AASHTO": "American Association of State Highway and Transportation Officials — publishes roadway, lighting, and structural design guides (e.g. the Roadway Lighting Design Guide, LTS-6) used for street furniture and signage structures.",
+      "MUTCD": "Manual on Uniform Traffic Control Devices, Federal Highway Administration (FHWA) — governs signs, signals, and markings on public roads.",
+      "PROWAG": "Public Right-of-Way Accessibility Guidelines, US Access Board — accessibility guidance for sidewalks, curb ramps, and other public right-of-way elements (pending full ADA rule adoption but widely applied as best practice).",
+      "AWWA": "American Water Works Association — publishes water-utility manuals (e.g. M17) covering fire hydrant design and installation practice."
+    }
   },
   "_connections": {
     "note": "Heuristic fabrication reference for generated connection hardware — fastener classes, torque values, and anchor tiers the generator sizes against. NOT engineering design: a licensed engineer must verify structural connections and anchorage.",
@@ -91,7 +101,7 @@
     }
   },
   "bench": {
-    "source": "ADA Accessibility Standards 903.5; typical site-furnishing specs",
+    "source": "ADA Accessibility Standards 903.3, 903.4, 903.5; typical site-furnishing specs",
     "parameters": {
       "seat_height": {
         "min": 17, "max": 19, "default": 18, "unit": "in",
@@ -101,26 +111,56 @@
       "seat_depth": {
         "min": 20, "max": 24, "default": 22, "unit": "in",
         "code_ref": "ADA-903.5"
+      },
+      "seat_length": {
+        "min": 42, "max": null, "default": 48, "unit": "in",
+        "code_ref": "ADA-903.3",
+        "note": "Accessible bench seat is at least 42 in long."
+      },
+      "back_height": {
+        "min": 18, "max": null, "default": 18, "unit": "in",
+        "code_ref": "ADA-903.4",
+        "note": "Where provided, back support extends at least 18 in above the seat surface."
       }
     }
   },
   "handrail": {
-    "source": "IBC Section 1014.2",
+    "source": "IBC Section 1014.2; ADA/ANSI A117.1 505",
     "parameters": {
       "height": {
         "min": 34, "max": 38, "default": 36, "unit": "in",
         "code_ref": "IBC-1014.2",
         "note": "Handrail height measured above stair nosing / walking surface."
+      },
+      "grip_diameter": {
+        "min": 1.25, "max": 2.0, "default": 1.5, "unit": "in",
+        "code_ref": "ADA-505.7.1",
+        "note": "Circular gripping surface diameter for accessible handrails, 1.25-2 in."
+      },
+      "wall_clearance": {
+        "min": 1.5, "max": null, "default": 1.5, "unit": "in",
+        "code_ref": "ADA-505.5",
+        "note": "Minimum clearance between the handrail gripping surface and an adjacent wall."
       }
     }
   },
   "door": {
-    "source": "ADA 404.2.3; IBC 1010.1.1",
+    "source": "ADA 404.2.3; ADA 404.2.5; IBC 1010.1.1",
     "parameters": {
       "clear_height": {
         "min": 80, "max": null, "default": 80, "unit": "in",
         "code_ref": "ADA-404-IBC-1010",
         "note": "Minimum clear opening height for door props."
+      },
+      "clear_width": {
+        "min": 32, "max": null, "default": 34, "unit": "in",
+        "code_ref": "ADA-404.2.3",
+        "note": "Minimum clear opening width, measured door face to stop with the door open 90 degrees. A 36 in nominal leaf typically yields the 32 in clear opening."
+      },
+      "threshold_height": {
+        "min": 0, "max": 0.5, "default": 0, "unit": "in",
+        "code_ref": "ADA-404.2.5",
+        "note": "Maximum threshold height at accessible doorways is 1/2 in (beveled above 1/4 in); 0 in (flush) is always compliant."
       }
     }
   },
