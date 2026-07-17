@@ -1537,3 +1537,101 @@ hr {
   font-style: normal;
   font-weight: 700;
 }
+
+/* variations grid ("✨ Give me 4 variants") --------------------------------
+ * Trigger button lives in the prompt panel; the grid itself is a modal
+ * overlay (reuses .modal-overlay/.modal/.modal__header/.modal__body) wide
+ * enough for a 2-column grid of live 3D thumbnails. */
+
+.variations-trigger {
+  display: flex;
+}
+
+.variations-trigger__btn {
+  flex: 1;
+  background: var(--panel-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.variations-trigger__btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.variations-trigger__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.variations-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.variants-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.variant-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.variant-card__viewport {
+  width: 100%;
+  height: 200px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel-3);
+}
+
+.variant-card__viewport canvas {
+  display: block;
+}
+
+.variant-card__error {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.variant-card__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.variant-card__pick {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.variant-card__pick:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

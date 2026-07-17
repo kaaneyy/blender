@@ -12,11 +12,13 @@ import {
   improveSpecStream,
   reviewConnectionsStream,
   summarizeChanges,
+  variationsSpec,
   type Consensus,
   type DeepseekModel,
   type Finding,
   type Perspective,
   type SpecChanges,
+  type Variant,
 } from "./api";
 import { checkSpec } from "./standards";
 import { useSpecHistory } from "./hooks/useSpecHistory";
@@ -24,6 +26,7 @@ import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import PromptPanel from "./components/PromptPanel";
 import SelectionPanel from "./components/SelectionPanel";
+import VariationsPanel from "./components/VariationsPanel";
 import Viewport, { type CommittedTransform } from "./components/Viewport";
 import type { Selection } from "./components/AssetMesh";
 import "./styles.css";
@@ -191,6 +194,16 @@ export default function App() {
   /** What the panel jointly agreed matters most — absent on an older backend
    * or a malformed payload, in which case the consensus banner is omitted. */
   const [improveConsensus, setImproveConsensus] = useState<Consensus | undefined>(undefined);
+
+  // ── variations: "✨ Give me 4 variants" requests a batch of alternate
+  // specs, previews each as a live 3D thumbnail in a grid, and adopts the
+  // picked one through the same validated adoptSpec path as every other AI
+  // spec swap. `variantsOpen` gates whether the modal renders at all; busy/
+  // error/variants describe the one in-flight (or last completed) request. ──
+  const [variantsOpen, setVariantsOpen] = useState(false);
+  const [variantsBusy, setVariantsBusy] = useState(false);
+  const [variants, setVariants] = useState<Variant[] | null>(null);
+  const [variantsError, setVariantsError] = useState<string | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -372,6 +385,31 @@ export default function App() {
     setImprovePerspectives(undefined);
     setImproveChanges(undefined);
     setImproveConsensus(undefined);
+  };
+
+  /** "✨ Give me 4 variants": request a batch of alternate takes on the
+   * current asset and open the grid to preview them — picking one adopts it
+   * through `adoptSpec` (see VariationsPanel's `onPick`), never a direct
+   * setSpec. Read the model choice from localStorage exactly like
+   * startImprove does. */
+  const startVariations = () => {
+    if (variantsBusy) return;
+    setVariantsOpen(true);
+    setVariantsBusy(true);
+    setVariantsError(null);
+    setVariants(null);
+    const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
+    variationsSpec(spec, 4, model)
+      .then(setVariants)
+      .catch((e) => setVariantsError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setVariantsBusy(false));
+  };
+
+  const closeVariations = () => {
+    setVariantsOpen(false);
+    setVariantsBusy(false);
+    setVariants(null);
+    setVariantsError(null);
   };
 
   /** The confirmed apply — the ONLY place check fixes reach the spec. The
@@ -639,6 +677,8 @@ export default function App() {
           onTheme={setTheme}
           onName={(name) => setSpec((s) => ({ ...s, name }))}
           onSpec={adoptSpec}
+          onVariations={startVariations}
+          variationsBusy={variantsBusy}
         />
       </aside>
       <main className="viewport">
@@ -891,6 +931,16 @@ export default function App() {
           />
         )}
       </aside>
+      {variantsOpen && (
+        <VariationsPanel
+          busy={variantsBusy}
+          error={variantsError}
+          variants={variants}
+          onPick={adoptSpec}
+          onClose={closeVariations}
+          onRetry={startVariations}
+        />
+      )}
     </div>
   );
 }

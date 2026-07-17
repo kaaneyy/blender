@@ -150,6 +150,62 @@ export async function buildabilityFindings(spec: AssetSpec): Promise<string[]> {
   }
 }
 
+/** One AI-proposed alternate take on the current asset, from
+ * /variations-spec — a full spec plus a short label describing what's
+ * different, mirroring the same `changes` diff envelope the edit endpoints
+ * return and any code violations the variant carries. */
+export interface Variant {
+  spec: AssetSpec;
+  label: string;
+  changes?: SpecChanges;
+  violations: unknown[];
+}
+
+/** Tolerant parse of one entry in the `variants` array: an entry missing a
+ * usable `spec` is unrecoverable and dropped entirely; every other field
+ * degrades to a safe default rather than invalidating the whole entry, same
+ * spirit as the other tolerant parsers in this file. `index` only backstops
+ * the display label when the backend omits one. */
+function parseVariant(raw: unknown, index: number): Variant | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+  if (!v.spec || typeof v.spec !== "object") return null;
+  const label = typeof v.label === "string" && v.label.trim() ? v.label : `Variant ${index + 1}`;
+  const violations = Array.isArray(v.violations) ? v.violations : [];
+  return {
+    spec: v.spec as AssetSpec,
+    label,
+    changes: parseChanges(v.changes),
+    violations,
+  };
+}
+
+/** Ask the AI for `count` alternate takes on the current spec — a
+ * non-streaming call (the response is a batch of full specs, not prose to
+ * render live). Malformed entries (no usable `spec`) are dropped rather than
+ * failing the whole batch; only an absent or fully-empty (after filtering)
+ * `variants` list throws. */
+export async function variationsSpec(
+  spec: AssetSpec,
+  count = 4,
+  model: DeepseekModel | "" = "",
+): Promise<Variant[]> {
+  const data = await post("/variations-spec", {
+    spec,
+    count,
+    code_mode: spec.code_mode ?? "strict",
+    model,
+  });
+  if (!Array.isArray(data?.variants)) throw new Error("Backend returned no variants");
+  const out: Variant[] = [];
+  (data.variants as unknown[]).forEach((item, i) => {
+    const v = parseVariant(item, i);
+    if (v) out.push(v);
+  });
+  if (!out.length) throw new Error("Backend returned no usable variants");
+  return out;
+}
+
 /* ------------------------------------------------------------------------
  * Streaming variants: the backend streams the raw LLM text, then a sentinel
  * followed by a JSON payload {ok, result|error}. onChunk receives the
