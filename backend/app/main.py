@@ -84,6 +84,14 @@ class FocusRequest(BaseModel):
     model: str = Field(default="", pattern=_MODEL_PATTERN)
 
 
+class VariationsRequest(BaseModel):
+    spec: dict
+    #: number of distinct variants to attempt (survivors may be fewer)
+    count: int = Field(default=4, ge=2, le=6)
+    code_mode: str = Field(default="strict", pattern="^(strict|advisory)$")
+    model: str = Field(default="", pattern=_MODEL_PATTERN)
+
+
 class WizardStepRequest(BaseModel):
     spec: dict
     step: str = Field(pattern="^(connections|materials|details)$")
@@ -221,6 +229,24 @@ def focus(body: FocusRequest) -> dict:
         raise HTTPException(
             status_code=502,
             detail=f"The AI returned an invalid spec twice in a row: {exc}. Try rephrasing.",
+        )
+
+
+@router.post("/variations-spec")
+def variations(body: VariationsRequest) -> dict:
+    """N independent, distinct, code-clamped, test-built variants of the
+    current spec (see ``spec_ai.variations_spec``): each is produced by its
+    own single-spec edit call along a fixed perturbation axis (proportion,
+    mass, ornament, stance, ...), so a stubborn variant is simply dropped —
+    the response carries only the survivors."""
+    try:
+        return spec_ai.variations_spec(body.spec, body.count, body.code_mode, model=body.model)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except spec_ai.SpecGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No variant survived generation: {exc}. Try rephrasing.",
         )
 
 

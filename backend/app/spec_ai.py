@@ -1212,6 +1212,115 @@ def focus_spec(spec: dict, area: str, code_mode: str = "strict",
 
 
 # ---------------------------------------------------------------------------
+# Variations — N independent perturbations of a base spec along fixed,
+# distinct design axes (proportion, mass, ornament, stance, ...), each run
+# through the SAME single-spec edit pipeline as refine/focus/improve
+# (``_run_edit``, integration_gate on) rather than one call asked to return
+# several specs at once. That keeps the classified retry engine and the
+# strict-clamp/test-build gate (``_postprocess_core``) applied per variant
+# verbatim, with the lowest possible blast radius: a stubborn variant is
+# simply dropped (see ``variations_spec``), never allowed to weaken the gate
+# or sink the whole request.
+# ---------------------------------------------------------------------------
+
+#: fixed, ordered perturbation directives — (label, directive) — cycled when
+#: ``count`` exceeds the tuple length. At least 6 entries so the API's
+#: ``count`` upper bound (6) is always covered by distinct directives, no
+#: repeats needed at the max.
+_VARIATION_DIRECTIVES: tuple[tuple[str, str], ...] = (
+    ("Slender & Tall",
+     "PROPORTION/SLENDERNESS — make this variant read as taller and more "
+     "slender: increase the height-to-width proportions of the principal "
+     "vertical members, taper them more aggressively, and thin out "
+     "secondary members. Do not shrink real-world feature sizes (a seat, a "
+     "panel, a luminaire head keep their own functional dimensions) — only "
+     "the overall stance and member proportions change."),
+    ("Heavy & Robust",
+     "MASS/ROBUSTNESS — make this variant read as heavier and more robust: "
+     "thicken the principal structural members (larger diameters/cross-"
+     "sections), enlarge base plates and footings, and reduce tapering so "
+     "the asset reads as over-built rather than delicate."),
+    ("Ornamented",
+     "ORNAMENT/DETAIL — add ornamental and decorative detail appropriate to "
+     "the asset's style: mouldings, finials, fluting, brackets, or trim "
+     "pieces as new primitives on existing components. Keep the overall "
+     "massing and footprint the same; this variant is about surface and "
+     "silhouette richness, not a different structure."),
+    ("Minimalist",
+     "ORNAMENT/DETAIL (opposite direction) — strip this variant down to "
+     "clean, minimal lines: remove or simplify decorative primitives "
+     "(mouldings, finials, trim), square off tapered forms where doing so "
+     "keeps the design buildable, and favor flat/plain surfaces. Keep every "
+     "structural and functional part intact — only decoration is reduced."),
+    ("Wide Stance",
+     "STANCE/FOOTPRINT — widen this variant's footprint: splay or space "
+     "the ground-contact members (legs, base plate, anchor bolt circle) "
+     "further apart for a broader, more planted stance, extending any "
+     "connecting rails/stretchers to match. Overall height and the size of "
+     "functional features stay the same."),
+    ("Compact Footprint",
+     "STANCE/FOOTPRINT (opposite direction) — narrow this variant's "
+     "footprint: bring the ground-contact members (legs, base plate, "
+     "anchor bolt circle) closer together for a tighter, more vertical "
+     "stance, shortening any connecting rails/stretchers to match. Overall "
+     "height and the size of functional features stay the same."),
+)
+
+
+def _variation_user(spec: dict, directive: str) -> str:
+    return (
+        f"Here is the current AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Produce ONE DISTINCT DESIGN VARIANT of this asset along this "
+        f"specific axis:\n{directive}\n\n"
+        "Return the FULL updated AssetSpec JSON (keep the asset_type, name, "
+        "and units unchanged; keep existing ids where the part is "
+        "unchanged).\n\n"
+        "EDIT DISCIPLINE — this is a targeted variation, not a redesign:\n"
+        "- Change ONLY what the variation axis above calls for; every "
+        "component, primitive, parameter, toggle, and material unrelated to "
+        "that axis stays as close to the original as sensible.\n"
+        "- When adding or resizing parts, seat them on a REAL surface of "
+        "the named host with a 10-20 mm embed (not floating, not merely "
+        "touching, and never driven through the host's interior) AND "
+        "declare the connection in the top-level \"connections\" array."
+    )
+
+
+def variations_spec(base_spec: dict, count: int = 4, code_mode: str = "strict",
+                    model: str | None = None) -> dict:
+    """N INDEPENDENT AI edit passes over ``base_spec``, each steered by one
+    of the fixed ``_VARIATION_DIRECTIVES`` perturbation axes, cycling
+    through the tuple if ``count`` exceeds it. Each variant is produced by
+    its OWN call to ``_run_edit`` (the same classified retry engine and
+    strict-clamp/test-build gate as refine/focus/improve, integration gate
+    on) — not a single call asked to return several specs — so a variant
+    that exhausts ``MAX_ATTEMPTS`` is simply DROPPED rather than failing the
+    whole request. Returns ``{"variants": [...]}`` where each entry is the
+    ordinary edit result (``spec``, ``violations``, ``changes`` when the
+    diff succeeds) plus a stable human ``label``. Raises
+    :class:`SpecGenerationError` only when every variant failed."""
+    variants = []
+    last_error: SpecGenerationError | None = None
+    for i in range(count):
+        label, directive = _VARIATION_DIRECTIVES[i % len(_VARIATION_DIRECTIVES)]
+        try:
+            result = _run_edit(
+                _system_prompt(code_mode), _variation_user(base_spec, directive),
+                code_mode, base_spec, model=model, integration_gate=True,
+            )
+        except SpecGenerationError as exc:
+            last_error = exc
+            continue
+        result["label"] = label
+        variants.append(result)
+    if not variants:
+        raise last_error or SpecGenerationError(
+            "No variant survived generation", kind="unknown",
+        )
+    return {"variants": variants}
+
+
+# ---------------------------------------------------------------------------
 # Guided 4-step build (Form → Connections → Materials → Working parts)
 #
 # Step 1 (Form) is the ordinary generate. Steps 2-4 are scoped refinement

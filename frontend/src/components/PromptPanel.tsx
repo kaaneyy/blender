@@ -250,6 +250,8 @@ export default function PromptPanel({
   onTheme,
   onName,
   onSpec,
+  onVariations,
+  variationsBusy,
 }: {
   spec: AssetSpec;
   violations: Record<string, CodeViolation>;
@@ -257,6 +259,12 @@ export default function PromptPanel({
   onTheme: (t: "light" | "dark") => void;
   onName: (name: string) => void;
   onSpec: (spec: AssetSpec) => string | null; // returns error message if spec unusable
+  /** "✨ Give me 4 variants": requests a batch of alternate specs and opens
+   * the grid to preview + pick one (App owns the request/state; this panel
+   * only triggers it). */
+  onVariations: () => void;
+  /** Disables the trigger and swaps its label while a batch is in flight. */
+  variationsBusy: boolean;
 }) {
   const [prompt, setPrompt] = useState("");
   const [refineMsg, setRefineMsg] = useState("");
@@ -863,6 +871,19 @@ export default function PromptPanel({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {wizardStep === null && (
+        <div className="variations-trigger">
+          <button
+            className="variations-trigger__btn"
+            onClick={onVariations}
+            disabled={busy !== false || clarifyBusy !== false || variationsBusy}
+            title="Ask the AI for 4 alternate takes on the current asset, preview each in 3D, and pick one to adopt"
+          >
+            {variationsBusy ? "✨ Requesting 4 variants…" : "✨ Give me 4 variants"}
+          </button>
         </div>
       )}
 
