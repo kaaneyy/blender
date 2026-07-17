@@ -173,5 +173,75 @@
         "note": "Lowest outlet at least 18 in above finished grade."
       }
     }
+  },
+  "drinking_fountain": {
+    "source": "ADA Standards for Accessible Design, 2010 — Section 602 Drinking Fountains and Water Coolers; Section 306 Knee and Toe Clearance",
+    "parameters": {
+      "spout_height": {
+        "min": 0, "max": 36, "default": 34, "unit": "in",
+        "code_ref": "ADA-602.4",
+        "note": "Spout outlet 36 in maximum above the floor or ground for a wheelchair-accessible (forward-approach, knee-clearance) unit."
+      },
+      "knee_clearance_height": {
+        "min": 27, "max": null, "default": 27, "unit": "in",
+        "code_ref": "ADA-306.3.1",
+        "note": "602.2 requires knee and toe clearance per Section 306; 306.3.1 defines the knee-clearance zone as the space 9-27 in above the floor, so the unit's underside must clear at least 27 in."
+      },
+      "spout_reach": {
+        "min": 0, "max": 5, "default": 5, "unit": "in",
+        "code_ref": "ADA-602.5",
+        "note": "Spout located 5 in maximum from the front edge of the unit (including bumpers), and 15 in minimum from the vertical support, so a forward-approach wheelchair user can reach it."
+      }
+    }
+  },
+  "ramp": {
+    "source": "ADA Standards for Accessible Design, 2010 — Section 405 Ramps",
+    "parameters": {
+      "clear_width": {
+        "min": 36, "max": null, "default": 36, "unit": "in",
+        "code_ref": "ADA-405.5",
+        "note": "Clear width of a ramp run (and between handrails, where provided) is 36 in minimum."
+      },
+      "max_rise_per_run": {
+        "min": 0, "max": 30, "default": 12, "unit": "in",
+        "code_ref": "ADA-405.6",
+        "note": "Rise for any single ramp run is 30 in maximum. A ramp's running slope is separately capped at 1:12 (ADA-405.2) — a ratio of rise to horizontal run length, not a length itself, so it is not modeled as a parameter or sizing ratio here (this entry has no run-length parameter to form a real of/to pair against)."
+      },
+      "landing_length": {
+        "min": 60, "max": null, "default": 60, "unit": "in",
+        "code_ref": "ADA-405.7.3",
+        "note": "Landing clear length is 60 in minimum."
+      }
+    }
+  },
+  "accessible_table": {
+    "source": "ADA Standards for Accessible Design, 2010 — Section 902 Dining Surfaces and Work Surfaces; Section 306 Knee and Toe Clearance",
+    "parameters": {
+      "surface_height": {
+        "min": 28, "max": 34, "default": 30, "unit": "in",
+        "code_ref": "ADA-902.3",
+        "note": "Tops of dining/work surfaces are 28-34 in above the floor or ground."
+      },
+      "knee_clearance_height": {
+        "min": 27, "max": null, "default": 27, "unit": "in",
+        "code_ref": "ADA-306.3.1",
+        "note": "902.2 requires knee and toe clearance per Section 306; 306.3.1 defines the knee-clearance zone as the space 9-27 in above the floor, so the underside must clear at least 27 in."
+      },
+      "toe_clearance_depth": {
+        "min": 17, "max": null, "default": 17, "unit": "in",
+        "code_ref": "ADA-306.2.3",
+        "note": "Where toe clearance is required as part of the clear floor space, it must extend 17 in minimum under the element."
+      }
+    }
+  },
+  "trash_receptacle": {
+    "source": "ADA Standards for Accessible Design, 2010 — Section 308 Reach Ranges",
+    "parameters": {
+      "operable_part_height": {
+        "min": 15, "max": 48, "default": 30, "unit": "in",
+        "code_ref": "ADA-308.2.1",
+        "note": "Operable parts (e.g. a lid or door) must fall within the unobstructed forward/side reach range: 15 in minimum to 48 in maximum above the floor or ground."
+      }
+    }
   }
 }
