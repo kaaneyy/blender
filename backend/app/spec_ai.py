@@ -53,6 +53,7 @@ ASSET_SPEC_SCHEMA = json.loads(
 )
 FEW_SHOT_CUSTOM = (REPO_ROOT / "examples" / "park_bench.json").read_text(encoding="utf-8")
 FEW_SHOT_BUILTIN = (REPO_ROOT / "examples" / "street_light.json").read_text(encoding="utf-8")
+FEW_SHOT_ARRAYED = (REPO_ROOT / "examples" / "bike_rack.json").read_text(encoding="utf-8")
 
 #: Curated builders and the parameter/toggle ids their geometry understands.
 BUILTIN_BUILDERS = {
@@ -157,7 +158,10 @@ EXAMPLE — curated builder:
 {FEW_SHOT_BUILTIN}
 
 EXAMPLE — custom primitives (the "anything" path):
-{FEW_SHOT_CUSTOM}"""
+{FEW_SHOT_CUSTOM}
+
+EXAMPLE — arrayed/swept custom primitives (sweep fabrication kind, array {{count, step}} repetition, weld connection):
+{FEW_SHOT_ARRAYED}"""
 
 
 # ---------------------------------------------------------------------------
