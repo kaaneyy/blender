@@ -26,6 +26,18 @@ import httpx
 TIMEOUT = 90.0
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: ``complete``/``complete_stream``'s default output budget, named so callers
+#: (the retry loop's truncation-escalation logic) can reason about "the
+#: default" without hard-coding the magic number a second time. The
+#: parameter default below is intentionally still a literal 6000 — this
+#: constant mirrors it, it does not replace the signature.
+DEFAULT_MAX_TOKENS = 6000
+
+#: Upper bound a truncated-retry may escalate ``max_tokens`` to, regardless
+#: of how many times a reply keeps truncating. Keeps a runaway spec from
+#: burning an unbounded budget on repeated retries.
+TRUNCATION_MAX_TOKENS_CEILING = 16000
+
 #: DeepSeek models the UI dropdown may request. Anything outside this set is
 #: ignored (falls back to the env default) so a client can never inject an
 #: arbitrary model string.
@@ -209,7 +221,7 @@ def _mock(user: str) -> str:
 
 
 def complete(system: str, user: str, *, temperature: float = 0.4,
-             max_tokens: int = 6000, model: str | None = None) -> str:
+             max_tokens: int = DEFAULT_MAX_TOKENS, model: str | None = None) -> str:
     provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
     picked = resolve_model(provider, model)
 
@@ -341,7 +353,7 @@ def _anthropic_stream(api_key: str, model: str, system: str, user: str,
 
 
 def complete_stream(system: str, user: str, *, temperature: float = 0.4,
-                    max_tokens: int = 6000, model: str | None = None) -> Iterator[str]:
+                    max_tokens: int = DEFAULT_MAX_TOKENS, model: str | None = None) -> Iterator[str]:
     """Streaming twin of :func:`complete`."""
     provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
     picked = resolve_model(provider, model)

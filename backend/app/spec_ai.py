@@ -42,7 +42,14 @@ from blender.builders.connectivity import (  # noqa: E402
 )
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
-from .llm import LLMError, complete, complete_stream, strip_reasoning  # noqa: E402
+from .llm import (  # noqa: E402
+    DEFAULT_MAX_TOKENS,
+    TRUNCATION_MAX_TOKENS_CEILING,
+    LLMError,
+    complete,
+    complete_stream,
+    strip_reasoning,
+)
 
 #: Marks the end of the streamed raw text; the JSON payload after it carries
 #: the validated result (or the error). The frontend splits on this.
@@ -1073,18 +1080,39 @@ def _correction_user(user: str, attempt: int, history: list, raw: str) -> str:
     return "\n".join(lines)
 
 
+def _escalate_truncated_budget(current_tokens: int, history: list) -> int:
+    """A reply classified "truncated" means the model ran out of room, not
+    that it made a content mistake — retrying with the SAME max_tokens would
+    truncate identically every time. So when the most recent failure was
+    "truncated", double the output-token budget for the next attempt
+    (bounded by TRUNCATION_MAX_TOKENS_CEILING, and never below whatever
+    budget — caller-supplied or already-escalated — got us here). Any other
+    failure kind (not_json/schema/build/...) is a content bug, not a budget
+    bug, and leaves the budget untouched."""
+    if history and history[-1].kind == "truncated":
+        return min(current_tokens * 2, TRUNCATION_MAX_TOKENS_CEILING)
+    return current_tokens
+
+
 def _complete_with_retries(system: str, user: str, finalize, *,
                            model: str | None = None, **complete_kwargs) -> dict:
     """Non-streaming attempt loop: call the model, ``finalize(raw, lenient)``
     the reply, and on a classified failure re-prompt with a targeted
     correction — up to MAX_ATTEMPTS calls. The last attempt finalizes
-    leniently (buildability warnings instead of failure)."""
+    leniently (buildability warnings instead of failure). A "truncated"
+    failure also escalates ``max_tokens`` for the next attempt (see
+    ``_escalate_truncated_budget``) so a spec that genuinely needs more
+    output room gets a real second chance instead of truncating identically
+    on every attempt."""
     history: list = []
     raw = ""
+    current_tokens = complete_kwargs.pop("max_tokens", DEFAULT_MAX_TOKENS)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+        current_tokens = _escalate_truncated_budget(current_tokens, history)
         try:
-            raw = complete(system, message, model=model, **complete_kwargs)
+            raw = complete(system, message, model=model, max_tokens=current_tokens,
+                           **complete_kwargs)
         except LLMError as exc:
             if attempt == MAX_ATTEMPTS or not _transient_llm_error(exc):
                 raise
@@ -2338,22 +2366,29 @@ _KIND_LABEL = {
 }
 
 
-def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
+def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None,
+                     max_tokens: int | None = None):
     """``finalize(raw, lenient=False)`` turns the streamed text into the
     result payload. On a classified failure the pipeline announces what went
     wrong and what it's fixing, then re-prompts with the targeted correction
     — up to MAX_ATTEMPTS model calls. The final attempt finalizes leniently
     so a spec that still fails only the buildability check ships with
-    warnings instead of dying."""
+    warnings instead of dying. A "truncated" failure also escalates
+    ``max_tokens`` for the next attempt (see ``_escalate_truncated_budget``)
+    so a spec that genuinely needs more output room gets a real second
+    chance instead of truncating identically on every attempt."""
     payload = None
     max_attempts = MAX_ATTEMPTS if retry else 1
     history: list = []
     raw = ""
+    current_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
     for attempt in range(1, max_attempts + 1):
         message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+        current_tokens = _escalate_truncated_budget(current_tokens, history)
         parts = []
         try:
-            for chunk in complete_stream(system, message, model=model):
+            for chunk in complete_stream(system, message, model=model,
+                                         max_tokens=current_tokens):
                 parts.append(chunk)
                 yield chunk
         except LLMError as exc:

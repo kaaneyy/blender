@@ -248,3 +248,106 @@ class TestStreamingRetry:
         raw, payload = self.collect(spec_ai.stream_install_guide(spec_dict()))
         assert payload["ok"] is True
         assert len(calls) == 1
+
+
+def script_complete_kwargs(monkeypatch, replies):
+    """Like ``script_complete``, but records each call's full kwargs (not
+    just the prompt) so the per-attempt ``max_tokens`` budget can be
+    inspected directly."""
+    calls = []
+
+    def fake_complete(system, user, **kwargs):
+        calls.append(kwargs)
+        reply = replies[min(len(calls) - 1, len(replies) - 1)]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(spec_ai, "complete", fake_complete)
+    return calls
+
+
+def script_stream_kwargs(monkeypatch, replies):
+    """Streaming counterpart of ``script_complete_kwargs``."""
+    calls = []
+
+    def fake_stream(system, user, **kwargs):
+        calls.append(kwargs)
+        reply = replies[min(len(calls) - 1, len(replies) - 1)]
+        if isinstance(reply, Exception):
+            raise reply
+        for i in range(0, len(reply), 256):
+            yield reply[i : i + 256]
+
+    monkeypatch.setattr(spec_ai, "complete_stream", fake_stream)
+    return calls
+
+
+def collect_stream(gen):
+    text = "".join(gen)
+    raw, payload = text.split(spec_ai.STREAM_SENTINEL)
+    return raw, json.loads(payload)
+
+
+class TestTruncatedTokenEscalation:
+    """A "truncated" classified failure means the model ran out of output
+    room, not that it made a content mistake — retrying with the SAME
+    max_tokens truncates identically every time. The next attempt must call
+    the provider with a strictly larger (bounded) budget."""
+
+    def test_truncated_retry_escalates_max_tokens(self, monkeypatch):
+        truncated = VALID[: len(VALID) // 2]
+        calls = script_complete_kwargs(monkeypatch, [truncated, VALID])
+        out = run_refine()
+        assert out["spec"]["asset_type"] == "street_light"
+        assert len(calls) == 2
+        first_tokens = calls[0]["max_tokens"]
+        second_tokens = calls[1]["max_tokens"]
+        assert second_tokens > first_tokens
+        assert second_tokens <= spec_ai.TRUNCATION_MAX_TOKENS_CEILING
+
+    def test_stream_truncated_retry_escalates_max_tokens(self, monkeypatch):
+        truncated = VALID[: len(VALID) // 2]
+        calls = script_stream_kwargs(monkeypatch, [truncated, VALID])
+        raw, payload = collect_stream(
+            spec_ai.stream_refine_spec(spec_dict(), "make it taller"))
+        assert payload["ok"] is True
+        assert len(calls) == 2
+        first_tokens = calls[0]["max_tokens"]
+        second_tokens = calls[1]["max_tokens"]
+        assert second_tokens > first_tokens
+        assert second_tokens <= spec_ai.TRUNCATION_MAX_TOKENS_CEILING
+
+    def test_non_truncated_failure_does_not_escalate_max_tokens(self, monkeypatch):
+        # garbage -> not_json, then a schema violation -> schema: neither
+        # kind is a budget problem, so max_tokens must stay put across all
+        # three attempts (a reverted escalation would still pass a test that
+        # only checked "some call escalated" — this asserts the concrete
+        # equality instead).
+        bad_schema = spec_dict()
+        bad_schema["evil_extra"] = True
+        calls = script_complete_kwargs(
+            monkeypatch, ["garbage", json.dumps(bad_schema), VALID])
+        run_refine()
+        assert len(calls) == 3
+        tokens = [c["max_tokens"] for c in calls]
+        assert tokens[0] == tokens[1] == tokens[2]
+
+    def test_escalation_never_shrinks_an_explicit_caller_budget(self):
+        # propose_standards_update calls _complete_with_retries with
+        # max_tokens=8000 — a truncated retry must escalate UP from that,
+        # never fall back down toward the 6000 default.
+        history = [SpecGenerationError("cut off", kind="truncated")]
+        escalated = spec_ai._escalate_truncated_budget(8000, history)
+        assert escalated > 8000
+        assert escalated <= spec_ai.TRUNCATION_MAX_TOKENS_CEILING
+
+    def test_escalation_is_bounded_by_the_ceiling(self):
+        history = [SpecGenerationError("cut off", kind="truncated")]
+        near_ceiling = spec_ai.TRUNCATION_MAX_TOKENS_CEILING - 10
+        assert spec_ai._escalate_truncated_budget(
+            near_ceiling, history) == spec_ai.TRUNCATION_MAX_TOKENS_CEILING
+
+    def test_no_history_leaves_budget_untouched(self):
+        assert spec_ai._escalate_truncated_budget(
+            spec_ai.DEFAULT_MAX_TOKENS, []) == spec_ai.DEFAULT_MAX_TOKENS
