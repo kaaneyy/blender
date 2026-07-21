@@ -86,3 +86,16 @@ def test_trash_receptacle_archetype_and_anchor():
     # anchor dimensions: ~0.5 m across, ~0.9-1.1 m tall
     assert "0.5 m" in region
     assert "0.9-1.1 m" in region or ("0.9" in region and "1.1 m" in region)
+
+
+def test_primitive_budget_is_complexity_adaptive_not_capped():
+    # The GEOMETRY RULES primitive-count guidance must no longer hard-cap
+    # every request at 40 primitives (that contradicts the very next
+    # COMPLETENESS bullet requiring every named part to exist as its own
+    # component for multi-feature requests). It must still explicitly
+    # discourage micro-detail in favor of readable massing.
+    prompt = _system_prompt("strict")
+    assert "10–40 primitives is the sweet spot" not in prompt
+    assert "10-40 primitives is the sweet spot" not in prompt
+    assert "readable massing" in prompt
+    assert "micro-detail" in prompt

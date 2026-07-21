@@ -42,7 +42,14 @@ from blender.builders.connectivity import (  # noqa: E402
 )
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
-from .llm import LLMError, complete, complete_stream, strip_reasoning  # noqa: E402
+from .llm import (  # noqa: E402
+    DEFAULT_MAX_TOKENS,
+    TRUNCATION_MAX_TOKENS_CEILING,
+    LLMError,
+    complete,
+    complete_stream,
+    strip_reasoning,
+)
 
 #: Marks the end of the streamed raw text; the JSON payload after it carries
 #: the validated result (or the error). The frontend splits on this.
@@ -111,7 +118,7 @@ GEOMETRY RULES
 - Primitive dimensions are METERS. +Z is up. The asset stands on the ground plane z=0 (nothing below z=0). A cylinder/cone's axis is Z; "location" is its center, so a post of depth H sits at z=H/2. rotation is Euler XYZ radians.
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
 - EVERY major dimension a designer would tweak must be a parameter (slider) referenced from expressions — never hard-code it. Optional features (backrest, second arm, finial, ...) must be toggles gating primitives via "visible_if".
-- Give every primitive a component (nested grouping in exports) and a material_slot. 10–40 primitives is the sweet spot; favor simple, readable massing over micro-detail.
+- Give every primitive a component (nested grouping in exports) and a material_slot. Scale the primitive count to the request's complexity — a simple ask stays lean (roughly 10-25 primitives), while a genuinely multi-feature or intricate assembly may reasonably run well past 40; either way, favor simple, readable massing over micro-detail.
 - COMPLETENESS: if the request names several parts or features ("a car roof with slanted solar panels"), EVERY named part MUST exist as its own component with its own primitives, parameters, and material slot. Re-read the request before answering and check nothing was dropped.
 
 TILT, SLOPE, CURVE (the model is not limited to upright boxes)
@@ -1073,18 +1080,39 @@ def _correction_user(user: str, attempt: int, history: list, raw: str) -> str:
     return "\n".join(lines)
 
 
+def _escalate_truncated_budget(current_tokens: int, history: list) -> int:
+    """A reply classified "truncated" means the model ran out of room, not
+    that it made a content mistake — retrying with the SAME max_tokens would
+    truncate identically every time. So when the most recent failure was
+    "truncated", double the output-token budget for the next attempt
+    (bounded by TRUNCATION_MAX_TOKENS_CEILING, and never below whatever
+    budget — caller-supplied or already-escalated — got us here). Any other
+    failure kind (not_json/schema/build/...) is a content bug, not a budget
+    bug, and leaves the budget untouched."""
+    if history and history[-1].kind == "truncated":
+        return min(current_tokens * 2, TRUNCATION_MAX_TOKENS_CEILING)
+    return current_tokens
+
+
 def _complete_with_retries(system: str, user: str, finalize, *,
                            model: str | None = None, **complete_kwargs) -> dict:
     """Non-streaming attempt loop: call the model, ``finalize(raw, lenient)``
     the reply, and on a classified failure re-prompt with a targeted
     correction — up to MAX_ATTEMPTS calls. The last attempt finalizes
-    leniently (buildability warnings instead of failure)."""
+    leniently (buildability warnings instead of failure). A "truncated"
+    failure also escalates ``max_tokens`` for the next attempt (see
+    ``_escalate_truncated_budget``) so a spec that genuinely needs more
+    output room gets a real second chance instead of truncating identically
+    on every attempt."""
     history: list = []
     raw = ""
+    current_tokens = complete_kwargs.pop("max_tokens", DEFAULT_MAX_TOKENS)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+        current_tokens = _escalate_truncated_budget(current_tokens, history)
         try:
-            raw = complete(system, message, model=model, **complete_kwargs)
+            raw = complete(system, message, model=model, max_tokens=current_tokens,
+                           **complete_kwargs)
         except LLMError as exc:
             if attempt == MAX_ATTEMPTS or not _transient_llm_error(exc):
                 raise
@@ -2338,22 +2366,29 @@ _KIND_LABEL = {
 }
 
 
-def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None):
+def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None,
+                     max_tokens: int | None = None):
     """``finalize(raw, lenient=False)`` turns the streamed text into the
     result payload. On a classified failure the pipeline announces what went
     wrong and what it's fixing, then re-prompts with the targeted correction
     — up to MAX_ATTEMPTS model calls. The final attempt finalizes leniently
     so a spec that still fails only the buildability check ships with
-    warnings instead of dying."""
+    warnings instead of dying. A "truncated" failure also escalates
+    ``max_tokens`` for the next attempt (see ``_escalate_truncated_budget``)
+    so a spec that genuinely needs more output room gets a real second
+    chance instead of truncating identically on every attempt."""
     payload = None
     max_attempts = MAX_ATTEMPTS if retry else 1
     history: list = []
     raw = ""
+    current_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
     for attempt in range(1, max_attempts + 1):
         message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+        current_tokens = _escalate_truncated_budget(current_tokens, history)
         parts = []
         try:
-            for chunk in complete_stream(system, message, model=model):
+            for chunk in complete_stream(system, message, model=model,
+                                         max_tokens=current_tokens):
                 parts.append(chunk)
                 yield chunk
         except LLMError as exc:
