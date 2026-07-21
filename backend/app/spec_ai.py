@@ -63,6 +63,12 @@ BUILTIN_BUILDERS = {
         "toggles": ["double_arm", "banner_bracket", "anchor_bolts"],
         "material_slots": ["pole", "base", "luminaire", "lens"],
     },
+    "accessible_table": {
+        "parameters": ["surface_height (in)", "knee_clearance_height (in)",
+                       "toe_clearance_depth (in)", "table_width (in)", "table_depth (in)"],
+        "toggles": [],
+        "material_slots": ["top", "frame"],
+    },
 }
 
 

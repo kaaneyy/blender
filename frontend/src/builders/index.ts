@@ -1,6 +1,7 @@
 /** Importing this module registers every preview builder (mirrors
  * blender/builders/__init__.py) and wires the cross-cutting passes. */
 import "./streetLight";
+import "./accessibleTable";
 import { buildCustom } from "./generic";
 import { computeHardware } from "./hardware";
 import { setCustomBuilder, setHardwareBuilder } from "./base";
