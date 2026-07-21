@@ -67,6 +67,19 @@ MIRROR_TABLE = [
     ("blender.builders.street_light", "LENS_STATION", "frontend/src/builders/streetLight.ts", "LENS_STATION"),
     ("blender.builders.street_light", "LENS_DEPTH", "frontend/src/builders/streetLight.ts", "LENS_DEPTH"),
     ("blender.builders.street_light", "LENS_RECESS", "frontend/src/builders/streetLight.ts", "LENS_RECESS"),
+    # accessible_table.py <-> accessibleTable.ts
+    ("blender.builders.accessible_table", "IN", "frontend/src/builders/accessibleTable.ts", "IN"),
+    ("blender.builders.accessible_table", "LEG_RADIUS", "frontend/src/builders/accessibleTable.ts", "LEG_RADIUS"),
+    ("blender.builders.accessible_table", "TOP_THICKNESS_DEFAULT", "frontend/src/builders/accessibleTable.ts", "TOP_THICKNESS_DEFAULT"),
+    ("blender.builders.accessible_table", "MIN_TOP_THICKNESS", "frontend/src/builders/accessibleTable.ts", "MIN_TOP_THICKNESS"),
+    ("blender.builders.accessible_table", "LEG_INSET", "frontend/src/builders/accessibleTable.ts", "LEG_INSET"),
+    ("blender.builders.accessible_table", "LEG_BACK_INSET", "frontend/src/builders/accessibleTable.ts", "LEG_BACK_INSET"),
+    ("blender.builders.accessible_table", "PENETRATION", "frontend/src/builders/accessibleTable.ts", "PENETRATION"),
+    ("blender.builders.accessible_table", "WELD_SIZE_RATIO", "frontend/src/builders/accessibleTable.ts", "WELD_SIZE_RATIO"),
+    ("blender.builders.accessible_table", "MIN_WELD_SIZE", "frontend/src/builders/accessibleTable.ts", "MIN_WELD_SIZE"),
+    ("blender.builders.accessible_table", "APRON_HEIGHT", "frontend/src/builders/accessibleTable.ts", "APRON_HEIGHT"),
+    ("blender.builders.accessible_table", "APRON_DEPTH", "frontend/src/builders/accessibleTable.ts", "APRON_DEPTH"),
+    ("blender.builders.accessible_table", "KNEE_CLEARANCE_WIDTH", "frontend/src/builders/accessibleTable.ts", "KNEE_CLEARANCE_WIDTH"),
 ]
 
 
