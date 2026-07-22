@@ -63,6 +63,50 @@ SCALE_GIANT_RATIO = 2.5
 ENVELOPE_MAX = 30.0
 ENVELOPE_MIN = 0.2
 
+# --------------------------------------------------------------------------
+# Sliver-member thresholds (also check_scale_sanity, but per-PRIMITIVE, not
+# per-component). The envelope math above only measures a component's size
+# relative to the REST of the asset — a tall, wire-thin post has a tall
+# envelope just like a real one, so it sails through scale_outlier/
+# scale_giant/envelope_extreme untouched: nothing above ever weighs a
+# member's cross-section against its own length. This is the WHY repro
+# ("15 ft victorian post" built as a ~1cm-diameter cylinder): buildability
+# passes (the wire reaches grade), scale_outlier/giant pass (its envelope is
+# asset-scale, not toy- or giant-scale). Chosen against that repro (4.57m
+# span, 20mm cross-section) AND every legitimately slender member the
+# bundled examples ship, so a real post/rail/pin never false-positives:
+#   - park_bench legs/rails/back_posts: <=0.5m span, under SLIVER_MIN_SPAN
+#     entirely — a bench leg is inherently too short to read as a "post"
+#   - street_light's tapered pole shaft: 9.14m span, 203mm (8in) diameter —
+#     a real fluted lamp-post section, caught by neither ratio nor cap
+#   - street_light's mast arm: a curved sweep whose own bbox is 453mm wide
+#     (the curve's rise, not the 70mm tube), nowhere near either threshold
+#   - street_light's banner-bracket pin (toggle-only): 0.9m reach, 32mm
+#     (1-1/4in) diameter, ~28:1 aspect — genuinely slender hardware, not a
+#     structural post; this is what pins SLIVER_RATIO at 40 rather than the
+#     repro's own ~230:1 aspect (any ratio in [29, 228) would flag the repro,
+#     but 40 leaves comfortable margin on both sides)
+#   - pergola posts/beams/rafters, bike_rack hoops/base channels, planter
+#     vessel/soil: all either short or >=100mm across
+# See TestSliverMembers in test_connectivity.py for the measured numbers.
+# --------------------------------------------------------------------------
+#: a member must span at least this (m) before its cross-section even
+#: matters — legs/rails/gussets shorter than this are inherently stubby and
+#: never read as "a 15ft post modeled as a wire" regardless of thinness
+SLIVER_MIN_SPAN = 0.75
+#: the member's own span-to-cross-section ratio must exceed this to read as
+#: a hairline WIRE rather than a legitimately slender member. Paired with
+#: SLIVER_ABS_CAP below: this alone would also catch a real flagpole
+#: (6m / 50mm ~= 120:1), which is why the absolute cap has to be the one
+#: that lets a real flagpole through
+SLIVER_RATIO = 40.0
+#: AND the cross-section itself must be under this absolute size (m) —
+#: freestanding post/pole bases genuinely run 3-8in / 0.08-0.20m, and even
+#: this repo's slenderest legitimate tube (the 32mm banner-bracket pin,
+#: saved above by SLIVER_RATIO instead) stays under it, so 40mm separates
+#: "hairline" from "merely slim" without the ratio check alone
+SLIVER_ABS_CAP = 0.04
+
 
 def _finding(kind: str, message: str, component: str = "",
              severity: str = "error") -> dict:
@@ -851,5 +895,31 @@ def check_scale_sanity(prims: List[Primitive], spec=None) -> List[dict]:
                     f"features keep their real dimensions.",
                     component=c,
                 ))
+
+    # ------------------------------------------------------- sliver members
+    # Per-PRIMITIVE (not per-component envelope, which would blur a hairline
+    # rod together with whatever else shares its component): a non-cut,
+    # non-hardware prim whose own AABB is a hairline rod — long, with BOTH
+    # cross-section dims tiny (a thin SHEET, e.g. a sign face, has one tiny
+    # dim and one wide one, and is deliberately not caught by this).
+    for p in prims:
+        if p.cut or p.component == "hardware":
+            continue
+        length, width, thick = sorted(_envelope_dims(_aabb(p)), reverse=True)
+        if (length >= SLIVER_MIN_SPAN
+                and width < length / SLIVER_RATIO
+                and thick < length / SLIVER_RATIO
+                and width < SLIVER_ABS_CAP):
+            findings.append(_scale_finding(
+                "sliver_member",
+                f"'{p.component}/{p.name}' spans {length:.2f} m but its "
+                f"cross-section is only {width:.3f} x {thick:.3f} m — a "
+                f"hairline member no real fabrication process keeps "
+                f"standing. Freestanding post/pole bases run about "
+                f"3-8 in (0.08-0.20 m); thicken '{p.component}/{p.name}' "
+                f"or taper it from a real base section instead of a "
+                f"constant hairline diameter.",
+                component=p.component,
+            ))
 
     return findings
