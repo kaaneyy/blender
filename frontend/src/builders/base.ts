@@ -27,15 +27,24 @@ export function register(assetType: string, fn: BuilderFn): void {
   BUILDERS[assetType] = fn;
 }
 
-/** Build the curated/custom primitives, before hardware and edit overlays. */
+/** Build the curated/custom primitives, before hardware and edit overlays.
+ * PRIMITIVES ALWAYS WIN: a non-empty spec.primitives array is built even
+ * when spec.asset_type also matches a registered curated builder — a
+ * curated builder's geometry can't express a styled/extended request (e.g.
+ * a "victorian post with lantern" typed as asset_type street_light), so a
+ * spec that already modeled its own geometry must never have that geometry
+ * silently discarded in favor of the curated stand-in. Only when the spec
+ * has no primitives do we fall back to the registered curated builder for
+ * spec.asset_type, and only when neither is available do we throw. Mirror
+ * of base.py compute_primitives dispatch order. */
 function buildBase(spec: AssetSpec): Primitive[] {
-  const fn = BUILDERS[spec.asset_type];
-  if (fn) return fn(spec);
   if (spec.primitives?.length) {
     // lazy import avoided: generic.ts imports helpers from this module, so
     // the dependency is wired in builders/index.ts instead
     return customBuilder!(spec);
   }
+  const fn = BUILDERS[spec.asset_type];
+  if (fn) return fn(spec);
   throw new Error(
     `No builder for asset_type "${spec.asset_type}" and the spec has no ` +
       `primitives (curated: ${Object.keys(BUILDERS).join(", ") || "<none>"})`,

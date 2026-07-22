@@ -15,7 +15,7 @@ characteristic-form keyword, and by a real anchor dimension.
 """
 import re
 
-from backend.app.spec_ai import _system_prompt
+from backend.app.spec_ai import BUILTIN_BUILDERS, _system_prompt
 
 START_MARKER = "Map the request to a known archetype"
 END_MARKER = "MATERIALS"
@@ -86,6 +86,36 @@ def test_trash_receptacle_archetype_and_anchor():
     # anchor dimensions: ~0.5 m across, ~0.9-1.1 m tall
     assert "0.5 m" in region
     assert "0.9-1.1 m" in region or ("0.9" in region and "1.1 m" in region)
+
+
+def test_no_dead_anchor_bolts_toggle():
+    # anchor_bolts was advertised as a street_light toggle but no builder
+    # ever consumed it (Brief 4) — it must be gone from both the prompt
+    # dict and the rendered system prompt.
+    assert "anchor_bolts" not in BUILTIN_BUILDERS["street_light"]["toggles"]
+    prompt = _system_prompt("strict")
+    assert "anchor_bolts" not in prompt
+
+
+def test_builtin_builders_advertises_mounting_select():
+    # street_light.py actually reads spec_selects()["mounting"] for its
+    # ground connection — the prompt must advertise it (with its real
+    # allowed values) instead of a phantom toggle.
+    assert "mounting" in BUILTIN_BUILDERS["street_light"]["selects"]
+    assert BUILTIN_BUILDERS["street_light"]["selects"]["mounting"] == [
+        "flange", "burial", "embedded",
+    ]
+    prompt = _system_prompt("strict")
+    assert '"mounting"' in prompt
+
+
+def test_primitives_precedence_guidance_present():
+    # A styled/extended request against a curated asset_type (e.g. a
+    # "victorian post with lantern" typed as asset_type street_light) must
+    # be steered onto the primitives path — assert on the distinctive
+    # phrase introduced for this (Brief 4).
+    prompt = _system_prompt("strict")
+    assert "PRIMITIVES ALWAYS WIN" in prompt
 
 
 def test_primitive_budget_is_complexity_adaptive_not_capped():

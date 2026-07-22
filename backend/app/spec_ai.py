@@ -62,12 +62,16 @@ FEW_SHOT_CUSTOM = (REPO_ROOT / "examples" / "park_bench.json").read_text(encodin
 FEW_SHOT_BUILTIN = (REPO_ROOT / "examples" / "street_light.json").read_text(encoding="utf-8")
 FEW_SHOT_ARRAYED = (REPO_ROOT / "examples" / "bike_rack.json").read_text(encoding="utf-8")
 
-#: Curated builders and the parameter/toggle ids their geometry understands.
+#: Curated builders and the EXACT parameter/toggle/select ids their geometry
+#: understands — nothing else. A request that needs anything beyond this
+#: list (styling, an extra feature, a part the builder doesn't model) is NOT
+#: a match for the curated builder; see the GEOMETRY RULES curated bullet.
 BUILTIN_BUILDERS = {
     "street_light": {
         "parameters": ["pole_height (ft)", "arm_length (ft)",
                        "pole_base_diameter (in)", "pole_top_diameter (in)"],
-        "toggles": ["double_arm", "banner_bracket", "anchor_bolts"],
+        "toggles": ["double_arm", "banner_bracket"],
+        "selects": {"mounting": ["flange", "burial", "embedded"]},
         "material_slots": ["pole", "base", "luminaire", "lens"],
     },
     "accessible_table": {
@@ -112,8 +116,9 @@ OUTPUT RULES
 {json.dumps(ASSET_SPEC_SCHEMA, separators=(",", ":"))}
 
 GEOMETRY RULES
-- Curated builders exist for these asset_types; when the request matches one, use it with EXACTLY these parameter/toggle ids and material slots, and DO NOT include "primitives":
+- PRIMITIVES ALWAYS WIN: whenever the spec includes a "primitives" array, the app builds THAT and ignores any curated builder entirely — even if asset_type happens to match one. So use a curated builder ONLY when the request needs NOTHING beyond the EXACT controls it lists below (these parameter/toggle/select ids and material slots, no more, no less) — then use it with those exact ids and DO NOT include "primitives":
 {json.dumps(BUILTIN_BUILDERS, indent=1)}
+  Any styled or extended variant of a curated asset — Victorian styling, a lantern, a solar cap, motion sensors, or any other feature/detail the list above does not name — is NOT a match: keep a semantic asset_type (lowercase snake_case; reuse the SAME standards key when one fits, e.g. "street_light", so US-code dimensional limits still apply) and model ALL of its geometry yourself in "primitives", exactly like any other custom asset. Never invent a parameter/toggle/select id a builder doesn't consume just because it sounds plausible — a curated builder's geometry only reacts to the ids listed above; anything else is silently ignored, so unmodeled requests belong in "primitives" instead.
 - For ANY other asset, set a semantic asset_type (lowercase snake_case; reuse a standards key below when one fits) and model the geometry yourself in the "primitives" array. Kinds: box, cylinder, cone, sphere, and the fabrication kinds — lathe (revolve a profile: lantern globes, finials, domes, planters, decorative bases), sweep (a smooth tapered tube along a path: mast arms, handrails, curved members — ONE sweep beats a stack of cylinders), loft (taper between two cross-sections: cobra heads, flared transitions), tube (hollow pipe with wall thickness — poles/bollards/arms are never solid). Use "cut": true to subtract a primitive (bolt holes, slots) and "array" {{count, step}} for even repetition (pickets, slats).
 - Primitive dimensions are METERS. +Z is up. The asset stands on the ground plane z=0 (nothing below z=0). A cylinder/cone's axis is Z; "location" is its center, so a post of depth H sits at z=H/2. rotation is Euler XYZ radians.
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
@@ -1223,7 +1228,12 @@ def _refine_user(spec: dict, message: str) -> str:
         "- When ADDING something, seat it on a REAL surface of the named "
         "host with a 10-20 mm embed (not floating, not merely touching, and "
         "never driven through the host's interior) AND declare its "
-        "connection in the top-level \"connections\" array."
+        "connection in the top-level \"connections\" array.\n"
+        "- If the requested change needs geometry the current curated "
+        "builder (if any) does not model, PRIMITIVES ALWAYS WIN: return the "
+        "spec with a FULL \"primitives\" array modeling the WHOLE asset (it "
+        "takes precedence over the curated builder), keeping the existing "
+        "parameter/toggle ids and values where they still carry over."
     )
 
 
