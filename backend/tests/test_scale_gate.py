@@ -131,3 +131,47 @@ class TestScaleGate:
         monkeypatch.delattr(connectivity, "check_scale_sanity", raising=False)
         findings = _gather_findings(spec_dict())
         assert not any(f["kind"].startswith("scale") for f in findings)
+
+
+#: The WHY repro (Brief 6): a "15 ft victorian post" generated on the
+#: generic primitives path as a base plate, a hairline ~20mm-diameter/
+#: 4.57m-tall cylinder shaft, and a small finial. Unlike the tests above,
+#: this exercises the REAL check_scale_sanity (no monkeypatch) end-to-end
+#: through _postprocess, proving the sliver_member finding it now emits
+#: rides the exact same "scale" gate wiring the other tests here pin.
+VICTORIAN_POST_REPLY = json.dumps({
+    "asset_type": "custom", "name": "VictorianPost", "units": "metric",
+    "code_mode": "advisory", "parameters": [], "toggles": [],
+    "materials": [{"slot": "post", "preset": "wood_slat"}],
+    "components": ["base", "shaft", "finial"], "connections": [],
+    "primitives": [
+        {"kind": "box", "name": "base_plate", "component": "base",
+         "material_slot": "post", "location": [0, 0, 0.02],
+         "params": {"size": [0.3, 0.3, 0.04]}},
+        {"kind": "cylinder", "name": "shaft", "component": "shaft",
+         "material_slot": "post", "location": [0, 0, 2.285],
+         "params": {"radius": 0.01, "depth": 4.57}},
+        {"kind": "sphere", "name": "finial", "component": "finial",
+         "material_slot": "post", "location": [0, 0, 4.6],
+         "params": {"radius": 0.05}},
+    ],
+})
+
+
+class TestSliverMemberGate:
+    def test_wire_thin_post_raises_scale_kind_naming_the_member(self):
+        with pytest.raises(SpecGenerationError) as err:
+            _postprocess(VICTORIAN_POST_REPLY, "advisory")
+        assert err.value.kind == "scale"
+        assert "shaft/shaft" in err.value.hint
+        assert "hairline" in err.value.hint
+        assert "real-world dimensions" in err.value.hint
+
+    def test_final_attempt_ships_with_sliver_finding_in_violations(self):
+        out = _postprocess(VICTORIAN_POST_REPLY, "advisory",
+                           lenient_buildability=True)
+        assert out["spec"]["asset_type"] == "custom"
+        slivers = [v for v in out["violations"] if v.get("kind") == "sliver_member"]
+        assert len(slivers) == 1
+        assert slivers[0]["component"] == "shaft"
+        assert "shaft/shaft" in slivers[0]["message"]

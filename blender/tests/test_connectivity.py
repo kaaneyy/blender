@@ -230,6 +230,140 @@ class TestScaleSanity:
         assert scale_findings_for(spec) != []
 
 
+def _victorian_post_spec():
+    """The WHY repro: a "15 ft victorian post" built on the generic
+    primitives path as a base plate, a hairline ~20mm-diameter/4.57m-tall
+    cylinder shaft, and a small finial. Passes buildability (the wire
+    reaches grade) and every scale_outlier/scale_giant/envelope_extreme
+    check above (its envelope is asset-scale, not toy- or giant-scale) —
+    only a per-primitive cross-section-vs-span check catches it."""
+    return {
+        "asset_type": "custom", "name": "VictorianPost", "units": "metric",
+        "code_mode": "advisory", "parameters": [], "toggles": [],
+        "materials": [{"slot": "post", "preset": "wood_slat"}],
+        "components": ["base", "shaft", "finial"], "connections": [],
+        "primitives": [
+            {"kind": "box", "name": "base_plate", "component": "base",
+             "material_slot": "post", "location": [0, 0, 0.02],
+             "params": {"size": [0.3, 0.3, 0.04]}},
+            {"kind": "cylinder", "name": "shaft", "component": "shaft",
+             "material_slot": "post", "location": [0, 0, 2.285],
+             "params": {"radius": 0.01, "depth": 4.57}},
+            {"kind": "sphere", "name": "finial", "component": "finial",
+             "material_slot": "post", "location": [0, 0, 4.6],
+             "params": {"radius": 0.05}},
+        ],
+    }
+
+
+class TestSliverMembers:
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_bundled_examples_are_sliver_clean(self, name):
+        # false-positive gate: every shipped example (mast arm, park_bench
+        # slats, bike_rack hoops included) must produce zero sliver_member
+        # findings as shipped — a neutered check that always returns []
+        # would also pass this alone, which is why the repro/sheet/flagpole
+        # tests below assert real findings on purpose-built reproductions.
+        findings = [f for f in scale_findings_for(load(name))
+                    if f["kind"] == "sliver_member"]
+        assert findings == [], (name, findings)
+
+    def test_street_light_banner_bracket_and_double_arm_stay_clean(self):
+        # banner_bracket/double_arm default OFF in the bundled example, so
+        # the parametrized loop above never builds them. The bracket's
+        # 32mm-diameter, 0.9m pin (~28:1 aspect) is exactly the kind of
+        # genuinely-slender hardware this check must not confuse with the
+        # WHY repro's ~230:1-aspect post.
+        spec = load("street_light.json")
+        for t in spec.setdefault("toggles", []):
+            if t["id"] in ("banner_bracket", "double_arm"):
+                t["value"] = True
+        findings = [f for f in scale_findings_for(spec) if f["kind"] == "sliver_member"]
+        assert findings == []
+
+    def test_wire_thin_post_is_flagged(self):
+        # the WHY repro itself: exactly the shaft is flagged, not the base
+        # plate (short, wide) or the finial (short, roughly cubic).
+        spec = _victorian_post_spec()
+        findings = scale_findings_for(spec)
+        slivers = [f for f in findings if f["kind"] == "sliver_member"]
+        assert len(slivers) == 1
+        finding = slivers[0]
+        assert finding["component"] == "shaft"
+        assert finding["severity"] == "warning"
+        assert "shaft/shaft" in finding["message"]
+        assert "4.57 m" in finding["message"]
+        assert "0.020" in finding["message"]
+        # no other scale finding fires alongside it
+        assert findings == slivers
+
+    def test_thin_sheet_is_not_flagged(self):
+        # a sign face: one tiny dim (thickness) and one wide one (the face
+        # itself) — a sheet, not a rod. Must never be flagged: this is the
+        # exact shape the "both cross dims tiny" requirement exists for.
+        spec = {
+            "asset_type": "custom", "name": "Sign", "units": "metric",
+            "code_mode": "advisory", "parameters": [], "toggles": [],
+            "materials": [{"slot": "sign", "preset": "wood_slat"}],
+            "components": ["face"], "connections": [],
+            "primitives": [
+                {"kind": "box", "name": "panel", "component": "face",
+                 "material_slot": "sign", "location": [0, 0, 1.0],
+                 "params": {"size": [2.0, 1.0, 0.003]}},
+            ],
+        }
+        findings = scale_findings_for(spec)
+        assert not any(f["kind"] == "sliver_member" for f in findings)
+
+    def test_slender_real_flagpole_is_not_flagged(self):
+        # a genuinely slender 50mm-diameter, 6m flagpole (~120:1 aspect,
+        # steeper than the banner-bracket pin) must not be confused with
+        # the WHY repro's ~20mm hairline shaft.
+        spec = {
+            "asset_type": "custom", "name": "Flag", "units": "metric",
+            "code_mode": "advisory", "parameters": [], "toggles": [],
+            "materials": [{"slot": "pole", "preset": "galvanized_steel"}],
+            "components": ["pole"], "connections": [],
+            "primitives": [
+                {"kind": "cylinder", "name": "mast", "component": "pole",
+                 "material_slot": "pole", "location": [0, 0, 3.0],
+                 "params": {"radius": 0.025, "depth": 6.0}},
+            ],
+        }
+        findings = scale_findings_for(spec)
+        assert not any(f["kind"] == "sliver_member" for f in findings)
+
+    def test_hardware_and_cut_prims_never_contribute(self):
+        # a hairline box declared "cut" (negative space) and a hairline
+        # cylinder declared component "hardware" would both be flagged on
+        # their raw geometry alone — neither may contribute.
+        spec = _victorian_post_spec()
+        spec["primitives"].append({
+            "kind": "box", "name": "phantom_wire", "component": "shaft",
+            "material_slot": "post", "cut": True,
+            "location": [0, 0, 2.285], "params": {"size": [0.01, 0.01, 4.57]},
+        })
+        spec["primitives"].append({
+            "kind": "cylinder", "name": "ghost_rod", "component": "hardware",
+            "material_slot": "post",
+            "location": [0, 0, 2.285], "params": {"radius": 0.01, "depth": 4.57},
+        })
+        findings = [f for f in scale_findings_for(spec) if f["kind"] == "sliver_member"]
+        # only the ORIGINAL shaft trips it, not the cut/hardware copies
+        assert len(findings) == 1
+        assert findings[0]["component"] == "shaft"
+
+    def test_never_raises_on_valid_primitives(self):
+        spec = _victorian_post_spec()
+        findings = check_scale_sanity(compute_primitives(spec), spec)
+        assert isinstance(findings, list)
+
+    def test_neutered_check_would_fail_this_suite(self):
+        # guard against a no-op regression: the repro above must yield a
+        # non-empty result.
+        assert scale_findings_for(_victorian_post_spec()) != []
+
+
 def _pergola_with_lantern():
     """The WHY repro for check_embedded_parts: a 'lantern' box component
     centered INSIDE pergola.json's front beam (beams component), so ~100%

@@ -88,6 +88,18 @@ def test_trash_receptacle_archetype_and_anchor():
     assert "0.9-1.1 m" in region or ("0.9" in region and "1.1 m" in region)
 
 
+def test_structural_post_anchor_present():
+    # freestanding post/pole base diameter anchor (Brief 6) — guards against
+    # "15 ft victorian post" regenerating as a hairline wire: pins the real
+    # diameter range, the Victorian/ornamental fluted-shaft callout, and the
+    # explicit "never a hairline member" instruction.
+    region = _prose_region().lower()
+    assert "post/pole base diameter" in region
+    assert "3-8 in" in region and "0.08-0.20 m" in region
+    assert "victorian" in region and "4-6 in" in region and "fluted" in region
+    assert "never" in region and "hairline" in region
+
+
 def test_no_dead_anchor_bolts_toggle():
     # anchor_bolts was advertised as a street_light toggle but no builder
     # ever consumed it (Brief 4) — it must be gone from both the prompt
