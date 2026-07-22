@@ -8,7 +8,8 @@ const FUNCS: Record<string, (...xs: number[]) => number> = {
   abs: Math.abs,
 };
 
-const TOKEN = /\s*(?:([A-Za-z_][A-Za-z0-9_]*)|(\d+\.?\d*|\.\d+)|([()+\-*/,]))/y;
+const TOKEN =
+  /\s*(?:([A-Za-z_][A-Za-z0-9_]*)|(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([()+\-*/,]))/y;
 
 export class ExprError extends Error {}
 

@@ -29,6 +29,30 @@ class TestSafeEval:
         assert safe_eval(4, {}) == 4.0
         assert safe_eval(0.25, {}) == 0.25
 
+    def test_non_finite_plain_number_rejected(self):
+        with pytest.raises(ExprError):
+            safe_eval(float("inf"), {})
+        with pytest.raises(ExprError):
+            safe_eval(float("nan"), {})
+        assert safe_eval(4, {}) == 4.0
+
+    def test_division_by_zero_rejected(self):
+        with pytest.raises(ExprError):
+            safe_eval("1/0", {})
+        with pytest.raises(ExprError):
+            safe_eval("0/0", {})
+
+    def test_overflow_literal_rejected(self):
+        with pytest.raises(ExprError, match="not finite"):
+            safe_eval("1e400", {})
+
+    def test_inf_minus_inf_rejected(self):
+        with pytest.raises(ExprError, match="not finite"):
+            safe_eval("1e400 - 1e400", {})
+
+    def test_scientific_notation(self):
+        assert safe_eval("2.5e-2", {}) == pytest.approx(0.025)
+
     def test_unknown_name_rejected(self):
         with pytest.raises(ExprError, match="Unknown name"):
             safe_eval("nope + 1", {"a": 1})
