@@ -259,7 +259,10 @@ class TestDesignPanel:
 
         assert [p["id"] for p in result["panel"]] == list(PERSONA_ORDER)
         assert result["brief"] == "A cast-iron bench with slatted seat."
-        generation_call = calls[-1]
+        # complete() is also called for the post-generation QA reviewer pass
+        # (see test_qa_review.py) — pick out the actual generation call
+        # rather than assuming it's the last one.
+        generation_call = next(c for c in calls if c.startswith("Request:"))
         assert generation_call.startswith("Request:")
         assert any(p["take"] in generation_call for p in result["panel"])
 
