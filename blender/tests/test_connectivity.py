@@ -256,6 +256,67 @@ def _victorian_post_spec():
     }
 
 
+def _segmented_post_spec():
+    """The segmentation dodge: a wire-thin post assembled from 8 stacked
+    SHORT cylinder segments (each 0.6 m span, individually under
+    SLIVER_MIN_SPAN=0.75 m so NONE trips the per-primitive check on its
+    own), plus a base plate and a finial component at the top. The 'post'
+    component's own union envelope (0-4.8 m span, 16mm cross-section) reads
+    as exactly the same hairline rod the per-primitive check exists to
+    catch — closing the dodge requires weighing the component's ENVELOPE,
+    not just each segment individually. A finial component sits at the top
+    (making the rest-of-asset union tall too, so scale_giant also stays
+    quiet) — the WHY repro this brief is closing."""
+    prims = [
+        {"kind": "box", "name": "base_plate", "component": "base",
+         "material_slot": "post", "location": [0, 0, 0.02],
+         "params": {"size": [0.3, 0.3, 0.04]}},
+    ]
+    for i in range(8):
+        prims.append({
+            "kind": "cylinder", "name": f"segment_{i}", "component": "post",
+            "material_slot": "post", "location": [0, 0, 0.3 + i * 0.6],
+            "params": {"radius": 0.008, "depth": 0.6},
+        })
+    prims.append({
+        "kind": "sphere", "name": "finial", "component": "finial",
+        "material_slot": "post", "location": [0, 0, 4.85],
+        "params": {"radius": 0.05},
+    })
+    return {
+        "asset_type": "custom", "name": "SegmentedPost", "units": "metric",
+        "code_mode": "advisory", "parameters": [], "toggles": [],
+        "materials": [{"slot": "post", "preset": "wood_slat"}],
+        "components": ["base", "post", "finial"], "connections": [],
+        "primitives": prims,
+    }
+
+
+def _wide_arc_spec():
+    """A hoop/arch built from short, thin segments distributed along a WIDE
+    curve: 6 cylinders (radius 0.015 m, depth 0.3 m — each individually
+    nowhere near SLIVER_MIN_SPAN) positioned along a 1.5 m-wide, ~0.55 m
+    tall arc. No single segment is a rod, and — unlike _segmented_post_spec
+    — the component's own union envelope isn't one either: its rise (~0.55
+    m) is far too large relative to its 1.53 m span to read as a thin
+    cross-section, so the component-level rod check must also stay quiet."""
+    xs = [-0.75, -0.45, -0.15, 0.15, 0.45, 0.75]
+    zs = [0.15, 0.30, 0.40, 0.40, 0.30, 0.15]
+    prims = [
+        {"kind": "cylinder", "name": f"seg_{i}", "component": "arch",
+         "material_slot": "arch", "location": [x, 0, z],
+         "params": {"radius": 0.015, "depth": 0.3}}
+        for i, (x, z) in enumerate(zip(xs, zs))
+    ]
+    return {
+        "asset_type": "custom", "name": "Arch", "units": "metric",
+        "code_mode": "advisory", "parameters": [], "toggles": [],
+        "materials": [{"slot": "arch", "preset": "galvanized_steel"}],
+        "components": ["arch"], "connections": [],
+        "primitives": prims,
+    }
+
+
 class TestSliverMembers:
     @pytest.mark.parametrize("name", EXAMPLE_NAMES)
     def test_bundled_examples_are_sliver_clean(self, name):
@@ -353,15 +414,67 @@ class TestSliverMembers:
         assert len(findings) == 1
         assert findings[0]["component"] == "shaft"
 
+    def test_segmented_post_is_flagged_at_component_level(self):
+        # the segmentation dodge: no single 0.6 m segment trips the
+        # per-primitive check, but the 'post' component's own stacked-
+        # segment envelope (0-4.8 m, 16mm cross-section) reads as exactly
+        # the same hairline rod.
+        spec = _segmented_post_spec()
+        findings = scale_findings_for(spec)
+        slivers = [f for f in findings if f["kind"] == "sliver_member"]
+        assert len(slivers) == 1
+        finding = slivers[0]
+        assert finding["component"] == "post"
+        assert finding["severity"] == "warning"
+        assert "4.80 m" in finding["message"]
+        assert "0.016" in finding["message"]
+        assert "several segments" in finding["message"]
+        # the finial and base plate are not flagged — only the wire-thin
+        # stack of segments is
+        assert not any(f["component"] == "base" for f in findings)
+        assert not any(f["component"] == "finial" for f in findings)
+        # no other scale finding fires alongside it
+        assert findings == slivers
+
+    def test_single_prim_wire_is_not_double_counted(self):
+        # dedupe: the victorian post's 'shaft' component is built from a
+        # SINGLE primitive, so its own box and its component's union
+        # envelope are identical — the component-level pass must not also
+        # emit a second finding for the same member.
+        spec = _victorian_post_spec()
+        findings = scale_findings_for(spec)
+        slivers = [f for f in findings if f["kind"] == "sliver_member"]
+        assert len(slivers) == 1
+        assert slivers[0]["component"] == "shaft"
+
+    def test_wide_arc_of_short_segments_is_not_flagged(self):
+        # a hoop/arch built from short, thin segments distributed along a
+        # WIDE curve: neither the per-primitive check (no segment is a rod
+        # on its own) nor the new component-level check (the component's
+        # own envelope is wide, not a rod) may flag it.
+        findings = scale_findings_for(_wide_arc_spec())
+        assert not any(f["kind"] == "sliver_member" for f in findings)
+
     def test_never_raises_on_valid_primitives(self):
         spec = _victorian_post_spec()
         findings = check_scale_sanity(compute_primitives(spec), spec)
         assert isinstance(findings, list)
 
+    def test_never_raises_on_segmented_or_arc_primitives(self):
+        for spec in (_segmented_post_spec(), _wide_arc_spec()):
+            findings = check_scale_sanity(compute_primitives(spec), spec)
+            assert isinstance(findings, list)
+
     def test_neutered_check_would_fail_this_suite(self):
         # guard against a no-op regression: the repro above must yield a
         # non-empty result.
         assert scale_findings_for(_victorian_post_spec()) != []
+
+    def test_neutered_component_check_would_fail_this_suite(self):
+        # guard against a no-op regression on the component-level rule
+        # specifically: the segmentation repro above must yield a
+        # non-empty result.
+        assert scale_findings_for(_segmented_post_spec()) != []
 
 
 def _pergola_with_lantern():

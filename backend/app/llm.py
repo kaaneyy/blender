@@ -196,6 +196,8 @@ def _mock(user: str) -> str:
              "options": ["Classic cast iron with wood", "Modern galvanized steel",
                          "Minimal powder-coated metal"]},
         ]})
+    if user.startswith("QA REVIEW"):
+        return json.dumps({"verdict": "approve", "problems": [], "fixes": []})
     if user.startswith("REVIEW CONNECTIONS"):
         return json.dumps({"findings": [{
             "severity": "warning",

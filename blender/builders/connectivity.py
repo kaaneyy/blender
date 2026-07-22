@@ -64,17 +64,23 @@ ENVELOPE_MAX = 30.0
 ENVELOPE_MIN = 0.2
 
 # --------------------------------------------------------------------------
-# Sliver-member thresholds (also check_scale_sanity, but per-PRIMITIVE, not
-# per-component). The envelope math above only measures a component's size
-# relative to the REST of the asset — a tall, wire-thin post has a tall
-# envelope just like a real one, so it sails through scale_outlier/
-# scale_giant/envelope_extreme untouched: nothing above ever weighs a
-# member's cross-section against its own length. This is the WHY repro
-# ("15 ft victorian post" built as a ~1cm-diameter cylinder): buildability
-# passes (the wire reaches grade), scale_outlier/giant pass (its envelope is
-# asset-scale, not toy- or giant-scale). Chosen against that repro (4.57m
-# span, 20mm cross-section) AND every legitimately slender member the
-# bundled examples ship, so a real post/rail/pin never false-positives:
+# Sliver-member thresholds (also check_scale_sanity). Applied at TWO
+# granularities via the shared _is_sliver_rod predicate: per-PRIMITIVE (a
+# single hairline part) and per-COMPONENT (the component's own union
+# envelope, closing the segmentation dodge where a hairline post is
+# assembled from several SHORT stacked segments, each individually under
+# SLIVER_MIN_SPAN so the per-primitive check alone never trips on any one
+# of them). The envelope math above (scale_outlier/scale_giant) only
+# measures a component's size relative to the REST of the asset — a tall,
+# wire-thin post has a tall envelope just like a real one, so it sails
+# through scale_outlier/scale_giant/envelope_extreme untouched: nothing
+# above ever weighs a member's cross-section against its own length. This
+# is the WHY repro ("15 ft victorian post" built as a ~1cm-diameter
+# cylinder): buildability passes (the wire reaches grade), scale_outlier/
+# giant pass (its envelope is asset-scale, not toy- or giant-scale).
+# Chosen against that repro (4.57m span, 20mm cross-section) AND every
+# legitimately slender member the bundled examples ship, so a real
+# post/rail/pin never false-positives:
 #   - park_bench legs/rails/back_posts: <=0.5m span, under SLIVER_MIN_SPAN
 #     entirely — a bench leg is inherently too short to read as a "post"
 #   - street_light's tapered pole shaft: 9.14m span, 203mm (8in) diameter —
@@ -835,6 +841,27 @@ def _envelope_volume(box: Tuple) -> float:
     return dx * dy * dz
 
 
+def _rod_dims(box: Tuple) -> Tuple[float, float, float]:
+    """(length, width, thick) — an AABB's full extents sorted descending;
+    the shape the sliver-member rod predicate below reasons about."""
+    return tuple(sorted(_envelope_dims(box), reverse=True))
+
+
+def _is_sliver_rod(box: Tuple) -> bool:
+    """True if an AABB — either a single primitive's own box, or a
+    component's union envelope — reads as a hairline rod: long, with BOTH
+    cross-section dims tiny (a thin SHEET, e.g. a sign face, has one tiny
+    dim and one wide one, and is deliberately not caught by this). This is
+    the ONE predicate (SLIVER_MIN_SPAN/SLIVER_RATIO/SLIVER_ABS_CAP) shared
+    by both the per-primitive and per-component call sites in
+    check_scale_sanity, factored out so the two can never drift apart."""
+    length, width, thick = _rod_dims(box)
+    return (length >= SLIVER_MIN_SPAN
+            and width < length / SLIVER_RATIO
+            and thick < length / SLIVER_RATIO
+            and width < SLIVER_ABS_CAP)
+
+
 def check_scale_sanity(prims: List[Primitive], spec=None) -> List[dict]:
     """Flags scale-inconsistent components: a component whose envelope is
     wildly small (scale_outlier) or wildly large (scale_giant) relative to
@@ -902,14 +929,13 @@ def check_scale_sanity(prims: List[Primitive], spec=None) -> List[dict]:
     # non-hardware prim whose own AABB is a hairline rod — long, with BOTH
     # cross-section dims tiny (a thin SHEET, e.g. a sign face, has one tiny
     # dim and one wide one, and is deliberately not caught by this).
+    sliver_components: set = set()
     for p in prims:
         if p.cut or p.component == "hardware":
             continue
-        length, width, thick = sorted(_envelope_dims(_aabb(p)), reverse=True)
-        if (length >= SLIVER_MIN_SPAN
-                and width < length / SLIVER_RATIO
-                and thick < length / SLIVER_RATIO
-                and width < SLIVER_ABS_CAP):
+        box = _aabb(p)
+        if _is_sliver_rod(box):
+            length, width, thick = _rod_dims(box)
             findings.append(_scale_finding(
                 "sliver_member",
                 f"'{p.component}/{p.name}' spans {length:.2f} m but its "
@@ -920,6 +946,36 @@ def check_scale_sanity(prims: List[Primitive], spec=None) -> List[dict]:
                 f"or taper it from a real base section instead of a "
                 f"constant hairline diameter.",
                 component=p.component,
+            ))
+            sliver_components.add(p.component)
+
+    # Per-COMPONENT, using the envelopes dict already built above for the
+    # outlier/giant checks: closes the segmentation dodge where a hairline
+    # member is assembled from several SHORT segments (each under
+    # SLIVER_MIN_SPAN on its own, so the per-primitive loop above never
+    # trips) that together still read as one continuous hairline rod. Same
+    # _is_sliver_rod predicate, just applied to the component's union
+    # envelope instead of a single primitive's box. Skips any component
+    # that already produced a per-primitive finding above — that member is
+    # already reported once, and a single primitive's own box IS its
+    # component's union envelope, so re-checking it here would only ever
+    # duplicate the same finding, never add new information.
+    for c in comps:
+        if c in sliver_components:
+            continue
+        box = envelopes[c]
+        if _is_sliver_rod(box):
+            length, width, thick = _rod_dims(box)
+            findings.append(_scale_finding(
+                "sliver_member",
+                f"Component '{c}' reads as a hairline member overall — its "
+                f"combined envelope spans {length:.2f} m but the "
+                f"cross-section is only {width:.3f} x {thick:.3f} m, even "
+                f"though it's built from several segments. Freestanding "
+                f"post/pole bases run about 3-8 in (0.08-0.20 m); thicken "
+                f"'{c}' or taper it from a real base section instead of "
+                f"stacking hairline-diameter segments.",
+                component=c,
             ))
 
     return findings

@@ -1168,14 +1168,6 @@ def _complete_with_retries(system: str, user: str, finalize, *,
     raise SpecGenerationError("Generation failed", kind="unknown")  # unreachable
 
 
-def _run(system: str, user: str, code_mode: str, model: str | None = None) -> dict:
-    return _complete_with_retries(
-        system, user,
-        lambda raw, lenient: _postprocess(raw, code_mode, lenient_buildability=lenient),
-        model=model,
-    )
-
-
 def _edit_finalize(code_mode: str, input_spec: dict, *, wizard_step_key: str | None = None,
                    integration_gate: bool = False):
     """Build a ``finalize(raw, lenient=False)`` callable for an edit against
@@ -1209,7 +1201,7 @@ def _edit_finalize(code_mode: str, input_spec: dict, *, wizard_step_key: str | N
 def _run_edit(system: str, user: str, code_mode: str, input_spec: dict, *,
              model: str | None = None, wizard_step_key: str | None = None,
              integration_gate: bool = False) -> dict:
-    """Like ``_run`` but for an edit against ``input_spec`` — see
+    """``_complete_with_retries`` for an edit against ``input_spec`` — see
     ``_edit_finalize`` for what that adds. Runs inside the classified retry
     loop so a scope/integration violation triggers a targeted correction
     prompt, not a silent ship."""
@@ -1221,21 +1213,228 @@ def _run_edit(system: str, user: str, code_mode: str, input_spec: dict, *,
     )
 
 
+# ---------------------------------------------------------------------------
+# AI pre-delivery QA reviewer — GENERATE flows only (generate_spec /
+# stream_generate_spec). Every generated spec is read back by ONE AI
+# reviewer call before it ships: the original request, the AssetSpec, a
+# bounded geometry digest (the REAL numbers the asset builds to, in mm), the
+# deterministic violations, and the standards DB entry for its asset_type.
+# The reviewer answers approve/reject; a sanitized "reject" on a non-lenient
+# attempt raises a classified "qa_review" SpecGenerationError so the EXISTING
+# classified retry engine (_complete_with_retries/_stream_pipeline) re-prompts
+# with the reviewer's fixes as the hint — no extra attempts beyond
+# MAX_ATTEMPTS, this still costs one iteration of the same loop. Refine /
+# focus / wizard / improve / variations never call this — they ride
+# _run_edit/_edit_finalize, untouched by this section.
+#
+# A QA infrastructure failure (provider error, malformed/unparseable JSON, a
+# missing verdict) must NEVER surface as a retry-consuming error — it
+# degrades to a "skip", and the generation ships exactly as it would have
+# without QA, just with qa.verdict == "skipped".
+# ---------------------------------------------------------------------------
+
+from blender.builders.hardware import _aabb  # noqa: E402
+
+#: primitive entries kept in a QA geometry digest — bounds the prompt so a
+#: large spec doesn't blow the QA call's token budget.
+QA_DIGEST_MAX_PRIMS = 40
+#: problems/fixes kept per QA verdict, and the length each string is capped
+#: to — same sanitize-and-bound discipline as _sanitize_review_finding.
+QA_MAX_ITEMS = 6
+QA_MAX_TEXT_LEN = 300
+#: the QA call is a quick, cheap judgment pass, not a rewrite.
+QA_TEMPERATURE = 0.2
+QA_MAX_TOKENS = 800
+
+QA_REVIEW_SYSTEM = """You are the pre-delivery QA inspector for a parametric 3D asset generator (street furniture, lighting, signage, props) — the last check before a generated asset ships to the person who asked for it. Read it the way a fabrication shop reads a customer's order against the finished piece.
+
+You receive:
+1. the ORIGINAL REQUEST the user made,
+2. the AssetSpec JSON that was generated for it,
+3. a geometry digest — per-component envelope dimensions and primitive count (mm), plus a bounded list of individual primitives with their kind and sorted AABB dimensions (mm): the REAL numbers the asset builds to, not just the spec's own labels,
+4. the deterministic violations already found for this spec (already measured — judge whether they matter, do not just repeat them),
+5. the US-code standards DB entry for this asset_type, or a note that none exists.
+
+REJECT ONLY FOR REAL DEFECTS — never for stylistic taste. Valid reasons to reject:
+- a feature or part the request explicitly asked for is missing from the spec/digest,
+- a dimension in the digest is physically absurd for what it claims to be, judged from the digest's actual numbers (a "seat" 3 m off the ground, a "bolt" the size of a manhole cover, a pole a few millimeters tall, ...),
+- the spec or a listed violation genuinely conflicts with the standards entry or a real code limit (not a cosmetic warning).
+A plain, simple, or lightly-detailed design that satisfies the request and has none of the above is SOUND — approve it.
+
+OUTPUT — return ONLY this JSON object, no prose, no markdown fences:
+{"verdict": "approve" | "reject",
+ "problems": ["<specific, measurable problem — name the part and the number>", ...],
+ "fixes": ["<concrete directive with target numbers the model can act on>", ...]}
+"problems" and "fixes" may be empty arrays when the verdict is "approve"."""
+
+
+def _geometry_digest(prims: list, spec: dict, violations: list) -> dict:
+    """Deterministic, bounded geometry summary for the QA reviewer: per
+    component the envelope dimensions (mm) and primitive count, then up to
+    ``QA_DIGEST_MAX_PRIMS`` individual non-cut, non-hardware primitives
+    (name, kind, sorted AABB dims in mm) — the REAL numbers the asset builds
+    to, so the reviewer judges physical plausibility from measurements
+    instead of the spec's own labels. Also carries the spec's violations and
+    its standards DB entry (or a "no standards entry" note) so code
+    conflicts are judged from the same facts the rest of the app already
+    computed. Pure and total: never raises for a valid primitive list."""
+    real = [p for p in prims if not p.cut and p.component != "hardware"]
+
+    by_component: dict = {}
+    for p in real:
+        by_component.setdefault(p.component, []).append(p)
+
+    components = {}
+    for comp, comp_prims in sorted(by_component.items()):
+        boxes = [_aabb(p) for p in comp_prims]
+        lo = [min(c[k] - h[k] for c, h in boxes) for k in range(3)]
+        hi = [max(c[k] + h[k] for c, h in boxes) for k in range(3)]
+        components[comp] = {
+            "envelope_mm": [round((hi[k] - lo[k]) * 1000) for k in range(3)],
+            "prim_count": len(comp_prims),
+        }
+
+    primitives = []
+    for p in real[:QA_DIGEST_MAX_PRIMS]:
+        _, half = _aabb(p)
+        dims_mm = sorted((round(2 * h * 1000) for h in half), reverse=True)
+        primitives.append({"name": f"{p.component}/{p.name}", "kind": p.kind,
+                           "dims_mm": dims_mm})
+
+    asset_type = spec.get("asset_type") if isinstance(spec, dict) else None
+    standards_entry = load_standards().get(asset_type) if isinstance(asset_type, str) else None
+
+    return {
+        "components": components,
+        "primitives": primitives,
+        "violations": violations or [],
+        "standards": standards_entry if standards_entry is not None
+                     else "no standards entry for this asset_type",
+    }
+
+
+def _qa_user(request: str, spec: dict, digest: dict) -> str:
+    return (
+        f"QA REVIEW.\n"
+        f"ORIGINAL REQUEST:\n{request}\n\n"
+        f"AssetSpec:\n{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Geometry digest (the REAL numbers the asset builds to):\n"
+        f"{json.dumps(digest, separators=(',', ':'))}"
+    )
+
+
+def _sanitize_qa_texts(raw) -> list:
+    """Up to ``QA_MAX_ITEMS`` non-empty strings, each capped to
+    ``QA_MAX_TEXT_LEN`` chars — the same cap-counts/cap-lengths discipline
+    ``_sanitize_review_finding`` applies elsewhere."""
+    out = []
+    if isinstance(raw, list):
+        for item in raw:
+            text = str(item or "").strip()
+            if text:
+                out.append(text[:QA_MAX_TEXT_LEN])
+            if len(out) >= QA_MAX_ITEMS:
+                break
+    return out
+
+
+def _qa_finalize(raw: str) -> dict:
+    """Parse + sanitize the QA reviewer's reply into ``{"verdict",
+    "problems", "fixes"}``. Raises ``ValueError``/``json.JSONDecodeError``
+    on anything unusable — the caller (``_run_qa_review``) turns ANY such
+    failure into a "skip" instead of letting it propagate."""
+    stripped = _strip_fences(raw)
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        raise ValueError("QA reply was not a JSON object")
+    verdict = data.get("verdict")
+    if verdict not in ("approve", "reject"):
+        raise ValueError(f"QA reply had no valid verdict: {verdict!r}")
+    return {
+        "verdict": verdict,
+        "problems": _sanitize_qa_texts(data.get("problems")),
+        "fixes": _sanitize_qa_texts(data.get("fixes")),
+    }
+
+
+#: result["qa"]["verdict"] labels, keyed by _qa_finalize's raw verdict (plus
+#: the infrastructure-failure "skip" _run_qa_review substitutes for one).
+_QA_VERDICT_LABEL = {"approve": "approved", "reject": "rejected", "skip": "skipped"}
+
+
+def _run_qa_review(request: str, spec: dict, violations: list, prims: list,
+                   model: str | None) -> dict:
+    """One QA reviewer ``complete()`` call over an already-postprocessed
+    generation result: ``{"verdict": "approve"|"reject"|"skip", "problems":
+    [...], "fixes": [...]}``. ANY QA infrastructure failure — a provider
+    error, unparseable/malformed JSON, a missing/invalid verdict, or
+    anything else going wrong while building the digest or parsing the
+    reply — degrades to "skip" instead of raising: a QA outage must never
+    block or brick generation."""
+    try:
+        digest = _geometry_digest(prims, spec, violations)
+        raw = complete(QA_REVIEW_SYSTEM, _qa_user(request, spec, digest),
+                       model=model, temperature=QA_TEMPERATURE, max_tokens=QA_MAX_TOKENS)
+        return _qa_finalize(raw)
+    except Exception:
+        return {"verdict": "skip", "problems": [], "fixes": []}
+
+
+def _generate_finalize(code_mode: str, request: str, brief: str, panel: list | None,
+                       model: str | None):
+    """Build the ``finalize(raw, lenient)`` callable for generate_spec/
+    stream_generate_spec ONLY: the ordinary ``_postprocess_core`` build/
+    validate pipeline, then ONE QA reviewer call over the result
+    (``_run_qa_review``) riding the SAME attempt. A sanitized "reject" on a
+    non-lenient attempt raises a classified "qa_review"
+    :class:`SpecGenerationError` (message = the problems, hint = the fixes)
+    so the EXISTING retry engine regenerates with the reviewer's concrete
+    fixes — no extra attempts beyond MAX_ATTEMPTS. ``result["qa"]`` is
+    attached on every path: "approved"/"rejected" from a real reviewer
+    verdict — "rejected" only reachable on the lenient final attempt, since
+    it always ships (it never raises) — or "skipped" when QA infrastructure
+    failed. "brief"/"panel" ride along exactly as before."""
+    def finalize(raw: str, lenient: bool = False) -> dict:
+        out, prims = _postprocess_core(raw, code_mode, lenient_buildability=lenient)
+        qa = _run_qa_review(request, out.get("spec") or {}, out.get("violations") or [],
+                            prims, model)
+        if qa["verdict"] == "reject" and not lenient:
+            message = ("QA review rejected the generated spec: "
+                       + "; ".join(qa["problems"]) if qa["problems"]
+                       else "QA review rejected the generated spec.")
+            raise SpecGenerationError(
+                message, kind="qa_review",
+                hint=("; ".join(qa["fixes"])
+                     or "Address the QA reviewer's problems and regenerate."),
+            )
+        out["qa"] = {"verdict": _QA_VERDICT_LABEL[qa["verdict"]],
+                     "problems": qa["problems"], "fixes": qa["fixes"]}
+        out["brief"] = brief
+        if panel:
+            out["panel"] = panel
+        return out
+    return finalize
+
+
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                   clarifications: list | None = None) -> dict:
     """T2.1: natural-language prompt (+ answered clarifying questions) →
     four-persona design-panel brief (one extra AI call) → validated
-    AssetSpec (+ violations). The brief rides along in the result so the UI
-    can show how the request was interpreted; when the panel pass parsed,
-    the 4 ordered persona takes ride along too as "panel"."""
+    AssetSpec (+ violations), read back by ONE AI QA reviewer call before it
+    ships (see ``_generate_finalize``) — a rejection triggers the existing
+    classified retry with the reviewer's concrete fixes as the hint. The
+    brief rides along in the result so the UI can show how the request was
+    interpreted; when the panel pass parsed, the 4 ordered persona takes
+    ride along too as "panel"; ``result["qa"]`` always carries the
+    reviewer's verdict ("approved" / "rejected" / "skipped")."""
     request = _clarified_prompt(prompt, clarifications)
     brief, panel = _design_panel(request, model=model)
-    result = _run(_system_prompt(code_mode), f"Request: {_panel_request(brief, panel)}",
-                 code_mode, model=model)
-    result["brief"] = brief
-    if panel:
-        result["panel"] = panel
-    return result
+    panel_request = _panel_request(brief, panel)
+    return _complete_with_retries(
+        _system_prompt(code_mode), f"Request: {panel_request}",
+        _generate_finalize(code_mode, panel_request, brief, panel, model),
+        model=model,
+    )
 
 
 def _refine_user(spec: dict, message: str) -> str:
@@ -2050,9 +2249,9 @@ def cross_review_perspectives(spec: dict, perspectives: list, model: str | None 
 # US-code validator) into one flat findings list, hands the spec AND those
 # findings (plus the four persona evaluations above) to the AI with an
 # instruction to fix every one of them and modestly improve realism, then
-# routes the reply through the ordinary generation pipeline
-# (_run/_stream_pipeline) so the result is schema/build/buildability checked
-# exactly like every other AI-produced spec. The findings and the four
+# routes the reply through the ordinary edit pipeline
+# (_run_edit/_stream_pipeline) so the result is schema/build/buildability
+# checked exactly like every other AI-produced spec. The findings and the four
 # evaluator cards that were fed in ride along in the result so the UI can
 # show what was fixed.
 # ---------------------------------------------------------------------------
@@ -2207,7 +2406,7 @@ def improve_spec(spec: dict, code_mode: str = "strict", model: str | None = None
     persona evaluations, cross-reviewed by the same four personas as one
     panel → an improved, re-validated spec that fixes every finding and
     weighs what the panel agreed matters most. Rides the same classified
-    retry engine as every other AI-produced spec (``_run``); the findings,
+    retry engine as every other AI-produced spec (``_run_edit``); the findings,
     the four evaluator cards (now optionally carrying peer_notes from the
     cross-review), and the panel consensus (when the cross-review
     succeeded) ride along in the result as "findings", "perspectives", and
@@ -2405,6 +2604,7 @@ _KIND_LABEL = {
     "scale": "fixing component scale",
     "scope": "undoing a change outside this step's scope",
     "integration": "fixing parts embedded in existing geometry",
+    "qa_review": "addressing the AI reviewer's rejections",
     "provider": "the AI provider hiccuped — retrying",
 }
 
@@ -2469,9 +2669,11 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
 def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                          clarifications: list | None = None):
     """Two visible stages in one stream: the four-persona design panel
-    being written, then the spec being designed from its brief (+ takes).
-    Answered clarifying questions are folded into the request before the
-    panel pass."""
+    being written, then the spec being designed from its brief (+ takes),
+    read back by the same AI QA reviewer pass as :func:`generate_spec` (see
+    ``_generate_finalize``) before the final payload ships — its verdict
+    rides along in the result as "qa". Answered clarifying questions are
+    folded into the request before the panel pass."""
     request = _clarified_prompt(prompt, clarifications)
 
     def gen():
@@ -2493,18 +2695,13 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
             parts = []
             yield "\n[brief pass unavailable — designing from your request as-is]\n"
         brief, panel = _finalize_panel("".join(parts), request)
+        panel_request = _panel_request(brief, panel)
         yield "\n\n[designing the asset from the brief]\n\n"
 
-        def finalize(raw: str, lenient: bool = False) -> dict:
-            result = _postprocess(raw, code_mode, lenient_buildability=lenient)
-            result["brief"] = brief
-            if panel:
-                result["panel"] = panel
-            return result
-
         yield from _stream_pipeline(
-            _system_prompt(code_mode), f"Request: {_panel_request(brief, panel)}",
-            finalize, model=model
+            _system_prompt(code_mode), f"Request: {panel_request}",
+            _generate_finalize(code_mode, panel_request, brief, panel, model),
+            model=model,
         )
 
     return gen()
