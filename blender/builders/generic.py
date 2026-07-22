@@ -8,6 +8,7 @@ same spec drives the Three.js preview through the mirrored TS implementation
 """
 from __future__ import annotations
 
+import math
 from typing import List
 
 from .base import Primitive, spec_params, spec_toggles
@@ -69,7 +70,10 @@ def build_custom(spec: dict) -> List[Primitive]:
         # B7: linear array — expand into evenly stepped copies
         array = raw.get("array")
         if array:
-            count = max(1, int(round(safe_eval(array["count"], env))))
+            # half-up: floor(x+0.5), keep identical to the mirror (JS
+            # Math.round is not configurable, so it sets the convention —
+            # plain round() here would banker's-round 2.5 down to 2).
+            count = max(1, math.floor(safe_eval(array["count"], env) + 0.5))
             step = tuple(safe_eval(v, env) for v in array["step"])
             placements = [
                 (

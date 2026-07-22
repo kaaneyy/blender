@@ -68,6 +68,8 @@ export function buildCustom(spec: AssetSpec): Primitive[] {
     // B7: linear array — expand into evenly stepped copies
     let placements: Array<[string, Vec3]>;
     if (raw.array) {
+      // half-up: floor(x+0.5), keep identical to the mirror. Math.round IS
+      // floor(x+0.5) for all reals — this is the shared convention.
       const count = Math.max(1, Math.round(evalExpr(raw.array.count, env)));
       const step = vec3(raw.array.step, env, [0, 0, 0]);
       placements = Array.from({ length: count }, (_, n) => [

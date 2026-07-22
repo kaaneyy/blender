@@ -982,7 +982,12 @@ def _postprocess_core(raw: str, code_mode: str,
             kind="not_json",
             hint="Return a single AssetSpec JSON object at the top level.",
         )
-    spec.setdefault("code_mode", code_mode)
+    # The requested code_mode always wins — a model that writes its own
+    # "code_mode" into the spec (matching schema, so it would otherwise pass
+    # validation) must not be able to silently disable the strict clamping
+    # the caller asked for, or vice versa. Force this BEFORE jsonschema.
+    # validate so the schema still sees (and accepts) a legal value.
+    spec["code_mode"] = code_mode
 
     try:
         jsonschema.validate(spec, ASSET_SPEC_SCHEMA)
@@ -1075,7 +1080,12 @@ def _correction_user(user: str, attempt: int, history: list, raw: str) -> str:
     lines.append(f"\nLatest failure [{latest.kind}]: {latest}")
     lines.append(f"HOW TO FIX IT: {latest.hint or 'Correct the error above.'}")
     if latest.kind != "truncated" and raw:
-        lines.append(f"\nYour previous answer (repair it in place):\n{raw[:6000]}")
+        # Strip <think>...</think> reasoning before echoing: the streaming
+        # pipeline's `raw` is the joined stream INCLUDING think blocks, and
+        # echoing those instead of the actual answer can push the real JSON
+        # past the 6000-char cap entirely, sabotaging the repair.
+        answer = strip_reasoning(raw)
+        lines.append(f"\nYour previous answer (repair it in place):\n{answer[:6000]}")
     lines.append("\nReturn the corrected COMPLETE AssetSpec JSON only.")
     return "\n".join(lines)
 

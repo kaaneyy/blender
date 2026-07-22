@@ -9,6 +9,7 @@ output can never execute code. Mirrored 1:1 in frontend/src/expr.ts.
 from __future__ import annotations
 
 import ast
+import math
 import operator
 from typing import Mapping, Union
 
@@ -41,7 +42,11 @@ def _eval(node: ast.AST, env: Mapping[str, float]) -> float:
                 f"Unknown name {node.id!r} (known: {', '.join(sorted(env)) or '<none>'})"
             ) from None
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
-        return _BIN_OPS[type(node.op)](_eval(node.left, env), _eval(node.right, env))
+        left, right = _eval(node.left, env), _eval(node.right, env)
+        try:
+            return _BIN_OPS[type(node.op)](left, right)
+        except ZeroDivisionError:
+            raise ExprError(f"Division by zero: {ast.dump(node)}") from None
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         v = _eval(node.operand, env)
         return -v if isinstance(node.op, ast.USub) else v
@@ -59,6 +64,8 @@ def _eval(node: ast.AST, env: Mapping[str, float]) -> float:
 def safe_eval(expr: Union[str, Number], env: Mapping[str, float]) -> float:
     """Evaluate a number or an expression string against ``env``."""
     if isinstance(expr, (int, float)) and not isinstance(expr, bool):
+        if not math.isfinite(expr):
+            raise ExprError(f"Non-finite number: {expr!r}")
         return float(expr)
     if not isinstance(expr, str):
         raise ExprError(f"Expected number or expression string, got {type(expr).__name__}")
@@ -66,4 +73,7 @@ def safe_eval(expr: Union[str, Number], env: Mapping[str, float]) -> float:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         raise ExprError(f"Invalid expression {expr!r}: {exc.msg}") from None
-    return _eval(tree.body, env)
+    result = _eval(tree.body, env)
+    if not math.isfinite(result):
+        raise ExprError(f"Expression {expr!r} is not finite")
+    return result
