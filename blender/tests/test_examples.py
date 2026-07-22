@@ -10,7 +10,7 @@ import pytest
 
 import blender.builders  # noqa: F401  (registers curated builders)
 from blender.builders.base import compute_primitives
-from blender.builders.connectivity import check_buildability
+from blender.builders.connectivity import check_buildability, check_dead_controls
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = json.loads((REPO_ROOT / "schemas" / "asset_spec.schema.json").read_text())
@@ -36,6 +36,16 @@ def test_example_builds_and_is_grounded(path):
     assert prims, f"{path.name} produced no primitives"
     errors = [f for f in check_buildability(prims, spec) if f["severity"] == "error"]
     assert not errors, f"{path.name} has load-path errors: {[e['message'] for e in errors]}"
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=_ids(EXAMPLES))
+def test_example_has_no_dead_controls(path):
+    """Every bundled example's sliders/toggles must actually drive
+    geometry — a dead control here would ship as a live-looking control in
+    the UI that silently does nothing (see connectivity.check_dead_controls)."""
+    spec = json.loads(path.read_text())
+    findings = check_dead_controls(spec)
+    assert not findings, f"{path.name} has dead controls: {[f['message'] for f in findings]}"
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=_ids(EXAMPLES))

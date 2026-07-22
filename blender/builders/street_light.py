@@ -41,6 +41,17 @@ DEFAULTS_M = {
     "pole_top_diameter": 4 * IN,
 }
 
+#: Parameter/toggle/select ids this builder's geometry actually reads
+#: (spec_params/spec_toggles/spec_selects below) — the EXACT vocabulary,
+#: nothing more. Kept in exact sync with backend/app/spec_ai.py's
+#: BUILTIN_BUILDERS entry (ids only, unit suffixes stripped — test-enforced)
+#: and consumed by connectivity.check_dead_controls to flag any OTHER
+#: parameter/toggle a spec invents for asset_type "street_light" as
+#: geometry-inert (a slider/toggle the UI shows but that drives nothing).
+CONSUMED_PARAMS = ("pole_height", "arm_length", "pole_base_diameter", "pole_top_diameter")
+CONSUMED_TOGGLES = ("double_arm", "banner_bracket")
+CONSUMED_SELECTS = {"mounting": ("flange", "burial", "embedded")}
+
 
 def _arm_points(arm_length: float, attach_z: float, rise: float):
     """Points along the mast arm: starts at the pole, rises quadratically to

@@ -9,8 +9,9 @@ fields) → geometry sanity check → US-code validation/clamping (T2.3).
 Failure recovery (T2.6, hardened): every failure is CLASSIFIED — truncated
 output, invalid JSON, schema violation (with the offending path/field),
 broken expression (with the ids that ARE available), unbuildable geometry,
-floating parts, transient provider errors — and the pipeline re-prompts
-with a targeted correction plus the full error history, up to
+floating parts, dead controls (a slider/toggle the spec exposes that
+provably drives no geometry), transient provider errors — and the pipeline
+re-prompts with a targeted correction plus the full error history, up to
 ``MAX_ATTEMPTS`` (3) model calls total. The final attempt is lenient about
 buildability so a stubborn-but-parseable spec ships with warnings instead
 of failing the whole generation. Transient provider errors (429/5xx/
@@ -39,6 +40,7 @@ from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: 
 from blender.builders.connectivity import (  # noqa: E402
     buildability_errors,
     check_buildability,
+    check_dead_controls,
 )
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
@@ -91,10 +93,10 @@ class SpecGenerationError(RuntimeError):
     """LLM produced output that could not be turned into a valid spec.
 
     ``kind`` labels the failure family (truncated / not_json / schema /
-    build / buildability / scale / provider / unknown) and ``hint`` carries
-    the targeted correction instruction the retry prompt hands back to the
-    model — the difference between "error, try again" and telling it
-    exactly what to change."""
+    build / buildability / dead_controls / scale / provider / unknown) and
+    ``hint`` carries the targeted correction instruction the retry prompt
+    hands back to the model — the difference between "error, try again"
+    and telling it exactly what to change."""
 
     def __init__(self, message: str, kind: str = "unknown", hint: str = ""):
         super().__init__(message)
@@ -939,10 +941,13 @@ def _enforce_integration(findings: list, lenient: bool) -> list:
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
     """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3),
     buildability-check (contact graph: floating parts, below-grade geometry,
-    dead declarations), and a relative-scale sanity check (mis-sized
-    features like a seated solar panel on a pergola). Every failure raises
-    a CLASSIFIED :class:`SpecGenerationError` whose hint tells the model
-    exactly what to fix. Floating parts and scale outliers raise — the
+    dead declarations), a dead-CONTROL check (a parameter/toggle the spec
+    exposes but that provably drives no geometry — an invented slider or
+    toggle the UI would show as live but that is actually inert), and a
+    relative-scale sanity check (mis-sized features like a seated solar
+    panel on a pergola). Every failure raises a CLASSIFIED
+    :class:`SpecGenerationError` whose hint tells the model exactly what to
+    fix. Floating parts, dead controls, and scale outliers raise — the
     deterministic findings feed the retry — unless ``lenient_buildability``
     (the final attempt), in which case they're accepted and surfaced as
     violations instead, so a stubborn generation never bricks."""
@@ -1031,6 +1036,20 @@ def _postprocess_core(raw: str, code_mode: str,
             ),
         )
 
+    dead_findings = check_dead_controls(result.spec)
+    if dead_findings and not lenient_buildability:
+        dead_messages = [f["message"] for f in dead_findings[:4]]
+        raise SpecGenerationError(
+            "Dead control check failed: " + " ".join(dead_messages),
+            kind="dead_controls",
+            hint=(
+                " ".join(dead_messages)
+                + " Remove the control, or reference it from a primitive "
+                "expression — a curated builder only reacts to its listed "
+                "ids; extra features belong in primitives."
+            ),
+        )
+
     scale_findings = _scale_findings(prims, result.spec)
     if scale_findings and not lenient_buildability:
         messages = [f.get("message", "") for f in scale_findings]
@@ -1048,6 +1067,9 @@ def _postprocess_core(raw: str, code_mode: str,
         out["violations"] = out["violations"] + findings
         if errors:
             out["ok"] = False
+    if dead_findings:
+        out["violations"] = out["violations"] + dead_findings
+        out["ok"] = False
     if scale_findings:
         out["violations"] = out["violations"] + scale_findings
     return out, prims
@@ -2379,6 +2401,7 @@ _KIND_LABEL = {
     "schema": "fixing a schema violation",
     "build": "fixing geometry that doesn't build",
     "buildability": "fixing floating/unsupported parts",
+    "dead_controls": "removing a control that drives nothing",
     "scale": "fixing component scale",
     "scope": "undoing a change outside this step's scope",
     "integration": "fixing parts embedded in existing geometry",
