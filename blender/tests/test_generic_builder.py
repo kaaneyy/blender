@@ -261,6 +261,31 @@ class TestFabricationKinds:
         assert [p.name for p in prims] == [f"picket_{i}" for i in range(1, 6)]
         assert prims[3].location[0] == pytest.approx(3 * 0.25)
 
+    def test_array_count_half_up_rounding(self):
+        """Half-integer counts round up (floor(x+0.5)), matching the JS
+        Math.round mirror exactly — banker's rounding (Python round()) would
+        send 2.5 to 2 and diverge preview vs. export."""
+        def picket_count(count_expr):
+            spec = self._spec([
+                {"kind": "box", "name": "picket", "component": "fence",
+                 "location": [0, 0, 0.5],
+                 "array": {"count": count_expr, "step": ["h/8", 0, 0]},
+                 "params": {"size": [0.04, 0.04, 1.0]}},
+            ])
+            return compute_primitives(spec)
+
+        prims = picket_count("2.5")
+        assert len(prims) == 3
+        assert [p.name for p in prims] == [f"picket_{i}" for i in range(1, 4)]
+
+        prims = picket_count("3.5")
+        assert len(prims) == 4
+        assert [p.name for p in prims] == [f"picket_{i}" for i in range(1, 5)]
+
+        prims = picket_count("0.2")
+        assert len(prims) == 1
+        assert [p.name for p in prims] == ["picket"]
+
     def test_cut_marks_negative_space(self):
         prims = compute_primitives(self._spec([
             {"kind": "box", "name": "plate", "component": "base",
