@@ -14,6 +14,7 @@ from backend.app.llm import LLMError  # noqa: E402
 from backend.app.spec_ai import (  # noqa: E402
     MAX_ATTEMPTS,
     SpecGenerationError,
+    _correction_user,
     _looks_truncated,
     _postprocess,
     refine_spec,
@@ -187,6 +188,72 @@ class TestDiagnosis:
             _postprocess(json.dumps(bad), "strict")
         assert err.value.kind == "schema"
         assert "anchor_base" in err.value.hint
+
+
+def _spec_with_out_of_range_pole_height(claimed_code_mode):
+    """street_light has real standards rules (pole_height max 40 ft) so
+    clamping is observable; the reply claims ``claimed_code_mode`` — which
+    the requested code_mode must override."""
+    spec = spec_dict()
+    for param in spec["parameters"]:
+        if param["id"] == "pole_height":
+            param["value"] = 50  # above the 40 ft max
+    spec["code_mode"] = claimed_code_mode
+    return spec
+
+
+class TestCodeModeIsAuthoritative:
+    """The requested code_mode always wins over whatever code_mode the model
+    wrote into its reply — a model can't use that to silently steer strict
+    clamping on or off."""
+
+    def test_requested_strict_wins_and_clamps_even_if_reply_says_advisory(self):
+        bad = _spec_with_out_of_range_pole_height("advisory")
+        out = _postprocess(json.dumps(bad), "strict")
+        assert out["spec"]["code_mode"] == "strict"
+        pole_height = next(p for p in out["spec"]["parameters"]
+                           if p["id"] == "pole_height")
+        assert pole_height["value"] == 40.0  # clamped to the code max
+        violation = next(v for v in out["violations"]
+                         if v.get("parameter_id") == "pole_height")
+        assert violation["corrected_value"] == 40.0
+
+    def test_requested_advisory_wins_and_leaves_it_unclamped_even_if_reply_says_strict(self):
+        bad = _spec_with_out_of_range_pole_height("strict")
+        out = _postprocess(json.dumps(bad), "advisory")
+        assert out["spec"]["code_mode"] == "advisory"
+        pole_height = next(p for p in out["spec"]["parameters"]
+                           if p["id"] == "pole_height")
+        assert pole_height["value"] == 50  # NOT clamped
+        violation = next(v for v in out["violations"]
+                         if v.get("parameter_id") == "pole_height")
+        assert violation["corrected_value"] is None
+        assert violation["message"]  # still flagged, just not force-fixed
+
+
+class TestCorrectionEchoStripsReasoning:
+    """The corrective prompt's echo of the previous answer must show the
+    actual JSON, not a reasoning model's <think> preamble — otherwise the
+    6000-char cap can be consumed entirely by thinking text, truncating the
+    real answer away and sabotaging the in-place repair."""
+
+    def test_think_block_is_stripped_from_the_echoed_answer(self):
+        history = [SpecGenerationError("bad field", kind="schema", hint="fix it")]
+        raw = ("<think>{ lots of braces } { { { reasoning reasoning } } } "
+               "</think>{\"real\": 1}")
+        message = _correction_user("orig prompt", 2, history, raw)
+        assert '{"real": 1}' in message
+        assert "lots of braces" not in message
+        assert "reasoning reasoning" not in message
+
+    def test_truncated_kind_still_skips_the_echo_entirely(self):
+        # unchanged behavior: a truncated reply is never echoed back at all,
+        # reasoning or not
+        history = [SpecGenerationError("cut off", kind="truncated", hint="be compact")]
+        raw = "<think>some thinking</think>{\"incomplete\": "
+        message = _correction_user("orig prompt", 2, history, raw)
+        assert "repair it in place" not in message
+        assert "some thinking" not in message
 
 
 SENTINEL = "<<<ASSETFORGE_RESULT>>>"
