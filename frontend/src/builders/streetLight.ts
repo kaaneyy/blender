@@ -32,6 +32,16 @@ const DEFAULTS_M = {
   pole_top_diameter: 4 * IN,
 };
 
+// Parameter/toggle/select ids this builder's geometry actually reads
+// (specParams/specToggles/specSelects above) — the EXACT vocabulary,
+// nothing more. Kept in exact sync with street_light.py's CONSUMED_PARAMS /
+// CONSUMED_TOGGLES / CONSUMED_SELECTS (Python side owns the
+// connectivity.check_dead_controls gate that consumes these; this mirror is
+// constants only, per the mirror rule — no TS equivalent of that checker).
+export const CONSUMED_PARAMS = ["pole_height", "arm_length", "pole_base_diameter", "pole_top_diameter"];
+export const CONSUMED_TOGGLES = ["double_arm", "banner_bracket"];
+export const CONSUMED_SELECTS = { mounting: ["flange", "burial", "embedded"] };
+
 function armPoints(armLength: number, attachZ: number, rise: number) {
   const pts: Array<[number, number]> = [];
   for (let i = 0; i <= ARM_SEGMENTS; i++) {

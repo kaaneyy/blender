@@ -9,8 +9,9 @@ fields) → geometry sanity check → US-code validation/clamping (T2.3).
 Failure recovery (T2.6, hardened): every failure is CLASSIFIED — truncated
 output, invalid JSON, schema violation (with the offending path/field),
 broken expression (with the ids that ARE available), unbuildable geometry,
-floating parts, transient provider errors — and the pipeline re-prompts
-with a targeted correction plus the full error history, up to
+floating parts, dead controls (a slider/toggle the spec exposes that
+provably drives no geometry), transient provider errors — and the pipeline
+re-prompts with a targeted correction plus the full error history, up to
 ``MAX_ATTEMPTS`` (3) model calls total. The final attempt is lenient about
 buildability so a stubborn-but-parseable spec ships with warnings instead
 of failing the whole generation. Transient provider errors (429/5xx/
@@ -39,6 +40,7 @@ from blender.builders.base import MATERIAL_PRESETS, compute_primitives  # noqa: 
 from blender.builders.connectivity import (  # noqa: E402
     buildability_errors,
     check_buildability,
+    check_dead_controls,
 )
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
@@ -62,12 +64,16 @@ FEW_SHOT_CUSTOM = (REPO_ROOT / "examples" / "park_bench.json").read_text(encodin
 FEW_SHOT_BUILTIN = (REPO_ROOT / "examples" / "street_light.json").read_text(encoding="utf-8")
 FEW_SHOT_ARRAYED = (REPO_ROOT / "examples" / "bike_rack.json").read_text(encoding="utf-8")
 
-#: Curated builders and the parameter/toggle ids their geometry understands.
+#: Curated builders and the EXACT parameter/toggle/select ids their geometry
+#: understands — nothing else. A request that needs anything beyond this
+#: list (styling, an extra feature, a part the builder doesn't model) is NOT
+#: a match for the curated builder; see the GEOMETRY RULES curated bullet.
 BUILTIN_BUILDERS = {
     "street_light": {
         "parameters": ["pole_height (ft)", "arm_length (ft)",
                        "pole_base_diameter (in)", "pole_top_diameter (in)"],
-        "toggles": ["double_arm", "banner_bracket", "anchor_bolts"],
+        "toggles": ["double_arm", "banner_bracket"],
+        "selects": {"mounting": ["flange", "burial", "embedded"]},
         "material_slots": ["pole", "base", "luminaire", "lens"],
     },
     "accessible_table": {
@@ -87,10 +93,10 @@ class SpecGenerationError(RuntimeError):
     """LLM produced output that could not be turned into a valid spec.
 
     ``kind`` labels the failure family (truncated / not_json / schema /
-    build / buildability / scale / provider / unknown) and ``hint`` carries
-    the targeted correction instruction the retry prompt hands back to the
-    model — the difference between "error, try again" and telling it
-    exactly what to change."""
+    build / buildability / dead_controls / scale / provider / unknown) and
+    ``hint`` carries the targeted correction instruction the retry prompt
+    hands back to the model — the difference between "error, try again"
+    and telling it exactly what to change."""
 
     def __init__(self, message: str, kind: str = "unknown", hint: str = ""):
         super().__init__(message)
@@ -112,8 +118,9 @@ OUTPUT RULES
 {json.dumps(ASSET_SPEC_SCHEMA, separators=(",", ":"))}
 
 GEOMETRY RULES
-- Curated builders exist for these asset_types; when the request matches one, use it with EXACTLY these parameter/toggle ids and material slots, and DO NOT include "primitives":
+- PRIMITIVES ALWAYS WIN: whenever the spec includes a "primitives" array, the app builds THAT and ignores any curated builder entirely — even if asset_type happens to match one. So use a curated builder ONLY when the request needs NOTHING beyond the EXACT controls it lists below (these parameter/toggle/select ids and material slots, no more, no less) — then use it with those exact ids and DO NOT include "primitives":
 {json.dumps(BUILTIN_BUILDERS, indent=1)}
+  Any styled or extended variant of a curated asset — Victorian styling, a lantern, a solar cap, motion sensors, or any other feature/detail the list above does not name — is NOT a match: keep a semantic asset_type (lowercase snake_case; reuse the SAME standards key when one fits, e.g. "street_light", so US-code dimensional limits still apply) and model ALL of its geometry yourself in "primitives", exactly like any other custom asset. Never invent a parameter/toggle/select id a builder doesn't consume just because it sounds plausible — a curated builder's geometry only reacts to the ids listed above; anything else is silently ignored, so unmodeled requests belong in "primitives" instead.
 - For ANY other asset, set a semantic asset_type (lowercase snake_case; reuse a standards key below when one fits) and model the geometry yourself in the "primitives" array. Kinds: box, cylinder, cone, sphere, and the fabrication kinds — lathe (revolve a profile: lantern globes, finials, domes, planters, decorative bases), sweep (a smooth tapered tube along a path: mast arms, handrails, curved members — ONE sweep beats a stack of cylinders), loft (taper between two cross-sections: cobra heads, flared transitions), tube (hollow pipe with wall thickness — poles/bollards/arms are never solid). Use "cut": true to subtract a primitive (bolt holes, slots) and "array" {{count, step}} for even repetition (pickets, slats).
 - Primitive dimensions are METERS. +Z is up. The asset stands on the ground plane z=0 (nothing below z=0). A cylinder/cone's axis is Z; "location" is its center, so a post of depth H sits at z=H/2. rotation is Euler XYZ radians.
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
@@ -934,10 +941,13 @@ def _enforce_integration(findings: list, lenient: bool) -> list:
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
     """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3),
     buildability-check (contact graph: floating parts, below-grade geometry,
-    dead declarations), and a relative-scale sanity check (mis-sized
-    features like a seated solar panel on a pergola). Every failure raises
-    a CLASSIFIED :class:`SpecGenerationError` whose hint tells the model
-    exactly what to fix. Floating parts and scale outliers raise — the
+    dead declarations), a dead-CONTROL check (a parameter/toggle the spec
+    exposes but that provably drives no geometry — an invented slider or
+    toggle the UI would show as live but that is actually inert), and a
+    relative-scale sanity check (mis-sized features like a seated solar
+    panel on a pergola). Every failure raises a CLASSIFIED
+    :class:`SpecGenerationError` whose hint tells the model exactly what to
+    fix. Floating parts, dead controls, and scale outliers raise — the
     deterministic findings feed the retry — unless ``lenient_buildability``
     (the final attempt), in which case they're accepted and surfaced as
     violations instead, so a stubborn generation never bricks."""
@@ -1026,6 +1036,20 @@ def _postprocess_core(raw: str, code_mode: str,
             ),
         )
 
+    dead_findings = check_dead_controls(result.spec)
+    if dead_findings and not lenient_buildability:
+        dead_messages = [f["message"] for f in dead_findings[:4]]
+        raise SpecGenerationError(
+            "Dead control check failed: " + " ".join(dead_messages),
+            kind="dead_controls",
+            hint=(
+                " ".join(dead_messages)
+                + " Remove the control, or reference it from a primitive "
+                "expression — a curated builder only reacts to its listed "
+                "ids; extra features belong in primitives."
+            ),
+        )
+
     scale_findings = _scale_findings(prims, result.spec)
     if scale_findings and not lenient_buildability:
         messages = [f.get("message", "") for f in scale_findings]
@@ -1043,6 +1067,9 @@ def _postprocess_core(raw: str, code_mode: str,
         out["violations"] = out["violations"] + findings
         if errors:
             out["ok"] = False
+    if dead_findings:
+        out["violations"] = out["violations"] + dead_findings
+        out["ok"] = False
     if scale_findings:
         out["violations"] = out["violations"] + scale_findings
     return out, prims
@@ -1223,7 +1250,12 @@ def _refine_user(spec: dict, message: str) -> str:
         "- When ADDING something, seat it on a REAL surface of the named "
         "host with a 10-20 mm embed (not floating, not merely touching, and "
         "never driven through the host's interior) AND declare its "
-        "connection in the top-level \"connections\" array."
+        "connection in the top-level \"connections\" array.\n"
+        "- If the requested change needs geometry the current curated "
+        "builder (if any) does not model, PRIMITIVES ALWAYS WIN: return the "
+        "spec with a FULL \"primitives\" array modeling the WHOLE asset (it "
+        "takes precedence over the curated builder), keeping the existing "
+        "parameter/toggle ids and values where they still carry over."
     )
 
 
@@ -2369,6 +2401,7 @@ _KIND_LABEL = {
     "schema": "fixing a schema violation",
     "build": "fixing geometry that doesn't build",
     "buildability": "fixing floating/unsupported parts",
+    "dead_controls": "removing a control that drives nothing",
     "scale": "fixing component scale",
     "scope": "undoing a change outside this step's scope",
     "integration": "fixing parts embedded in existing geometry",

@@ -63,6 +63,25 @@ DEFAULTS_M = {
     "table_depth": 30 * IN,
 }
 
+#: Parameter/toggle/select ids this builder's geometry actually reads. Kept
+#: in exact sync with backend/app/spec_ai.py's BUILTIN_BUILDERS entry (ids
+#: only, unit suffixes stripped — test-enforced) and consumed by
+#: connectivity.check_dead_controls to flag any OTHER parameter/toggle a
+#: spec invents for asset_type "accessible_table" as geometry-inert.
+#:
+#: toe_clearance_depth is included here even though NO expression below
+#: reads it — it is deliberately geometry-inert BY DESIGN, not a bug: the
+#: ADA clear-floor-space value is validated/clamped against the standards
+#: DB (standards/us_codes.json's accessible_table entry), and the actual
+#: knee/toe clearance guarantee comes from the legs' fixed Y setback (see
+#: the module docstring above), which holds at any table_width without
+#: needing to read this parameter's value. Excluding it here would make a
+#: legitimately inert-by-construction control look like a dead one.
+CONSUMED_PARAMS = ("surface_height", "knee_clearance_height", "table_width",
+                   "table_depth", "toe_clearance_depth")
+CONSUMED_TOGGLES = ()
+CONSUMED_SELECTS = {}
+
 
 @register("accessible_table")
 def compute_primitives(spec: dict) -> List[Primitive]:

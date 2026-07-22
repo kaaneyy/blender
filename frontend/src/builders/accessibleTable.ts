@@ -55,6 +55,23 @@ const DEFAULTS_M = {
   table_depth: 30 * IN,
 };
 
+// Parameter/toggle/select ids this builder's geometry actually reads. Kept
+// in exact sync with accessible_table.py's CONSUMED_PARAMS / CONSUMED_TOGGLES
+// / CONSUMED_SELECTS (Python side owns the connectivity.check_dead_controls
+// gate that consumes these; this mirror is constants only, per the mirror
+// rule — no TS equivalent of that checker).
+//
+// toe_clearance_depth is included even though no expression above reads it —
+// deliberately geometry-inert BY DESIGN (ADA value validated by the
+// standards DB; the knee/toe clearance guarantee comes from the legs' fixed
+// Y setback, which holds at any table_width without reading this value).
+// See accessible_table.py's CONSUMED_PARAMS comment for the full rationale.
+export const CONSUMED_PARAMS = [
+  "surface_height", "knee_clearance_height", "table_width", "table_depth", "toe_clearance_depth",
+];
+export const CONSUMED_TOGGLES: string[] = [];
+export const CONSUMED_SELECTS: Record<string, string[]> = {};
+
 function computeAccessibleTable(spec: AssetSpec): Primitive[] {
   const p = specParams(spec);
 

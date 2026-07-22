@@ -19,10 +19,12 @@ so existing violation plumbing can carry them.
 from __future__ import annotations
 
 import math
+import re
 from typing import Dict, List, Optional, Tuple
 
 from .base import Primitive
 from .hardware import _aabb
+from . import accessible_table, street_light
 
 #: parts closer than this (m) are considered in contact
 CONTACT_TOL = 0.0005
@@ -221,6 +223,197 @@ def check_buildability(prims: List[Primitive], spec=None) -> List[dict]:
 
 def buildability_errors(findings: List[dict]) -> List[dict]:
     return [f for f in findings if f.get("severity") == "error"]
+
+
+# --------------------------------------------------------------------------
+# Dead-control detection (check_dead_controls)
+# --------------------------------------------------------------------------
+#: asset_type -> the curated builder module declaring CONSUMED_PARAMS /
+#: CONSUMED_TOGGLES / CONSUMED_SELECTS. Imported directly (not derived from
+#: base.BUILDERS) so this check is correct regardless of import order —
+#: base.BUILDERS only gets populated as a side effect of importing
+#: blender.builders, which nothing here can guarantee has already run.
+_CURATED_VOCAB = {
+    "street_light": street_light,
+    "accessible_table": accessible_table,
+}
+
+#: call names in the expression grammar (expr.py's _FUNCS) — these appear as
+#: identifier-shaped tokens in an expression string ("min(a, b)") but are
+#: never parameter/toggle ids, so they're excluded from the referenced-id
+#: scan (matching the brief's "excluding min/max/abs").
+_EXPR_FUNCTION_NAMES = {"min", "max", "abs"}
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: consumed directly by base.compute_primitives itself (see base.py), not by
+#: either builder path's own expression/vocabulary surface — never flagged
+#: as dead on either path.
+_UNIVERSAL_TOGGLES = {"connection_hardware"}
+
+
+def _expr_tokens(value) -> set:
+    """Identifier tokens referenced by a single expression SITE. A string is
+    scanned as an expression — the identifier regex matches exactly what
+    expr.py's ast.Name nodes would resolve, since Python identifier syntax
+    and this regex agree on what is a valid name. A non-string (a literal
+    number, or a missing/None field) has no identifiers to contribute."""
+    if isinstance(value, str):
+        return {t for t in _IDENT_RE.findall(value) if t not in _EXPR_FUNCTION_NAMES}
+    return set()
+
+
+def _referenced_ids(spec: dict) -> set:
+    """Every parameter/toggle id token appearing in ANY expression site
+    generic.py's build_custom/_eval_params evaluates: each primitive's
+    visible_if, location, rotation, array.count/array.step, and every
+    params entry — scalars (radius, depth, segments, ...), size-like
+    triples, the lathe profile's raw [[r, z], ...] point list (a NAMED
+    profile string like "dome" is not an expression and contributes
+    nothing), the sweep path's point list, and profile_start/profile_end's
+    w/h (their "shape" is a fixed enum, not an expression). Mirrors
+    _eval_params' own per-key dispatch exactly so a legitimate expression
+    site can never go unscanned, and no non-expression field (a
+    primitive's name/component/material_slot/kind/cut) is scanned as if it
+    were one."""
+    referenced: set = set()
+    for raw in spec.get("primitives") or []:
+        if not isinstance(raw, dict):
+            continue
+        referenced |= _expr_tokens(raw.get("visible_if"))
+        for v in raw.get("location") or ():
+            referenced |= _expr_tokens(v)
+        for v in raw.get("rotation") or ():
+            referenced |= _expr_tokens(v)
+        array = raw.get("array")
+        if isinstance(array, dict):
+            referenced |= _expr_tokens(array.get("count"))
+            for v in array.get("step") or ():
+                referenced |= _expr_tokens(v)
+        params = raw.get("params")
+        if not isinstance(params, dict):
+            continue
+        for key, value in params.items():
+            if key == "profile":
+                if isinstance(value, str):
+                    continue  # named profile (e.g. "dome") — not an expression
+                for pair in value or ():
+                    if isinstance(pair, (list, tuple)):
+                        for v in pair:
+                            referenced |= _expr_tokens(v)
+            elif key == "path":
+                for point in value or ():
+                    if isinstance(point, (list, tuple)):
+                        for v in point:
+                            referenced |= _expr_tokens(v)
+            elif key in ("profile_start", "profile_end"):
+                if isinstance(value, dict):
+                    referenced |= _expr_tokens(value.get("w"))
+                    referenced |= _expr_tokens(value.get("h"))
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    referenced |= _expr_tokens(v)
+            else:
+                referenced |= _expr_tokens(value)
+    return referenced
+
+
+def check_dead_controls(spec) -> List[dict]:
+    """Findings for a parameter/toggle a spec exposes as a live-looking
+    slider/checkbox whose value is PROVABLY never consumed by the geometry
+    it is supposed to drive. Two disjoint paths, mirroring
+    compute_primitives' own "PRIMITIVES ALWAYS WIN" dispatch (base.py):
+
+    * generic path (spec has a non-empty "primitives" array): a
+      parameter/toggle id is dead unless it is referenced by some
+      expression site build_custom/_eval_params actually evaluates (see
+      _referenced_ids).
+    * curated-builder path (no primitives, and spec["asset_type"] matches a
+      registered curated builder): a parameter/toggle/select id is dead
+      unless it is in that builder's OWN declared vocabulary
+      (CONSUMED_PARAMS / CONSUMED_TOGGLES / CONSUMED_SELECTS on the
+      builder's module) — the builder only ever reads spec_params() /
+      spec_toggles() / spec_selects() for those exact ids, so anything else
+      is silently ignored by construction no matter how plausible it looks
+      in the UI.
+
+    The universal "connection_hardware" toggle (consumed directly by
+    base.compute_primitives, not by either builder path) is never flagged
+    on either path. A spec that is neither (no primitives AND no curated
+    builder for its asset_type) returns [] — that combination already
+    fails compute_primitives itself elsewhere in the pipeline, so it is not
+    this check's job to also report on it.
+
+    Findings are Violation.to_dict()-shaped (via _finding, kind
+    "dead_control", severity "error") so they ride the same violation
+    plumbing check_buildability's findings do."""
+    if not isinstance(spec, dict):
+        return []
+
+    findings: List[dict] = []
+
+    if spec.get("primitives"):
+        referenced = _referenced_ids(spec)
+        for p in spec.get("parameters") or []:
+            pid = p.get("id") if isinstance(p, dict) else None
+            if not pid or pid in referenced:
+                continue
+            findings.append(_finding(
+                "dead_control",
+                f"Parameter '{pid}' is never referenced by any primitive "
+                f"expression — it drives nothing. Remove it, or reference "
+                f"it from a primitive expression (a location/rotation/"
+                f"params value, visible_if, or an array count/step).",
+                component=pid,
+            ))
+        for t in spec.get("toggles") or []:
+            tid = t.get("id") if isinstance(t, dict) else None
+            if not tid or tid in _UNIVERSAL_TOGGLES or tid in referenced:
+                continue
+            findings.append(_finding(
+                "dead_control",
+                f"Toggle '{tid}' is never referenced by any primitive "
+                f"expression (e.g. a visible_if gate) — it drives nothing. "
+                f"Remove it, or reference it from a primitive expression.",
+                component=tid,
+            ))
+        return findings
+
+    module = _CURATED_VOCAB.get(spec.get("asset_type"))
+    if module is None:
+        return []
+
+    known = (
+        set(getattr(module, "CONSUMED_PARAMS", ()))
+        | set(getattr(module, "CONSUMED_TOGGLES", ()))
+        | set(getattr(module, "CONSUMED_SELECTS", {}))
+        | _UNIVERSAL_TOGGLES
+    )
+    asset_type = spec.get("asset_type")
+    for p in spec.get("parameters") or []:
+        pid = p.get("id") if isinstance(p, dict) else None
+        if not pid or pid in known:
+            continue
+        findings.append(_finding(
+            "dead_control",
+            f"Parameter '{pid}' is not one of the ids {asset_type!r}'s "
+            f"curated builder consumes — it drives nothing. Remove it, or "
+            f"model the feature it should control with a \"primitives\" "
+            f"array instead of relying on this curated builder.",
+            component=pid,
+        ))
+    for t in spec.get("toggles") or []:
+        tid = t.get("id") if isinstance(t, dict) else None
+        if not tid or tid in known:
+            continue
+        findings.append(_finding(
+            "dead_control",
+            f"Toggle '{tid}' is not one of the ids {asset_type!r}'s "
+            f"curated builder consumes — it drives nothing. Remove it, or "
+            f"model the feature it should control with a \"primitives\" "
+            f"array instead of relying on this curated builder.",
+            component=tid,
+        ))
+    return findings
 
 
 # --------------------------------------------------------------------------

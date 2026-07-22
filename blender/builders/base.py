@@ -148,24 +148,32 @@ def apply_offsets(prims: List[Primitive], offsets: dict) -> List[Primitive]:
 
 
 def compute_primitives(spec: dict) -> List[Primitive]:
-    """Dispatch to the registered builder for spec['asset_type'], falling
-    back to the generic primitives-in-the-spec builder (the LLM's
-    'generate anything' path) when no curated builder exists. Then apply the
-    cross-cutting passes: connection hardware and user position offsets."""
+    """PRIMITIVES ALWAYS WIN: if the spec carries a non-empty 'primitives'
+    array, build THAT (the generic, LLM-authored 'generate anything' path) —
+    even when spec['asset_type'] also matches a registered curated builder.
+    A curated builder's geometry can't express a styled/extended request
+    (e.g. a 'victorian post with lantern' typed as asset_type street_light),
+    so a spec that already modeled its own geometry must never have that
+    geometry silently discarded in favor of the curated stand-in. Only when
+    the spec has no primitives do we fall back to the registered curated
+    builder for spec['asset_type'], and only when neither is available do we
+    raise. Then apply the cross-cutting passes: connection hardware and user
+    position offsets."""
     asset_type = spec.get("asset_type", "")
-    builder = BUILDERS.get(asset_type)
-    if builder is not None:
-        prims = builder(spec)
-    elif spec.get("primitives"):
+    if spec.get("primitives"):
         from .generic import build_custom
 
         prims = build_custom(spec)
     else:
-        known = ", ".join(sorted(BUILDERS)) or "<none registered>"
-        raise ValueError(
-            f"No builder for asset_type {asset_type!r} and the spec has no "
-            f"'primitives' array; curated builders: {known}"
-        )
+        builder = BUILDERS.get(asset_type)
+        if builder is not None:
+            prims = builder(spec)
+        else:
+            known = ", ".join(sorted(BUILDERS)) or "<none registered>"
+            raise ValueError(
+                f"No builder for asset_type {asset_type!r} and the spec has no "
+                f"'primitives' array; curated builders: {known}"
+            )
 
     # SketchUp-style edit overlay, structural half (duplicate/delete) BEFORE
     # hardware so duplicated components get their own joints and deleted

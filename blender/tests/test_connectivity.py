@@ -1,8 +1,10 @@
 """Tests for the buildability / load-path validator (connectivity.py):
 contact graph, floating-part detection with nearest support + gap, below-
 grade geometry, and dead declared connections; the deterministic
-scale-sanity checker (check_scale_sanity); and the deterministic embedded-
-part detector (check_embedded_parts)."""
+scale-sanity checker (check_scale_sanity); the deterministic embedded-
+part detector (check_embedded_parts); and the dead-CONTROL detector
+(check_dead_controls) — a parameter/toggle a spec exposes but that provably
+drives no geometry."""
 import json
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from blender.builders.connectivity import (
     PIERCE_AXIS_FRACTION,
     buildability_errors,
     check_buildability,
+    check_dead_controls,
     check_embedded_parts,
     check_scale_sanity,
 )
@@ -439,3 +442,96 @@ class TestPiercedParts:
         spec = _pergola_with_pierced_lantern()
         pierced = [f for f in embedded_findings_for(spec) if f["kind"] == "pierced_part"]
         assert pierced != []
+
+
+# ---------------------------------------------------------------------------
+# Dead-control detection (check_dead_controls)
+# ---------------------------------------------------------------------------
+
+def _street_light_with_invented_controls():
+    """The WHY repro: an AI-generated street_light spec with a slider and a
+    toggle that sound plausible but that street_light.py never reads."""
+    spec = load("street_light.json")
+    spec["parameters"].append(
+        {"id": "lantern_height", "label": "Lantern Height", "type": "slider",
+         "min": 0.1, "max": 1.0, "step": 0.05, "value": 0.4, "unit": "m"}
+    )
+    spec["toggles"].append(
+        {"id": "solar_panel", "label": "Solar Panel", "value": True}
+    )
+    return spec
+
+
+def _generic_widget_spec():
+    """A minimal generic-path spec where each parameter is referenced by
+    exactly ONE kind of expression site: visible_if, array.count (and its
+    step), and a raw lathe profile point — plus a toggle referenced nowhere
+    and the universal connection_hardware toggle."""
+    return {
+        "asset_type": "widget", "name": "W", "units": "metric",
+        "parameters": [
+            {"id": "gate_open", "label": "Gate Open", "type": "slider",
+             "min": 0, "max": 1, "step": 1, "value": 1, "unit": "x"},
+            {"id": "rung_count", "label": "Rung Count", "type": "slider",
+             "min": 1, "max": 5, "step": 1, "value": 3, "unit": "x"},
+            {"id": "vase_radius", "label": "Vase Radius", "type": "slider",
+             "min": 0.01, "max": 0.5, "step": 0.01, "value": 0.1, "unit": "m"},
+        ],
+        "toggles": [
+            {"id": "dark_green_finish", "label": "Dark Green Finish", "value": True},
+            {"id": "connection_hardware", "label": "Connection Hardware", "value": True},
+        ],
+        "materials": [{"slot": "m", "preset": "galvanized_steel"}],
+        "components": ["body"],
+        "connections": [],
+        "primitives": [
+            {"kind": "box", "name": "gate", "component": "body", "material_slot": "m",
+             "location": [0, 0, 0.5], "params": {"size": [0.2, 0.2, 1.0]},
+             "visible_if": "gate_open"},
+            {"kind": "box", "name": "rung", "component": "body", "material_slot": "m",
+             "location": [0, 0, 0.1], "params": {"size": [0.3, 0.02, 0.02]},
+             "array": {"count": "rung_count", "step": [0, 0, "0.1 * rung_count"]}},
+            {"kind": "lathe", "name": "vase", "component": "body", "material_slot": "m",
+             "location": [1, 0, 0], "params": {"profile": [
+                 ["vase_radius", 0], ["vase_radius * 1.2", 0.5], [0.01, 1.0],
+             ]}},
+        ],
+    }
+
+
+class TestDeadControls:
+    def test_untouched_street_light_example_has_no_dead_controls(self):
+        assert check_dead_controls(load("street_light.json")) == []
+
+    def test_invented_controls_on_curated_builder_are_flagged(self):
+        findings = check_dead_controls(_street_light_with_invented_controls())
+        assert len(findings) == 2
+        assert all(f["severity"] == "error" for f in findings)
+        messages = " ".join(f["message"] for f in findings)
+        assert "lantern_height" in messages
+        assert "solar_panel" in messages
+
+    def test_generic_path_ids_referenced_only_via_visible_if_array_or_profile_are_clean(self):
+        findings = check_dead_controls(_generic_widget_spec())
+        # exactly one finding: the truly-unreferenced dark_green_finish
+        # toggle. gate_open (visible_if), rung_count (array.count/step),
+        # and vase_radius (lathe profile point) are all clean.
+        assert len(findings) == 1
+        assert "dark_green_finish" in findings[0]["message"]
+
+    def test_connection_hardware_is_never_flagged(self):
+        spec = _generic_widget_spec()
+        for f in check_dead_controls(spec):
+            assert "connection_hardware" not in f["message"]
+
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_bundled_examples_have_no_dead_controls(self, name):
+        assert check_dead_controls(load(name)) == [], name
+
+    def test_no_primitives_and_no_curated_builder_returns_empty(self):
+        assert check_dead_controls({"asset_type": "unknown_thing", "parameters": [],
+                                    "toggles": []}) == []
+
+    def test_never_raises_on_malformed_input(self):
+        assert check_dead_controls(None) == []
+        assert check_dead_controls({}) == []

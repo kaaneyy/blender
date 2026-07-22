@@ -11,6 +11,7 @@ from blender.builders.expr import ExprError, safe_eval
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_SPEC = json.loads((REPO_ROOT / "examples" / "park_bench.json").read_text())
+STREET_LIGHT_SPEC = json.loads((REPO_ROOT / "examples" / "street_light.json").read_text())
 
 IN = 0.0254
 FT = 0.3048
@@ -120,6 +121,39 @@ class TestGenericBuilder:
     def test_missing_builder_and_primitives_raises(self):
         with pytest.raises(ValueError, match="no 'primitives'"):
             compute_primitives({"asset_type": "warp_core", "parameters": []})
+
+
+class TestPrimitivesPrecedence:
+    """Primitives always win over a curated builder that matches asset_type
+    (Brief 4): a spec that carries its own geometry must never have it
+    silently discarded in favor of a curated stand-in that can't model a
+    styled/extended request (e.g. a 'victorian post with lantern' typed as
+    asset_type street_light)."""
+
+    def test_street_light_without_primitives_uses_curated_builder(self):
+        # unchanged behavior: a curated example with no 'primitives' still
+        # builds the cobra-head geometry.
+        prims = compute_primitives(STREET_LIGHT_SPEC)
+        names = {p.name for p in prims}
+        assert "mast_arm" in names
+        assert "head" in names
+
+    def test_street_light_with_primitives_builds_custom_geometry(self):
+        spec = json.loads(json.dumps(STREET_LIGHT_SPEC))
+        spec["primitives"] = [
+            {"kind": "box", "name": "victorian_post", "component": "post",
+             "location": [0, 0, 1.5], "params": {"size": [0.2, 0.2, 3.0]}},
+            {"kind": "lathe", "name": "lantern", "component": "lantern",
+             "location": [0, 0, 3.2],
+             "params": {"profile": "acorn", "radius": 0.15, "depth": 0.3}},
+        ]
+        prims = compute_primitives(spec)
+        names = {p.name for p in prims}
+        # the curated street_light builder's own parts never appear...
+        assert "mast_arm" not in names
+        assert "head" not in names
+        # ...only the spec's own custom primitives do.
+        assert {"victorian_post", "lantern"} <= names
 
 
 class TestMaterialOverrides:
