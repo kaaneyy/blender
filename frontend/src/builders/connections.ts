@@ -405,8 +405,12 @@ export function flangeSplice(
 
 /** Ground connection for a vertical member at grade. center is the member's
  * (x, y); shape "square" swaps the round flange for a box plate with corner
- * anchor bolts (no weld ring). Defaults reproduce the original street_light
- * flange byte-for-byte. */
+ * anchor bolts (no weld ring). `gussets` (default true) toggles the
+ * triangular stiffener webs; the orchestrator passes false for
+ * light/standard auto anchors so a modest structure's feet stay lean (plate
+ * + grout + bolts only), reserving the full gusseted package for genuinely
+ * heavy members. Defaults reproduce the original street_light flange
+ * byte-for-byte. */
 export function groundConnection(
   poleRadius: number,
   mount = "flange",
@@ -416,6 +420,7 @@ export function groundConnection(
   center: [number, number] = [0, 0],
   shape: "round" | "square" = "round",
   namePrefix = "",
+  gussets = true,
 ): Primitive[] {
   const [cx, cy] = center;
   const n = namePrefix;
@@ -573,17 +578,20 @@ export function groundConnection(
 
   // triangular gusset webs between the member and the plate edge — flat on
   // the flange, tall edge buried in the member, hypotenuse down to the rim
-  const gussetH = Math.max(0.08, poleRadius * 1.1);
-  const gussetAngles = square
-    ? [0, 1, 2, 3].map((i) => (2 * Math.PI * i) / 4)
-    : Array.from({ length: nBolts }, (_, i) => (2 * Math.PI * (i + 0.5)) / nBolts);
-  gussetAngles.forEach((a, i) => {
-    prims.push(
-      ...gussetPlate(
-        `${n}gusset_${i + 1}`, component, slot, center, a,
-        poleRadius, flangeR - 0.004, flangeTop, "bottom", gussetH,
-      ),
-    );
-  });
+  // — skipped entirely for lean (non-heavy) auto anchors, see `gussets`
+  if (gussets) {
+    const gussetH = Math.max(0.08, poleRadius * 1.1);
+    const gussetAngles = square
+      ? [0, 1, 2, 3].map((i) => (2 * Math.PI * i) / 4)
+      : Array.from({ length: nBolts }, (_, i) => (2 * Math.PI * (i + 0.5)) / nBolts);
+    gussetAngles.forEach((a, i) => {
+      prims.push(
+        ...gussetPlate(
+          `${n}gusset_${i + 1}`, component, slot, center, a,
+          poleRadius, flangeR - 0.004, flangeTop, "bottom", gussetH,
+        ),
+      );
+    });
+  }
   return prims;
 }

@@ -52,6 +52,14 @@ function isWood(slot: string, spec?: AssetSpec): boolean {
 }
 
 const MAX_JOINTS = 24;
+/** largest same-pair/type repeat the design blesses before thinning kicks
+ * in — exactly test_connection_redesign's "3 slats x 2 rails stay separate
+ * joints" (6 declared carriage-bolt joints between one pair). Groups of 6
+ * or fewer are left untouched; only genuinely large swarms (a 7-rafter
+ * pergola's 14 lag-screw joints) get thinned down to 6 representative
+ * joints. Mirror of hardware.py MAX_REPEAT_PER_GROUP. See
+ * thinRepeatGroups. */
+const MAX_REPEAT_PER_GROUP = 6;
 const EMBED = 0.025;
 const MIN_FACE = 0.01;
 const GRID = 0.06;
@@ -285,6 +293,22 @@ function jointMoment(pa: Primitive, pb: Primitive, center: Vec3, spec?: AssetSpe
 function loadClassFromMoment(moment: number): string {
   if (moment > 0.12) return "heavy";
   if (moment < 0.004) return "light";
+  return "standard";
+}
+
+/** volume thresholds (m³) for an AUTO anchor's load tier (a declared `load`
+ * on the ground connection always wins) — the 0.15 heavy cutoff matches
+ * this pass's pre-existing volume>0.15 heavy check; light is new. Genuinely
+ * small members get a LEAN anchor (plate + grout + bolts, no gusset webs —
+ * see connections.ts groundConnection's `gussets` param); only HEAVY
+ * members earn the full gusseted package. Mirror of hardware.py
+ * ANCHOR_LIGHT_VOLUME / ANCHOR_HEAVY_VOLUME. */
+const ANCHOR_LIGHT_VOLUME = 0.03;
+const ANCHOR_HEAVY_VOLUME = 0.15;
+
+function anchorLoadClass(vol: number): string {
+  if (vol > ANCHOR_HEAVY_VOLUME) return "heavy";
+  if (vol < ANCHOR_LIGHT_VOLUME) return "light";
   return "standard";
 }
 
@@ -580,6 +604,35 @@ interface AnchorCandidate {
 
 type Candidate = PairCandidate | AnchorCandidate;
 
+/** Cap repeated identical joints: PAIR candidates sharing the same
+ * (unordered resolved component pair, connection type) are capped at
+ * MAX_REPEAT_PER_GROUP. `candidates` is already sorted by (rank, key) by
+ * the caller, so walking it in order and keeping each group's first N is
+ * position-stable — a 7-rafter pergola's 14 identical lag-screw joints
+ * thin to a representative 6, while a 6-joint declared group (3 slats x 2
+ * rails) is left exactly as-is. ANCHOR candidates never pass through
+ * here — a structure's feet are never thinned by count. Mirror of
+ * hardware.py _thin_repeat_groups. */
+function thinRepeatGroups(candidates: Candidate[], dupMap: Map<string, string>): Candidate[] {
+  const counts = new Map<string, number>();
+  const out: Candidate[] = [];
+  for (const cand of candidates) {
+    if (cand.kind !== "pair") {
+      out.push(cand);
+      continue;
+    }
+    const paComp = resolveComponent(cand.pa.component, dupMap);
+    const pbComp = resolveComponent(cand.pb.component, dupMap);
+    const ctype = cand.decl ? cand.decl.type : "";
+    const groupKey = `${[paComp, pbComp].sort().join("~")}#${ctype}`;
+    const n = counts.get(groupKey) ?? 0;
+    if (n >= MAX_REPEAT_PER_GROUP) continue;
+    counts.set(groupKey, n + 1);
+    out.push(cand);
+  }
+  return out;
+}
+
 export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive[] {
   const decls = specConnections(spec);
   const dupMap = dupResolutionMap(spec);
@@ -691,7 +744,7 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
       key: [Math.round(c[0] / GRID), Math.round(c[1] / GRID), 0],
       centerXY: [c[0], c[1]], memberR, shape, slot: p.materialSlot,
       component: p.component,
-      load: gdecl?.load ?? (volume(p) > 0.15 ? "heavy" : "standard"),
+      load: gdecl?.load ?? anchorLoadClass(volume(p)),
     });
   }
 
@@ -702,9 +755,13 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
     return 0;
   });
 
+  // thin repeated same-pair/type joints down to a representative handful
+  // (anchors exempt — see thinRepeatGroups) before the budget loop
+  const thinned = thinRepeatGroups(candidates, dupMap);
+
   const out: Primitive[] = [];
   let joint = 0;
-  for (const cand of candidates) {
+  for (const cand of thinned) {
     if (joint >= MAX_JOINTS) break;
     const emitted = dispatch(joint + 1, cand, spec);
     if (emitted.length) {
@@ -746,6 +803,7 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       groundConnection(
         cand.memberR, "flange", cand.load, "hardware", cand.slot,
         cand.centerXY, cand.shape, `joint${joint}_`,
+        cand.load === "heavy",
       ),
       {
         id: joint, type: "anchor_base", a: cand.component, b: "ground",

@@ -381,13 +381,18 @@ def ground_connection(
     center: Tuple[float, float] = (0.0, 0.0),
     shape: str = "round",
     name_prefix: str = "",
+    gussets: bool = True,
 ) -> List[Primitive]:
     """C1/C7: the standard ground connection for a vertical member of
     ``pole_radius`` (half the max horizontal extent for square posts) at
     grade. ``center`` is the member's (x, y); ``shape`` is "round" or
     "square" (square posts get a box plate with corner anchor bolts and no
-    weld ring). Returns pure primitives; z=0 is grade. Defaults reproduce
-    the original street_light flange byte-for-byte."""
+    weld ring). ``gussets`` (default True) toggles the triangular stiffener
+    webs; the orchestrator passes False for light/standard auto anchors so
+    a modest structure's feet stay lean (plate + grout + bolts only) and
+    reserves the full gusseted package for genuinely heavy members. Returns
+    pure primitives; z=0 is grade. Defaults reproduce the original
+    street_light flange byte-for-byte."""
     cx, cy = center
     n = name_prefix
 
@@ -495,15 +500,17 @@ def ground_connection(
     # triangular gusset webs between the member and the plate edge — flat on
     # the flange, tall edge buried in the member, hypotenuse down to the rim
     # (between the bolts for round plates, at face midpoints for square ones)
-    gusset_h = max(0.08, pole_radius * 1.1)
-    gusset_angles = (
-        [2.0 * math.pi * i / 4 for i in range(4)] if square
-        else [2.0 * math.pi * (i + 0.5) / n_bolts for i in range(n_bolts)]
-    )
-    for i, a in enumerate(gusset_angles):
-        prims.extend(gusset_plate(
-            f"{n}gusset_{i + 1}", component, slot, center, a,
-            attach_r=pole_radius, reach_r=flange_r - 0.004,
-            flush_z=flange_top, hug="bottom", height=gusset_h,
-        ))
+    # — skipped entirely for lean (non-heavy) auto anchors, see `gussets`
+    if gussets:
+        gusset_h = max(0.08, pole_radius * 1.1)
+        gusset_angles = (
+            [2.0 * math.pi * i / 4 for i in range(4)] if square
+            else [2.0 * math.pi * (i + 0.5) / n_bolts for i in range(n_bolts)]
+        )
+        for i, a in enumerate(gusset_angles):
+            prims.extend(gusset_plate(
+                f"{n}gusset_{i + 1}", component, slot, center, a,
+                attach_r=pole_radius, reach_r=flange_r - 0.004,
+                flush_z=flange_top, hug="bottom", height=gusset_h,
+            ))
     return prims

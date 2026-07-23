@@ -11,7 +11,7 @@ import pytest
 import blender.builders  # noqa: F401
 from blender.builders.base import Primitive, compute_primitives
 from blender.builders.connections import gusset_plate
-from blender.builders.hardware import _cylinder_axis, _euler_xyz_matrix
+from blender.builders.hardware import MAX_REPEAT_PER_GROUP, _cylinder_axis, _euler_xyz_matrix
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -172,6 +172,68 @@ class TestJunctionMerge:
         records = [p.meta["joint"] for p in prims if p.meta and "joint" in p.meta]
         carriage = [r for r in records if r["type"] == "carriage_bolt"]
         assert len(carriage) == 6, "3 slats x 2 rails stay separate joints"
+
+
+class TestRepeatGroupThinning:
+    """A modest asset gets a handful of representative joints, not a swarm:
+    PAIR candidates sharing the same (resolved component pair, connection
+    type) are capped at MAX_REPEAT_PER_GROUP — groups at or under the cap
+    (like park_bench's 6 carriage-bolt joints above) are untouched; larger
+    swarms thin down to a position-stable representative MAX_REPEAT_PER_GROUP."""
+
+    def test_large_repeat_group_thins_to_cap_position_stably(self):
+        n = 9
+        assert n > MAX_REPEAT_PER_GROUP
+        legs = [
+            {"kind": "box", "name": f"leg{i}", "component": "legs",
+             "material_slot": "m", "location": [i * 0.2, 0, 0.35],
+             "params": {"size": [0.06, 0.06, 0.7]}}
+            for i in range(n)
+        ]
+        apron = {"kind": "box", "name": "apron", "component": "apron",
+                 "material_slot": "m", "location": [(n - 1) * 0.1, 0, 0.66],
+                 "params": {"size": [n * 0.2 + 0.1, 0.06, 0.08]}}
+        prims = compute_primitives(spec_of(
+            legs + [apron],
+            connections=[{"a": "legs", "b": "apron", "type": "through_bolt"}],
+        ))
+        records = [p.meta["joint"] for p in prims if p.meta and "joint" in p.meta]
+        pair = [r for r in records if {r["a"], r["b"]} == {"legs", "apron"}]
+        assert len(pair) == MAX_REPEAT_PER_GROUP, \
+            "9 identical declared joints thin down to the cap"
+        # position-stable: the survivors are the ones with the smallest
+        # sort key, i.e. the leftmost legs (0.0, 0.2, ... 1.0), not an
+        # arbitrary or last-N subset
+        xs = sorted(r["center"][0] for r in pair)
+        expected = sorted(i * 0.2 for i in range(MAX_REPEAT_PER_GROUP))
+        assert xs == pytest.approx(expected, abs=1e-6)
+
+    def test_pergola_hardware_is_lean(self):
+        """The motivating case: a pergola's 4 posts + 2 beams + 7 rafters
+        used to generate 22 joints / 134 hardware prims — 14 separate
+        lag-screw joints (one per rafter-beam contact) and full gusseted
+        anchor packages on every post. Thinning caps the lag-screw swarm at
+        MAX_REPEAT_PER_GROUP and lean (non-heavy) auto anchors drop their
+        gussets, for a meaningfully smaller, still-buildable joint set."""
+        spec = load("pergola.json")
+        prims = compute_primitives(spec)
+        hardware = [p for p in prims if p.component == "hardware"]
+        records = [p.meta["joint"] for p in prims if p.meta and "joint" in p.meta]
+        by_type = {}
+        for r in records:
+            by_type.setdefault(r["type"], []).append(r)
+
+        # the 4 posts keep their 4 feet (anchors are exempt from thinning)
+        assert len(by_type.get("anchor_base", [])) == 4
+        # the 4 post/beam through-bolts are already <= the cap, untouched
+        assert len(by_type.get("through_bolt", [])) == 4
+        # the 14 rafter/beam lag joints thin to a representative cap
+        assert len(by_type.get("lag_screw", [])) == MAX_REPEAT_PER_GROUP
+
+        assert len(records) == 14, "22 joints down to a handful, not a swarm"
+        assert len(records) < 22 * 0.7
+        assert len(hardware) == 94, "gusset-free lean posts cut prim count too"
+        assert len(hardware) < 134 * 0.75
 
 
 class TestHardwareFollowsEdits:

@@ -64,6 +64,13 @@ from .shapes import profile_bounds, resolve_profile
 ROUND_KINDS = ("cylinder", "cone", "sweep", "tube")
 
 MAX_JOINTS = 24
+#: largest same-pair/type repeat the design blesses before thinning kicks in
+#: — exactly test_connection_redesign's "3 slats x 2 rails stay separate
+#: joints" (6 declared carriage-bolt joints between one pair). Groups of 6
+#: or fewer are left untouched; only genuinely large swarms (a 7-rafter
+#: pergola's 14 lag-screw joints) get thinned down to 6 representative
+#: joints. See _thin_repeat_groups.
+MAX_REPEAT_PER_GROUP = 6
 EMBED = 0.025      # max bolt embedment into each member beyond the joint, m
 MIN_FACE = 0.010   # skip joints whose bolt face is thinner than this, m
 GRID = 0.06        # joint dedupe grid, m
@@ -297,6 +304,24 @@ def _load_class_from_moment(moment: float) -> str:
     if moment > 0.12:
         return "heavy"
     if moment < 0.004:
+        return "light"
+    return "standard"
+
+
+#: volume thresholds (m³) for an AUTO anchor's load tier (a declared `load`
+#: on the ground connection always wins) — the 0.15 heavy cutoff matches
+#: this pass's pre-existing volume>0.15 heavy check; light is new. Genuinely
+#: small members get a LEAN anchor (plate + grout + bolts, no gusset webs —
+#: see connections.ground_connection's `gussets` kwarg); only HEAVY members
+#: earn the full gusseted package.
+ANCHOR_LIGHT_VOLUME = 0.03
+ANCHOR_HEAVY_VOLUME = 0.15
+
+
+def _anchor_load_class(volume: float) -> str:
+    if volume > ANCHOR_HEAVY_VOLUME:
+        return "heavy"
+    if volume < ANCHOR_LIGHT_VOLUME:
         return "light"
     return "standard"
 
@@ -577,6 +602,33 @@ def _merge_pair_candidates(cands: List[dict]) -> List[dict]:
     return out
 
 
+def _thin_repeat_groups(candidates: List[dict], dup_map: Dict[str, str]) -> List[dict]:
+    """Cap repeated identical joints: PAIR candidates sharing the same
+    (unordered resolved component pair, connection type) are capped at
+    MAX_REPEAT_PER_GROUP. ``candidates`` is already sorted by (rank, key)
+    by the caller, so walking it in order and keeping each group's first N
+    is position-stable — a 7-rafter pergola's 14 identical lag-screw joints
+    thin to a representative 6, while a 6-joint declared group (3 slats x 2
+    rails) is left exactly as-is. ANCHOR candidates never pass through
+    here — a structure's feet are never thinned by count."""
+    counts: Dict[tuple, int] = {}
+    out: List[dict] = []
+    for cand in candidates:
+        if cand["kind"] != "pair":
+            out.append(cand)
+            continue
+        pa_comp = _resolve_component(cand["pa"].component, dup_map)
+        pb_comp = _resolve_component(cand["pb"].component, dup_map)
+        ctype = cand["decl"]["type"] if cand["decl"] else None
+        group_key = (tuple(sorted((pa_comp, pb_comp))), ctype)
+        n = counts.get(group_key, 0)
+        if n >= MAX_REPEAT_PER_GROUP:
+            continue
+        counts[group_key] = n + 1
+        out.append(cand)
+    return out
+
+
 def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
     """Emit visible connection hardware. Candidates are collected first
     (inter-component contacts + anchor bases), ordered deterministically
@@ -685,11 +737,15 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
             "key": (round(c[0] / GRID), round(c[1] / GRID), 0),
             "center_xy": (c[0], c[1]), "member_r": member_r, "shape": shape,
             "slot": p.material_slot, "component": p.component,
-            "load": load or ("heavy" if _volume(p) > 0.15 else "standard"),
+            "load": load or _anchor_load_class(_volume(p)),
         })
 
     # -------------------------------------------------- deterministic order
     candidates.sort(key=lambda cand: (cand["rank"], cand["key"]))
+
+    # thin repeated same-pair/type joints down to a representative handful
+    # (anchors exempt — see _thin_repeat_groups) before the budget loop
+    candidates = _thin_repeat_groups(candidates, dup_map)
 
     out: List[Primitive] = []
     joint = 0
@@ -736,6 +792,7 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
                 component="hardware", slot=cand["slot"],
                 center=cand["center_xy"], shape=cand["shape"],
                 name_prefix=f"joint{joint}_",
+                gussets=(cand["load"] == "heavy"),
             ),
             {"id": joint, "type": "anchor_base",
              "a": cand["component"], "b": "ground",
