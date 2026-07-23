@@ -11,6 +11,7 @@ import pytest
 
 import blender.builders  # noqa: F401
 from blender.builders.base import Primitive, compute_primitives
+from blender.builders.connections import ground_connection
 from blender.builders.hardware import _aabb, compute_hardware
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -113,6 +114,40 @@ class TestAutoAnchorBase:
         assert len(flanges) == 1
         assert not any(p.name.endswith("_grout_pad") and p.component == "hardware"
                        for p in prims)
+
+
+class TestLeanAnchorGussets:
+    """Gusset webs are reserved for genuinely HEAVY auto anchors — a light
+    or standard member gets a lean anchor (plate + grout + bolts, no
+    gussets), while ground_connection's own `gussets` kwarg still defaults
+    to on (the curated street_light base stays byte-for-byte identical)."""
+
+    def test_light_member_gets_no_gusset(self):
+        light_post = {"kind": "cylinder", "name": "p", "component": "post",
+                      "material_slot": "m", "location": [0, 0, 0.15],
+                      "params": {"radius": 0.03, "depth": 0.3}}
+        prims = compute_primitives(spec_of(
+            [light_post], connections=[{"a": "post", "b": "ground", "type": "anchor_base"}],
+        ))
+        names = hw_names(prims)
+        assert any("flange" in n for n in names), "still gets a lean ground package"
+        assert not any("gusset" in n for n in names), "but no gusset webs"
+
+    def test_heavy_member_still_gets_gussets(self):
+        prims = compute_primitives(spec_of([POLE]))  # heavy pole (see TestAutoAnchorBase)
+        assert any("gusset" in n for n in hw_names(prims))
+
+    def test_ground_connection_gussets_false_emits_none(self):
+        prims = ground_connection(0.1, gussets=False)
+        assert not any("gusset" in p.name for p in prims)
+        # everything else is unaffected
+        assert any("flange" in p.name for p in prims)
+        assert any("anchor_bolt" in p.name for p in prims)
+        assert any("grout_pad" in p.name for p in prims)
+
+    def test_ground_connection_default_still_emits_gussets(self):
+        prims = ground_connection(0.1)
+        assert any("gusset" in p.name for p in prims)
 
 
 class TestSlipFit:
