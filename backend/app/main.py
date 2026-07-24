@@ -41,7 +41,7 @@ ASSET_SPEC_SCHEMA = json.loads(
 
 
 #: DeepSeek model ids the dropdown may request (empty = server default).
-_MODEL_PATTERN = "^(deepseek-chat|deepseek-v4-flash|deepseek-v4-pro)?$"
+_MODEL_PATTERN = "^(deepseek-v4-flash|deepseek-v4-pro)?$"
 
 
 class Clarification(BaseModel):

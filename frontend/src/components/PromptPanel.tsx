@@ -16,6 +16,7 @@ import {
   updateStandardsStream,
   wizardStepStream,
   MODEL_OPTIONS,
+  DEFAULT_MODEL,
   type Clarification,
   type ClarifyQuestion,
   type DeepseekModel,
@@ -252,9 +253,12 @@ export default function PromptPanel({
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [guide, setGuide] = useState<string | null>(null);
   const [standardsResult, setStandardsResult] = useState<StandardsUpdateResult | null>(null);
-  const [model, setModel] = useState<DeepseekModel>(
-    () => (localStorage.getItem(MODEL_KEY) as DeepseekModel) || "deepseek-chat",
-  );
+  const [model, setModel] = useState<DeepseekModel>(() => {
+    // fall back to the default when the saved id is empty OR retired (e.g. a
+    // previously-stored "deepseek-chat"), so the dropdown never shows a dead value
+    const saved = localStorage.getItem(MODEL_KEY);
+    return MODEL_OPTIONS.some((m) => m.id === saved) ? (saved as DeepseekModel) : DEFAULT_MODEL;
+  });
   const [wizardStep, setWizardStep] = useState<number | null>(null); // null = not in guided build
   const [wizardMsg, setWizardMsg] = useState("");
   const [clarify, setClarify] = useState<ClarifyState | null>(null);
