@@ -27,6 +27,7 @@ import ControlsPanel from "./components/ControlsPanel";
 import LibraryPanel from "./components/LibraryPanel";
 import PromptPanel from "./components/PromptPanel";
 import SelectionPanel from "./components/SelectionPanel";
+import StreamLine from "./components/StreamLine";
 import VariationsPanel from "./components/VariationsPanel";
 import Viewport, { type CommittedTransform } from "./components/Viewport";
 import type { Selection } from "./components/AssetMesh";
@@ -717,12 +718,7 @@ export default function App() {
             </div>
             {aiBusy ? (
               <>
-                <div className="stream-card" aria-live="off">
-                  <div className="stream-card__title">
-                    <span className="stream-card__dot" /> Reviewing every joint…
-                  </div>
-                  <div className="stream-card__text">{aiStream.slice(-700) || "…"}</div>
-                </div>
+                <StreamLine title="Reviewing every joint…" text={aiStream} />
                 <p className="hint">
                   The AI reads the spec, the generated joint schedule, and the
                   deterministic findings, then proposes fixes in the same
@@ -749,12 +745,7 @@ export default function App() {
             </div>
             {improveBusy ? (
               <>
-                <div className="stream-card" aria-live="off">
-                  <div className="stream-card__title">
-                    <span className="stream-card__dot" /> Checking and improving the asset…
-                  </div>
-                  <div className="stream-card__text">{improveStream.slice(-700) || "…"}</div>
-                </div>
+                <StreamLine title="Checking and improving the asset…" text={improveStream} />
                 <p className="hint">
                   Runs the app's deterministic checks against the current
                   asset, then asks the AI to improve it in one pass — the

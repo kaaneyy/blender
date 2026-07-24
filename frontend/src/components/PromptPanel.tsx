@@ -26,6 +26,7 @@ import {
 } from "../api";
 import { auditConnections } from "../builders";
 import Modal from "./Modal";
+import StreamLine from "./StreamLine";
 import { EXAMPLE_ASSETS } from "../examples";
 
 /** Live, free, client-side connection/buildability findings for a spec (no
@@ -195,30 +196,6 @@ const QUICK_FIXES: Array<{ label: string; title: string; message: string }> = [
       "Add believable secondary detail to this asset and return the FULL updated AssetSpec JSON. Add caps, seams, trim rings, fillets, and visible fasteners only where a real one would appear, using the fabrication kinds where apt (lathe for finials/domes, sweep for curved members, loft for tapered housings, tube for hollow posts). Do NOT change the overall silhouette or violate the code ranges; keep existing component names and ids, and keep the part count reasonable (favor readable massing over micro-detail).",
   },
 ];
-
-/** Live "the AI is generating" card: shows the streaming tail so the user
- * can see progress without needing to read it. Reasoning ("thinking") models
- * wrap their chain of thought in <think> tags — strip the literal tags for
- * display and flag when the model is still thinking. */
-function StreamCard({ title, text }: { title: string; text: string }) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const thinking = text.lastIndexOf("<think>") > text.lastIndexOf("</think>");
-  const clean = text.replace(/<\/?think>/g, "");
-  useEffect(() => {
-    boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
-  }, [text]);
-  return (
-    <div className="stream-card" aria-live="off">
-      <div className="stream-card__title">
-        <span className="stream-card__dot" /> {title}
-        {thinking && <span className="stream-card__thinking"> · thinking…</span>}
-      </div>
-      <div className="stream-card__text" ref={boxRef}>
-        {clean.slice(-800) || "…"}
-      </div>
-    </div>
-  );
-}
 
 /** Minimal markdown rendering for the install guide (headings + lines). */
 function GuideText({ text }: { text: string }) {
@@ -642,66 +619,69 @@ export default function PromptPanel({
         </button>
       </div>
 
-      <label className="model-row" title="Load one of the bundled example assets">
-        <span>Examples</span>
-        <select
-          value=""
-          onChange={(e) => loadExample(e.target.value)}
-          disabled={busy !== false}
-        >
-          <option value="" disabled>
-            Load an example asset…
-          </option>
-          {EXAMPLE_ASSETS.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.label}
+      <div className="panel-section panel-section--flush">
+        <label className="model-row" title="Load one of the bundled example assets">
+          <span>Examples</span>
+          <select
+            value=""
+            onChange={(e) => loadExample(e.target.value)}
+            disabled={busy !== false}
+          >
+            <option value="" disabled>
+              Load an example asset…
             </option>
-          ))}
-        </select>
-      </label>
+            {EXAMPLE_ASSETS.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.label}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <h3>Describe any asset</h3>
-      <label className="model-row" title="Which DeepSeek model the AI uses for generate, refine, and focus">
-        <span>AI model</span>
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value as DeepseekModel)}
-          disabled={busy !== false}
-        >
-          {MODEL_OPTIONS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label} — {m.hint}
-            </option>
-          ))}
-        </select>
-      </label>
-      <textarea
-        value={prompt}
-        onChange={(e) => {
-          setPrompt(e.target.value);
-          // questions belong to the prompt they were asked about
-          if (clarify && e.target.value.trim() !== clarify.forPrompt) setClarify(null);
-        }}
-        placeholder='e.g. "a 12 ft art-deco pedestrian lamp with a fluted cast-iron pole and a glowing acorn globe" — anything: benches, bollards, signs, props…'
-        rows={4}
-        disabled={busy !== false || clarifyBusy !== false}
-      />
-      <div className="gen-row">
-        <button
-          onClick={() => void startClarify("wizard")}
-          disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
-          title="Build in 4 reviewable steps: form → connections → materials → working parts"
-        >
-          {busy === "wizard" && wizardStep === null ? "Building…" : "🪄 Build step by step"}
-        </button>
-        <button
-          className="secondary"
-          onClick={() => void startClarify("generate")}
-          disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
-          title="Generate the whole asset in one pass"
-        >
-          {busy === "generate" ? "Generating…" : "Generate all at once"}
-        </button>
+        <h3>Describe any asset</h3>
+        <label className="model-row" title="Which DeepSeek model the AI uses for generate, refine, and focus">
+          <span>AI model</span>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value as DeepseekModel)}
+            disabled={busy !== false}
+          >
+            {MODEL_OPTIONS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — {m.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <textarea
+          value={prompt}
+          onChange={(e) => {
+            setPrompt(e.target.value);
+            // questions belong to the prompt they were asked about
+            if (clarify && e.target.value.trim() !== clarify.forPrompt) setClarify(null);
+          }}
+          placeholder='e.g. "a 12 ft art-deco pedestrian lamp with a fluted cast-iron pole and a glowing acorn globe" — anything: benches, bollards, signs, props…'
+          rows={4}
+          disabled={busy !== false || clarifyBusy !== false}
+        />
+        {/* the hero: the one obvious primary action in the whole panel */}
+        <div className="gen-row">
+          <button
+            onClick={() => void startClarify("wizard")}
+            disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
+            title="Build in 4 reviewable steps: form → connections → materials → working parts"
+          >
+            {busy === "wizard" && wizardStep === null ? "Building…" : "🪄 Build step by step"}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => void startClarify("generate")}
+            disabled={busy !== false || clarifyBusy !== false || !prompt.trim()}
+            title="Generate the whole asset in one pass"
+          >
+            {busy === "generate" ? "Generating…" : "Generate all at once"}
+          </button>
+        </div>
       </div>
 
       {clarifyOpen && (
@@ -856,80 +836,84 @@ export default function PromptPanel({
       )}
 
       {wizardStep === null && (
-        <div className="quick-fixes">
-          <span className="quick-fixes__label">Quick fixes (AI, on the current asset)</span>
-          <div className="quick-fixes__row">
-            {QUICK_FIXES.map((qf) => (
-              <button
-                key={qf.label}
-                className="quick-fix-btn"
-                title={qf.title}
-                onClick={() => runPreset(qf)}
-                disabled={busy !== false}
-              >
-                {qf.label}
-              </button>
-            ))}
+        <div className="panel-section">
+          <span className="panel-section__title">Tools</span>
+          <div className="quick-fixes">
+            <span className="quick-fixes__label">Quick fixes (AI, on the current asset)</span>
+            <div className="quick-fixes__row">
+              {QUICK_FIXES.map((qf) => (
+                <button
+                  key={qf.label}
+                  className="quick-fix-btn"
+                  title={qf.title}
+                  onClick={() => runPreset(qf)}
+                  disabled={busy !== false}
+                >
+                  {qf.label}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
 
-      {wizardStep === null && (
-        <div className="variations-trigger">
-          <button
-            className="variations-trigger__btn"
-            onClick={onVariations}
-            disabled={busy !== false || clarifyBusy !== false || variationsBusy}
-            title="Ask the AI for 4 alternate takes on the current asset, preview each in 3D, and pick one to adopt"
-          >
-            {variationsBusy ? "✨ Requesting 4 variants…" : "✨ Give me 4 variants"}
-          </button>
+          <div className="variations-trigger">
+            <button
+              className="variations-trigger__btn"
+              onClick={onVariations}
+              disabled={busy !== false || clarifyBusy !== false || variationsBusy}
+              title="Ask the AI for 4 alternate takes on the current asset, preview each in 3D, and pick one to adopt"
+            >
+              {variationsBusy ? "✨ Requesting 4 variants…" : "✨ Give me 4 variants"}
+            </button>
+          </div>
         </div>
       )}
 
       {chat.length > 0 && (
-        <div className="chat">
-          {chat.map((entry, i) => (
-            <p key={i} className={`chat__msg chat__msg--${entry.role}`}>
-              <strong>{entry.role === "you" ? "You" : "AssetForge"}:</strong> {entry.text}
-            </p>
-          ))}
+        <div className="panel-section">
+          <span className="panel-section__title">Refine</span>
+          <div className="chat">
+            {chat.map((entry, i) => (
+              <p key={i} className={`chat__msg chat__msg--${entry.role}`}>
+                <strong>{entry.role === "you" ? "You" : "AssetForge"}:</strong> {entry.text}
+              </p>
+            ))}
+          </div>
+
+          {wizardStep === null && (
+            <>
+              <div className="refine-row">
+                <input
+                  type="text"
+                  value={refineMsg}
+                  onChange={(e) => setRefineMsg(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && runRefine()}
+                  placeholder='refine: "make it bronze, add a second arm"'
+                  disabled={busy !== false}
+                />
+                <button onClick={runRefine} disabled={busy !== false || !refineMsg.trim()}>
+                  {busy === "refine" ? "…" : "Send"}
+                </button>
+              </div>
+
+              <div className="focus-box">
+                <span className="focus-box__label">🔍 Focus one area (deep detail, rest untouched)</span>
+                <textarea
+                  value={focusArea}
+                  onChange={(e) => setFocusArea(e.target.value)}
+                  placeholder='e.g. "the luminaire head — add a hinged door, gasket, and internal reflector"'
+                  rows={2}
+                  disabled={busy !== false}
+                />
+                <button onClick={runFocus} disabled={busy !== false || !focusArea.trim()}>
+                  {busy === "focus" ? "Detailing…" : "Focus this area"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {chat.length > 0 && wizardStep === null && (
-        <>
-          <div className="refine-row">
-            <input
-              type="text"
-              value={refineMsg}
-              onChange={(e) => setRefineMsg(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && runRefine()}
-              placeholder='refine: "make it bronze, add a second arm"'
-              disabled={busy !== false}
-            />
-            <button onClick={runRefine} disabled={busy !== false || !refineMsg.trim()}>
-              {busy === "refine" ? "…" : "Send"}
-            </button>
-          </div>
-
-          <div className="focus-box">
-            <span className="focus-box__label">🔍 Focus one area (deep detail, rest untouched)</span>
-            <textarea
-              value={focusArea}
-              onChange={(e) => setFocusArea(e.target.value)}
-              placeholder='e.g. "the luminaire head — add a hinged door, gasket, and internal reflector"'
-              rows={2}
-              disabled={busy !== false}
-            />
-            <button onClick={runFocus} disabled={busy !== false || !focusArea.trim()}>
-              {busy === "focus" ? "Detailing…" : "Focus this area"}
-            </button>
-          </div>
-        </>
-      )}
-
-      {busy !== false && <StreamCard title={BUSY_TITLES[busy]} text={streamText} />}
+      {busy !== false && <StreamLine title={BUSY_TITLES[busy]} text={streamText} />}
 
       {error && (
         <div className="violation" role="alert">
@@ -937,32 +921,38 @@ export default function PromptPanel({
         </div>
       )}
 
-      <hr />
-      <label className="control">
-        <span className="control__label">Asset name</span>
-        <input type="text" value={spec.name} onChange={(e) => onName(e.target.value)} />
-      </label>
-      <p className="asset-type">
-        type: <code>{spec.asset_type}</code>
-      </p>
-      <div className={`code-status ${violationCount ? "code-status--bad" : "code-status--ok"}`}>
-        {violationCount
-          ? `${violationCount} code violation${violationCount > 1 ? "s" : ""} — see controls`
-          : "All dimensions within US code"}
+      <div className="panel-section">
+        <label className="control">
+          <span className="control__label">Asset name</span>
+          <input type="text" value={spec.name} onChange={(e) => onName(e.target.value)} />
+        </label>
+        <p className="asset-type">
+          type: <code>{spec.asset_type}</code>
+        </p>
+        <div className={`code-status ${violationCount ? "code-status--bad" : "code-status--ok"}`}>
+          {violationCount
+            ? `${violationCount} code violation${violationCount > 1 ? "s" : ""} — see controls`
+            : "All dimensions within US code"}
+        </div>
       </div>
 
-      <button onClick={downloadSpec}>Download spec (.json)</button>
-      <button onClick={() => runGuide()} disabled={busy !== false}>
-        {busy === "guide" ? "Writing guide…" : "📋 Installation guide"}
-      </button>
-      <button onClick={runStandardsUpdate} disabled={busy !== false} className="secondary">
-        {busy === "standards" ? "Researching standards…" : "🏛 Refresh US standards DB"}
-      </button>
-      <p className="hint">
-        Turn the spec into a real Blender / SketchUp file (see README → “Open
-        your asset in Blender”):
-        <code>blender -b -P blender/build_cli.py -- spec.json out.blend</code>
-      </p>
+      <div className="panel-section">
+        <span className="panel-section__title">Export &amp; tools</span>
+        <button className="btn btn--secondary" onClick={downloadSpec}>
+          Download spec (.json)
+        </button>
+        <button className="btn btn--secondary" onClick={() => runGuide()} disabled={busy !== false}>
+          {busy === "guide" ? "Writing guide…" : "📋 Installation guide"}
+        </button>
+        <button className="btn btn--ghost" onClick={runStandardsUpdate} disabled={busy !== false}>
+          {busy === "standards" ? "Researching standards…" : "🏛 Refresh US standards DB"}
+        </button>
+        <p className="hint">
+          Turn the spec into a real Blender / SketchUp file (see README → “Open
+          your asset in Blender”):
+          <code>blender -b -P blender/build_cli.py -- spec.json out.blend</code>
+        </p>
+      </div>
 
       {guide !== null && (
         <Modal title={`Installing "${spec.name}"`} onClose={() => setGuide(null)}>
