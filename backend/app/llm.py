@@ -35,8 +35,12 @@ DEFAULT_MAX_TOKENS = 6000
 
 #: Upper bound a truncated-retry may escalate ``max_tokens`` to, regardless
 #: of how many times a reply keeps truncating. Keeps a runaway spec from
-#: burning an unbounded budget on repeated retries.
-TRUNCATION_MAX_TOKENS_CEILING = 16000
+#: burning an unbounded budget on repeated retries. Sized so a heavy
+#: reasoning trace AND a full spec both fit: a thinking model can spend
+#: >10k tokens deliberating before the JSON, and 16k left too little room
+#: after that for a large spec, so the answer kept truncating even on the
+#: final retry (the "cut off before the JSON finished" failure).
+TRUNCATION_MAX_TOKENS_CEILING = 32000
 
 #: DeepSeek models the UI dropdown may request. Anything outside this set is
 #: ignored (falls back to the env default) so a client can never inject an
@@ -53,7 +57,12 @@ DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 #: a bigger token budget, and their reasoning is fenced off from the answer (see
 #: :func:`strip_reasoning`) so JSON parsing is never fooled by braces the model
 #: wrote while thinking.
-REASONING_MODELS = frozenset({"deepseek-v4-pro"})
+#: BOTH current DeepSeek V4 models emit a reasoning trace — flash was observed
+#: spending most of a plain 6k budget on thinking and truncating the spec JSON,
+#: so it needs the same reasoning-sized timeout/budget as pro, not the plain-
+#: model defaults. (Harmless headroom even for a model that happens not to
+#: think much.)
+REASONING_MODELS = frozenset({"deepseek-v4-flash", "deepseek-v4-pro"})
 #: Reasoning can run for minutes; don't cut it off at the plain-model timeout.
 REASONING_TIMEOUT = 300.0
 #: The reasoning trace eats into the output budget — leave plenty of room so the
