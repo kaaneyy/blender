@@ -61,6 +61,16 @@
   box-sizing: border-box;
 }
 
+/* All scrolling is confined to the sidebars; the document itself never
+   scrolls past its content into empty space. The html clip is what actually
+   stops the window scroll in standards mode — body alone is not enough. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, sans-serif;
@@ -72,6 +82,7 @@ body {
 .app {
   display: flex;
   height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -92,18 +103,19 @@ body {
 .viewport {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .panel {
-  padding: 18px 16px;
+  padding: 13px 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 9px;
 }
 
 .panel h3,
 .modal h4 {
-  margin: 10px 0 0;
+  margin: 2px 0 0;
   font-size: 12.5px;
   font-weight: 700;
   text-transform: uppercase;
@@ -119,8 +131,8 @@ body {
 .panel-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
+  gap: 8px;
+  padding-top: 11px;
   border-top: 1px solid var(--border);
 }
 
@@ -276,6 +288,19 @@ body {
 .control__unit {
   color: var(--text-muted);
   width: 18px;
+}
+
+/* metric/imperial equivalent shown INLINE beside the value (not on its own
+   row below) — e.g. "30 ft · 9.14 m" */
+.control__equiv {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.control__equiv::before {
+  content: "·";
+  margin: 0 5px;
 }
 
 .control__meta {

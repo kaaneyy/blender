@@ -213,6 +213,15 @@ function ParamControl({
             onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
           />
           <span className="control__unit">{unitSymbol(dispUnit ?? param.unit)}</span>
+          {/* the other-system equivalent, inline beside the value (not a
+              row below): the metric m for an imperial length, or the native
+              ft/in when the app is showing metric. Dimensionless params
+              (deg/W/x) have no counterpart and show nothing. */}
+          {lengthUnit && (
+            <span className="control__equiv">
+              {converting ? `${round3(value)} ${lengthUnit}` : counterpart(value, lengthUnit)}
+            </span>
+          )}
         </span>
       </div>
       <input
@@ -224,13 +233,6 @@ function ParamControl({
         disabled={dimmed}
         onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
       />
-      <div className="control__meta">
-        <span>
-          {lengthUnit && !converting ? counterpart(value, lengthUnit) : ""}
-          {converting && lengthUnit ? `${round3(value)} ${lengthUnit}` : ""}
-        </span>
-        {param.code_ref && <span className="control__coderef">{param.code_ref}</span>}
-      </div>
       {violation && (
         <div className="violation" role="alert">
           <p>{violation.message}</p>
