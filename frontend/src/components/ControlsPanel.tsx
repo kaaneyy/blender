@@ -3,10 +3,11 @@
  * Zero per-asset UI code. Violations render red with the code citation and
  * a "snap to code" action (T4.5). */
 import { useRef, useState, type ChangeEvent } from "react";
-import type { AssetSpec, LengthUnit, SpecMaterial, SpecParameter, UnitSystem } from "../types";
+import type { AssetSpec, LengthUnit, SpecMaterial, SpecParameter, SpecToggle, UnitSystem } from "../types";
 import type { CodeViolation } from "../standards";
 import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
 import { convert, counterpart, isLengthUnit, unitSymbol } from "../units";
+import { computeOptionDeps } from "../optionDeps";
 
 /** Which length unit a parameter is DISPLAYED in for the chosen system: ft↔m,
  * in↔cm. The spec always keeps the parameter's native unit — this is pure
@@ -144,19 +145,25 @@ function ParamControl({
   displayUnits,
   locked,
   onParam,
+  dimmed = false,
 }: {
   param: SpecParameter;
   violation?: CodeViolation;
   displayUnits: UnitSystem;
   locked: boolean;
   onParam: Props["onParam"];
+  /** True when this param is nested under a feature toggle that's currently
+   * off — it drives no visible geometry in that state, so it's shown dimmed
+   * and its inputs are disabled (display-only; the value is untouched). */
+  dimmed?: boolean;
 }) {
   if (param.type === "select" || typeof param.value === "string") {
     return (
-      <label className="control">
+      <label className={`control${dimmed ? " control--dimmed" : ""}`}>
         <span className="control__label">{param.label}</span>
         <select
           value={String(param.value)}
+          disabled={dimmed}
           onChange={(e) => onParam(param.id, e.target.value)}
         >
           {(param.options ?? [String(param.value)]).map((o) => (
@@ -190,7 +197,9 @@ function ParamControl({
   const shownStep = converting ? toDisplay(param.step ?? 1) : (param.step ?? 1);
 
   return (
-    <div className={`control${violation ? " control--violation" : ""}`}>
+    <div
+      className={`control${violation ? " control--violation" : ""}${dimmed ? " control--dimmed" : ""}`}
+    >
       <div className="control__row">
         <span className="control__label" title={param.code_ref}>
           {param.label}
@@ -200,6 +209,7 @@ function ParamControl({
             type="number"
             value={shownValue}
             step={shownStep}
+            disabled={dimmed}
             onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
           />
           <span className="control__unit">{unitSymbol(dispUnit ?? param.unit)}</span>
@@ -211,6 +221,7 @@ function ParamControl({
         max={shownMax}
         step={shownStep}
         value={shownValue}
+        disabled={dimmed}
         onChange={(e) => onParam(param.id, fromDisplay(Number(e.target.value)))}
       />
       <div className="control__meta">
@@ -223,9 +234,72 @@ function ParamControl({
       {violation && (
         <div className="violation" role="alert">
           <p>{violation.message}</p>
-          <button onClick={() => onParam(param.id, violation.correctedValue)}>
+          <button disabled={dimmed} onClick={() => onParam(param.id, violation.correctedValue)}>
             Snap to code ({violation.correctedValue} {unitSymbol(param.unit)})
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One feature toggle in the Options section: a switch-styled checkbox,
+ * an optional "controls N part(s)" line derived from the spec's own
+ * primitives (see optionDeps.ts), and — nested directly under it — the
+ * ParamControls for any parameter that toggle exclusively owns. Nested
+ * params dim and disable while the toggle is off since they drive no
+ * visible geometry in that state; App.tsx's onToggle/onParam contracts are
+ * untouched, this only decides where a control renders. */
+function OptionToggle({
+  toggle,
+  ownedParams,
+  gatedCount,
+  violations,
+  displayUnits,
+  locked,
+  onToggle,
+  onParam,
+}: {
+  toggle: SpecToggle;
+  ownedParams: SpecParameter[];
+  /** Distinct primitive count this toggle gates, or undefined if it gates
+   * nothing known (curated builders, or a toggle with no visible_if match). */
+  gatedCount?: number;
+  violations: Record<string, CodeViolation>;
+  displayUnits: UnitSystem;
+  locked: boolean;
+  onToggle: Props["onToggle"];
+  onParam: Props["onParam"];
+}) {
+  return (
+    <div className="option-group">
+      <label className="toggle">
+        <input
+          type="checkbox"
+          className="switch"
+          checked={toggle.value}
+          onChange={(e) => onToggle(toggle.id, e.target.checked)}
+        />
+        {toggle.label}
+      </label>
+      {!!gatedCount && (
+        <p className="option-group__meta">
+          controls {gatedCount} part{gatedCount === 1 ? "" : "s"}
+        </p>
+      )}
+      {ownedParams.length > 0 && (
+        <div className="option-group__params">
+          {ownedParams.map((p) => (
+            <ParamControl
+              key={p.id}
+              param={p}
+              violation={violations[p.id]}
+              displayUnits={displayUnits}
+              locked={locked}
+              onParam={onParam}
+              dimmed={!toggle.value}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -283,6 +357,24 @@ export default function ControlsPanel({
     0,
     ...(spec.materials ?? []).map((m) => m.weathering ?? 0),
   );
+  // Feature-aware Options (Brief 11): a param whose every referencing
+  // primitive is gated by the same toggle "belongs" to that toggle and
+  // nests/dims under it; everything else stays a core Parameter. Curated
+  // specs (no `primitives`) get an empty map, so they degrade to the flat
+  // list unchanged — see optionDeps.ts.
+  const { paramOwner, gatedCount } = computeOptionDeps(spec);
+  const coreParams: SpecParameter[] = [];
+  const ownedParams = new Map<string, SpecParameter[]>();
+  for (const p of spec.parameters) {
+    const ownerId = paramOwner[p.id];
+    if (ownerId) {
+      const list = ownedParams.get(ownerId);
+      if (list) list.push(p);
+      else ownedParams.set(ownerId, [p]);
+    } else {
+      coreParams.push(p);
+    }
+  }
   return (
     <div className="panel">
       <div className="panel__header">
@@ -332,7 +424,7 @@ export default function ControlsPanel({
         </p>
       )}
 
-      {spec.parameters.map((p) => (
+      {coreParams.map((p) => (
         <ParamControl
           key={p.id}
           param={p}
@@ -343,17 +435,22 @@ export default function ControlsPanel({
         />
       ))}
 
-      <h3>Options</h3>
+      {visibleToggles.length > 0 && <h3>Options</h3>}
       {visibleToggles.map((t) => (
-        <label key={t.id} className="toggle">
-          <input
-            type="checkbox"
-            checked={t.value}
-            onChange={(e) => onToggle(t.id, e.target.checked)}
-          />
-          {t.label}
-        </label>
+        <OptionToggle
+          key={t.id}
+          toggle={t}
+          ownedParams={ownedParams.get(t.id) ?? []}
+          gatedCount={gatedCount[t.id]}
+          violations={violations}
+          displayUnits={displayUnits}
+          locked={locked}
+          onToggle={onToggle}
+          onParam={onParam}
+        />
       ))}
+
+      <h3>Tools</h3>
       <button
         className={`hardware-btn${hardwareOn ? " hardware-btn--on" : ""}`}
         onClick={onHardware}
