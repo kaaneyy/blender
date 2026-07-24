@@ -10,7 +10,9 @@ Failure recovery (T2.6, hardened): every failure is CLASSIFIED — truncated
 output, invalid JSON, schema violation (with the offending path/field),
 broken expression (with the ids that ARE available), unbuildable geometry,
 floating parts, dead controls (a slider/toggle the spec exposes that
-provably drives no geometry), transient provider errors — and the pipeline
+provably drives no geometry), toggle orphans (a toggle that, switched off,
+leaves a still-visible part floating because it wasn't co-gated with the
+member it rests on), transient provider errors — and the pipeline
 re-prompts with a targeted correction plus the full error history, up to
 ``MAX_ATTEMPTS`` (3) model calls total. The final attempt is lenient about
 buildability so a stubborn-but-parseable spec ships with warnings instead
@@ -41,6 +43,7 @@ from blender.builders.connectivity import (  # noqa: E402
     buildability_errors,
     check_buildability,
     check_dead_controls,
+    check_toggle_dependencies,
 )
 import blender.builders  # noqa: E402,F401  (registers curated builders)
 
@@ -93,10 +96,10 @@ class SpecGenerationError(RuntimeError):
     """LLM produced output that could not be turned into a valid spec.
 
     ``kind`` labels the failure family (truncated / not_json / schema /
-    build / buildability / dead_controls / scale / provider / unknown) and
-    ``hint`` carries the targeted correction instruction the retry prompt
-    hands back to the model — the difference between "error, try again"
-    and telling it exactly what to change."""
+    build / buildability / dead_controls / toggle_orphan / scale / provider
+    / unknown) and ``hint`` carries the targeted correction instruction the
+    retry prompt hands back to the model — the difference between "error,
+    try again" and telling it exactly what to change."""
 
     def __init__(self, message: str, kind: str = "unknown", hint: str = ""):
         super().__init__(message)
@@ -125,6 +128,7 @@ GEOMETRY RULES
 - Primitive dimensions are METERS. +Z is up. The asset stands on the ground plane z=0 (nothing below z=0). A cylinder/cone's axis is Z; "location" is its center, so a post of depth H sits at z=H/2. rotation is Euler XYZ radians.
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
 - EVERY major dimension a designer would tweak must be a parameter (slider) referenced from expressions — never hard-code it. Optional features (backrest, second arm, finial, ...) must be toggles gating primitives via "visible_if".
+- TOGGLE COMPLETENESS: a toggle that adds an optional FEATURE must gate EVERY primitive of that feature with the SAME visible_if — including any part carried on top of or supported by a toggled member (the luminaire on a second arm, a finial on an added post, a shade on an added bracket). If an option adds or "doubles" a structural member, it must also add and gate that member's dependent functional parts, so switching the option off never leaves a part floating or a member bare with nothing gated to go with it.
 - Give every primitive a component (nested grouping in exports) and a material_slot. Scale the primitive count to the request's complexity — a simple ask stays lean (roughly 10-25 primitives), while a genuinely multi-feature or intricate assembly may reasonably run well past 40; either way, favor simple, readable massing over micro-detail.
 - COMPLETENESS: if the request names several parts or features ("a car roof with slanted solar panels"), EVERY named part MUST exist as its own component with its own primitives, parameters, and material slot. Re-read the request before answering and check nothing was dropped.
 
@@ -943,14 +947,19 @@ def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -
     buildability-check (contact graph: floating parts, below-grade geometry,
     dead declarations), a dead-CONTROL check (a parameter/toggle the spec
     exposes but that provably drives no geometry — an invented slider or
-    toggle the UI would show as live but that is actually inert), and a
-    relative-scale sanity check (mis-sized features like a seated solar
-    panel on a pergola). Every failure raises a CLASSIFIED
-    :class:`SpecGenerationError` whose hint tells the model exactly what to
-    fix. Floating parts, dead controls, and scale outliers raise — the
-    deterministic findings feed the retry — unless ``lenient_buildability``
-    (the final attempt), in which case they're accepted and surfaced as
-    violations instead, so a stubborn generation never bricks."""
+    toggle the UI would show as live but that is actually inert), a
+    toggle-completeness check (``check_toggle_dependencies`` — a toggle
+    that, switched off from its own default, orphans a still-visible part
+    because it wasn't co-gated with the member it rests on: "double the
+    arm" adds the arm but leaves the light on it floating when the option
+    is switched off), and a relative-scale sanity check (mis-sized features
+    like a seated solar panel on a pergola). Every failure raises a
+    CLASSIFIED :class:`SpecGenerationError` whose hint tells the model
+    exactly what to fix. Floating parts, dead controls, toggle orphans, and
+    scale outliers raise — the deterministic findings feed the retry —
+    unless ``lenient_buildability`` (the final attempt), in which case
+    they're accepted and surfaced as violations instead, so a stubborn
+    generation never bricks."""
     out, _prims = _postprocess_core(raw, code_mode, lenient_buildability)
     return out
 
@@ -1050,6 +1059,21 @@ def _postprocess_core(raw: str, code_mode: str,
             ),
         )
 
+    orphan_findings = check_toggle_dependencies(result.spec)
+    if orphan_findings and not lenient_buildability:
+        orphan_messages = [f["message"] for f in orphan_findings[:4]]
+        raise SpecGenerationError(
+            "Toggle completeness check failed: " + " ".join(orphan_messages),
+            kind="toggle_orphan",
+            hint=(
+                " ".join(orphan_messages)
+                + " Co-gate each named part with the SAME visible_if as the "
+                "member it rests on (or give it its own support to the "
+                "ground) so switching the option adds/removes the whole "
+                "feature together."
+            ),
+        )
+
     scale_findings = _scale_findings(prims, result.spec)
     if scale_findings and not lenient_buildability:
         messages = [f.get("message", "") for f in scale_findings]
@@ -1069,6 +1093,9 @@ def _postprocess_core(raw: str, code_mode: str,
             out["ok"] = False
     if dead_findings:
         out["violations"] = out["violations"] + dead_findings
+        out["ok"] = False
+    if orphan_findings:
+        out["violations"] = out["violations"] + orphan_findings
         out["ok"] = False
     if scale_findings:
         out["violations"] = out["violations"] + scale_findings
@@ -1258,7 +1285,8 @@ You receive:
 REJECT ONLY FOR REAL DEFECTS — never for stylistic taste. Valid reasons to reject:
 - a feature or part the request explicitly asked for is missing from the spec/digest,
 - a dimension in the digest is physically absurd for what it claims to be, judged from the digest's actual numbers (a "seat" 3 m off the ground, a "bolt" the size of a manhole cover, a pole a few millimeters tall, ...),
-- the spec or a listed violation genuinely conflicts with the standards entry or a real code limit (not a cosmetic warning).
+- the spec or a listed violation genuinely conflicts with the standards entry or a real code limit (not a cosmetic warning),
+- an optional feature is incomplete: a toggled/added structural member (a second arm, an extra post, a bracket) whose dependent functional parts (the light on that arm, a finial on that post, a shade on that bracket) are missing from the spec, or present but not gated together with it by the same visible_if — the spec's primitives already show each part's visible_if, so check that a feature's parts share one.
 A plain, simple, or lightly-detailed design that satisfies the request and has none of the above is SOUND — approve it.
 
 OUTPUT — return ONLY this JSON object, no prose, no markdown fences:
@@ -2601,6 +2629,7 @@ _KIND_LABEL = {
     "build": "fixing geometry that doesn't build",
     "buildability": "fixing floating/unsupported parts",
     "dead_controls": "removing a control that drives nothing",
+    "toggle_orphan": "co-gating an option's dependent parts",
     "scale": "fixing component scale",
     "scope": "undoing a change outside this step's scope",
     "integration": "fixing parts embedded in existing geometry",

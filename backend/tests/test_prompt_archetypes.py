@@ -141,3 +141,17 @@ def test_primitive_budget_is_complexity_adaptive_not_capped():
     assert "10-40 primitives is the sweet spot" not in prompt
     assert "readable massing" in prompt
     assert "micro-detail" in prompt
+
+
+def test_toggle_completeness_rule_present():
+    # Round 6 brief 10 (the "double the arm" bug report: adding a second
+    # arm didn't add the light on top of it) — the GEOMETRY RULES must
+    # forcefully require a toggle to co-gate EVERY primitive of the feature
+    # it adds, including dependent parts riding on a toggled member. Pin
+    # the distinctive phrase introduced for this rule plus a couple of the
+    # named examples so the rule can't quietly regress to only mentioning
+    # the member itself.
+    prompt = _system_prompt("strict")
+    assert "TOGGLE COMPLETENESS" in prompt
+    assert "gate EVERY primitive of that feature with the SAME visible_if" in prompt
+    assert "luminaire on a second arm" in prompt
