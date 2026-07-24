@@ -12,7 +12,7 @@ const API_BASE: string =
 export type DeepseekModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 
 export const MODEL_OPTIONS: Array<{ id: DeepseekModel; label: string; hint: string }> = [
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "balanced · fastest" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "balanced" },
   { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "most capable · thinks" },
 ];
 

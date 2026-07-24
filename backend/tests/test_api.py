@@ -198,13 +198,18 @@ class TestReasoningModel:
             REASONING_MIN_TOKENS, TIMEOUT,
         )
 
+        # both current V4 models emit a reasoning trace, so both get the
+        # reasoning timeout + token floor (flash was truncating its spec JSON
+        # because it was on the plain 6k budget while thinking)
         assert is_reasoning_model("deepseek-v4-pro")
-        assert not is_reasoning_model("deepseek-v4-flash")
+        assert is_reasoning_model("deepseek-v4-flash")
+        assert not is_reasoning_model("gpt-4o-mini")  # a genuinely plain model
         # reasoning model: longer timeout and a floor on the token budget
         assert _budget("deepseek-v4-pro", 6000) == (REASONING_TIMEOUT, REASONING_MIN_TOKENS)
         assert _budget("deepseek-v4-pro", 20000) == (REASONING_TIMEOUT, 20000)
+        assert _budget("deepseek-v4-flash", 6000) == (REASONING_TIMEOUT, REASONING_MIN_TOKENS)
         # plain model: defaults, budget untouched
-        assert _budget("deepseek-v4-flash", 6000) == (TIMEOUT, 6000)
+        assert _budget("gpt-4o-mini", 6000) == (TIMEOUT, 6000)
 
 
 def test_install_guide_mock():
