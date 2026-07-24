@@ -41,8 +41,10 @@ TRUNCATION_MAX_TOKENS_CEILING = 16000
 #: DeepSeek models the UI dropdown may request. Anything outside this set is
 #: ignored (falls back to the env default) so a client can never inject an
 #: arbitrary model string.
-DEEPSEEK_MODELS = ("deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro")
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+#: deepseek-chat was retired (out of support), so the balanced/default slot
+#: is now the flash variant; the pro variant is the reasoning model.
+DEEPSEEK_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 #: "Reasoning"/"thinking" models spend a chain of thought *before* the answer.
 #: They stream that thought in a separate ``reasoning_content`` field (or, some
@@ -58,7 +60,18 @@ REASONING_TIMEOUT = 300.0
 #: JSON answer that follows it is never truncated.
 REASONING_MIN_TOKENS = 8000
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+#: reasoning/thinking wrappers different providers emit around (before, or
+#: interleaved with) the real answer — DeepSeek's <think>, and the <thinking>/
+#: <reasoning>/<thought>/<scratchpad> variants other models use. Matched
+#: case-insensitively and tolerant of attributes (e.g. <think signature="…">).
+_REASONING_TAGS = ("think", "thinking", "reasoning", "thought", "scratchpad")
+_REASONING_BLOCK_RE = re.compile(
+    r"<(" + "|".join(_REASONING_TAGS) + r")\b[^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_REASONING_OPEN_RE = re.compile(
+    r"<(?:" + "|".join(_REASONING_TAGS) + r")\b[^>]*>", re.IGNORECASE
+)
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -74,16 +87,20 @@ def _budget(model: str, max_tokens: int) -> tuple[float, int]:
 
 
 def strip_reasoning(text: str) -> str:
-    """Drop ``<think>…</think>`` reasoning blocks a thinking model emits before
-    its answer, so downstream JSON parsing sees only the answer. A block left
-    unclosed (the model was cut off mid-thought) is dropped from its opening tag
-    on — there is no answer after it, so parsing then fails loudly, which is the
-    behavior we want for a truncated response."""
-    text = _THINK_RE.sub("", text)
-    lower = text.lower()
-    open_idx = lower.rfind("<think>")
-    if open_idx != -1 and "</think>" not in lower[open_idx:]:
-        text = text[:open_idx]
+    """Drop any reasoning/thinking block a model emits around its answer —
+    whether it thinks first, or interleaves thought between answer chunks —
+    so downstream JSON parsing sees only the answer. Handles every tag in
+    ``_REASONING_TAGS`` (case-insensitive, attributes allowed). Closed blocks
+    are removed wherever they appear; once those are gone, any *surviving*
+    opener is unclosed (the model was cut off mid-thought), so everything
+    from the first such opener on is dropped — there is no answer after it, so
+    parsing then fails loudly, which is the behavior we want for a truncated
+    response. Untagged reasoning that simply precedes the JSON is handled
+    downstream by the JSON extractor (``spec_ai._strip_fences``), not here."""
+    text = _REASONING_BLOCK_RE.sub("", text)
+    opens = list(_REASONING_OPEN_RE.finditer(text))
+    if opens:
+        text = text[: opens[0].start()]
     return text
 
 
@@ -159,7 +176,15 @@ def _anthropic(api_key: str, model: str, system: str, user: str,
         raise LLMError(f"LLM request failed: {type(exc).__name__}: {exc}") from None
     if resp.status_code != 200:
         raise LLMError(f"LLM provider returned {resp.status_code}: {resp.text[:300]}")
-    return resp.json()["content"][0]["text"]
+    # Extended-thinking models return the chain of thought as its own leading
+    # content block(s) (type "thinking"/"redacted_thinking") before the answer
+    # block (type "text"), so pick the first text block rather than content[0].
+    blocks = resp.json().get("content") or []
+    answer = next(
+        (b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"),
+        "",
+    )
+    return strip_reasoning(answer)
 
 
 def _mock(user: str) -> str:

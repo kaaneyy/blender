@@ -175,6 +175,23 @@ class TestReasoningModel:
         assert strip_reasoning("done<think>still going") == "done"
         assert strip_reasoning("no tags here") == "no tags here"
 
+    def test_strip_reasoning_handles_any_thinking_tag_and_position(self):
+        """Robust to models that think first, interleave thought, use a tag
+        other than <think>, or add attributes to the opener."""
+        from backend.app.llm import strip_reasoning
+
+        # tag variants other providers use
+        assert strip_reasoning("<thinking>plan</thinking>ANSWER") == "ANSWER"
+        assert strip_reasoning("<reasoning>why</reasoning>ANSWER") == "ANSWER"
+        # thought interleaved BETWEEN answer chunks, not just at the front
+        assert strip_reasoning("PART1<thought>hmm</thought>PART2") == "PART1PART2"
+        # opener carrying attributes (e.g. Anthropic-style signatures)
+        assert strip_reasoning('<think signature="x">r</think>ANSWER') == "ANSWER"
+        # unterminated non-<think> tag (truncated) still drops from the opener
+        assert strip_reasoning("done<reasoning>cut off") == "done"
+        # case-insensitive
+        assert strip_reasoning("<THINK>r</THINK>ANSWER") == "ANSWER"
+
     def test_reasoning_model_gets_longer_timeout_and_more_tokens(self):
         from backend.app.llm import (
             _budget, is_reasoning_model, REASONING_TIMEOUT,
@@ -182,12 +199,12 @@ class TestReasoningModel:
         )
 
         assert is_reasoning_model("deepseek-v4-pro")
-        assert not is_reasoning_model("deepseek-chat")
+        assert not is_reasoning_model("deepseek-v4-flash")
         # reasoning model: longer timeout and a floor on the token budget
         assert _budget("deepseek-v4-pro", 6000) == (REASONING_TIMEOUT, REASONING_MIN_TOKENS)
         assert _budget("deepseek-v4-pro", 20000) == (REASONING_TIMEOUT, 20000)
         # plain model: defaults, budget untouched
-        assert _budget("deepseek-chat", 6000) == (TIMEOUT, 6000)
+        assert _budget("deepseek-v4-flash", 6000) == (TIMEOUT, 6000)
 
 
 def test_install_guide_mock():
@@ -311,12 +328,14 @@ def test_generate_stream_has_brief_stages():
 
 
 def test_model_dropdown_allowlist():
-    """resolve_model: only the three DeepSeek ids pass through; junk is
-    ignored (falls back to the env/default), so a client can't inject one."""
+    """resolve_model: only the supported DeepSeek ids pass through; junk —
+    including the retired deepseek-chat — is ignored (falls back to the env/
+    default), so a client can't inject an out-of-support or arbitrary one."""
     from backend.app.llm import resolve_model, DEFAULT_DEEPSEEK_MODEL
 
     assert resolve_model("deepseek", "deepseek-v4-pro") == "deepseek-v4-pro"
     assert resolve_model("deepseek", "deepseek-v4-flash") == "deepseek-v4-flash"
+    assert resolve_model("deepseek", "deepseek-chat") == DEFAULT_DEEPSEEK_MODEL  # retired
     assert resolve_model("deepseek", "evil-model") == DEFAULT_DEEPSEEK_MODEL
     assert resolve_model("deepseek", "") == DEFAULT_DEEPSEEK_MODEL
     assert resolve_model("deepseek", None) == DEFAULT_DEEPSEEK_MODEL

@@ -7,14 +7,18 @@ import type { AuditReport } from "./builders/audit";
 const API_BASE: string =
   (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "/api";
 
-/** DeepSeek models the model dropdown offers. Empty string = server default. */
-export type DeepseekModel = "deepseek-chat" | "deepseek-v4-flash" | "deepseek-v4-pro";
+/** DeepSeek models the model dropdown offers. Empty string = server default.
+ * (deepseek-chat was retired/out of support and removed.) */
+export type DeepseekModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 
 export const MODEL_OPTIONS: Array<{ id: DeepseekModel; label: string; hint: string }> = [
-  { id: "deepseek-chat", label: "DeepSeek Chat", hint: "balanced · cheapest" },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "faster, lighter" },
-  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "most capable" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "balanced · fastest" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "most capable · thinks" },
 ];
+
+/** The default model id (also what a stale/unknown saved preference falls
+ * back to, so a retired id like deepseek-chat never sticks in the dropdown). */
+export const DEFAULT_MODEL: DeepseekModel = "deepseek-v4-flash";
 
 async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
   let resp: Response;
