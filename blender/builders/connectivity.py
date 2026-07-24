@@ -18,11 +18,12 @@ so existing violation plumbing can carry them.
 """
 from __future__ import annotations
 
+import copy
 import math
 import re
 from typing import Dict, List, Optional, Tuple
 
-from .base import Primitive
+from .base import Primitive, compute_primitives
 from .hardware import _aabb
 from . import accessible_table, street_light
 
@@ -463,6 +464,129 @@ def check_dead_controls(spec) -> List[dict]:
             f"array instead of relying on this curated builder.",
             component=tid,
         ))
+    return findings
+
+
+# --------------------------------------------------------------------------
+# Toggle feature-completeness (check_toggle_dependencies)
+# --------------------------------------------------------------------------
+#: matches check_buildability's own floating-finding message format
+#: ("Component 'X' floats — ...") — the ONLY place the component name for a
+#: floating finding is carried (check_buildability's Violation.to_dict()-
+#: shaped findings, built via _finding, have no separate "component" key;
+#: see _finding above — "component" only ever lands inside "source"/
+#: "message" text). Parsing this fixed, test-pinned message prefix mirrors
+#: what the existing buildability tests already do (matching on "'{c}'" in
+#: the message) instead of inventing a second, divergent way to carry the
+#: same name — and it means this check never has to (and per scope, must
+#: not) change check_buildability's own output shape.
+_FLOATING_COMPONENT_RE = re.compile(r"^Component '([^']+)' floats")
+
+
+def _floating_components(spec: dict) -> Optional[set]:
+    """The set of component names check_buildability reports as "floating"
+    for `spec`, built fresh via compute_primitives. Returns None (not a
+    set) on ANY failure — a spec/variant that doesn't even build, or whose
+    checks raise — so callers can tell "computed, zero floaters" (empty
+    set) apart from "could not compute" (None) and skip rather than
+    misreport in the latter case."""
+    try:
+        prims = compute_primitives(spec)
+        findings = check_buildability(prims, spec)
+    except Exception:
+        return None
+    out: set = set()
+    for f in findings:
+        if not isinstance(f, dict) or f.get("limit_type") != "floating":
+            continue
+        m = _FLOATING_COMPONENT_RE.match(f.get("message") or "")
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def check_toggle_dependencies(spec) -> List[dict]:
+    """Findings for a toggle that, when switched off from its own default,
+    orphans a part left visible: a component that floats in the OFF-variant
+    but did NOT already float at the spec's own default state
+    (``baseline_floaters``). This is the "double the arm" bug (round 6
+    brief 10): the AI gates a structural member (an arm) behind toggle T
+    but forgets to also gate the dependent part riding on it (a light on
+    top) — the spec passes every check at T's DEFAULT value, but flipping T
+    off in the UI leaves the light floating with nothing under it, and
+    generation never builds that flipped state so the defect ships
+    invisibly.
+
+    Diffs against the DEFAULT-state baseline BY DESIGN — this is what keeps
+    the check honest:
+    * a component already floating before any toggle is touched is a
+      pre-existing buildability problem (check_buildability's own job, not
+      this one's) and is excluded from consideration entirely;
+    * a component that is itself gated by the SAME toggle correctly
+      disappears from the OFF-variant (absent, not floating) so it is never
+      flagged;
+    only a component that is newly, genuinely floating — present and
+    supported at default, present and unsupported with T off — is reported.
+
+    The universal "connection_hardware" toggle is exempt, exactly like
+    check_dead_controls exempts it: it is consumed directly by
+    base.compute_primitives, not by either builder path's own geometry, so
+    switching it off changes joint hardware, never structural support.
+
+    ONE toggle at a time, from the spec's own default: every OTHER toggle
+    stays at whatever value the spec already gives it while the toggle
+    under test is forced off. Multi-toggle interactions are out of scope.
+
+    Pure and total: never raises for any spec. A non-dict spec, a spec with
+    no (or an empty) "toggles" list, or a spec whose own default state
+    can't even be built yields []. Each per-toggle variant build is
+    independently guarded (via _floating_components) so one bad toggle
+    variant can't take down the rest of the check — it just skips that
+    toggle."""
+    if not isinstance(spec, dict):
+        return []
+    toggles = spec.get("toggles")
+    if not isinstance(toggles, list) or not toggles:
+        return []
+
+    baseline_floaters = _floating_components(spec)
+    if baseline_floaters is None:
+        return []
+
+    findings: List[dict] = []
+    for t in toggles:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if not tid or tid in _UNIVERSAL_TOGGLES:
+            continue
+
+        try:
+            variant = copy.deepcopy(spec)
+        except Exception:
+            continue
+        variant_toggles = variant.get("toggles")
+        if not isinstance(variant_toggles, list):
+            continue
+        for vt in variant_toggles:
+            if isinstance(vt, dict) and vt.get("id") == tid:
+                vt["value"] = False
+
+        variant_floaters = _floating_components(variant)
+        if variant_floaters is None:
+            continue
+
+        for comp in sorted(variant_floaters - baseline_floaters):
+            findings.append(_finding(
+                "toggle_orphan",
+                f"Component '{comp}' floats when toggle '{tid}' is turned "
+                f"off — it rests on geometry that '{tid}' gates but is not "
+                f"itself gated by it. Gate '{comp}' with the same "
+                f"visible_if as the parts it rests on, or give it its own "
+                f"support to the ground, so the option adds/removes the "
+                f"whole feature together.",
+                component=comp,
+            ))
     return findings
 
 

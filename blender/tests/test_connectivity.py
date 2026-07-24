@@ -2,9 +2,11 @@
 contact graph, floating-part detection with nearest support + gap, below-
 grade geometry, and dead declared connections; the deterministic
 scale-sanity checker (check_scale_sanity); the deterministic embedded-
-part detector (check_embedded_parts); and the dead-CONTROL detector
+part detector (check_embedded_parts); the dead-CONTROL detector
 (check_dead_controls) — a parameter/toggle a spec exposes but that provably
-drives no geometry."""
+drives no geometry; and the toggle feature-completeness detector
+(check_toggle_dependencies) — a toggle that, switched off, orphans a
+still-visible part it wasn't co-gated with."""
 import json
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from blender.builders.connectivity import (
     check_dead_controls,
     check_embedded_parts,
     check_scale_sanity,
+    check_toggle_dependencies,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -782,3 +785,121 @@ class TestDeadControls:
     def test_never_raises_on_malformed_input(self):
         assert check_dead_controls(None) == []
         assert check_dead_controls({}) == []
+
+
+# ---------------------------------------------------------------------------
+# Toggle feature-completeness (check_toggle_dependencies)
+# ---------------------------------------------------------------------------
+
+def _toggle_orphan_repro(bulb_gated: bool = False):
+    """The WHY repro (round 6 brief 10): "sometimes when an option is added
+    like 'double the arm' it doesn't double the light element on top of
+    it." A post + an arm gated by toggle 'second_arm' + a light resting on
+    the arm's tip. With `bulb_gated` False (the defect), the light shares
+    NO visible_if with the arm it rests on: the spec passes every check at
+    the toggle's own default (True, arm present, light supported), but
+    switching the toggle off removes the arm and leaves the light floating
+    with nothing under it — exactly the bug report. With `bulb_gated` True
+    (the fix), the light shares the arm's visible_if, so the whole feature
+    adds/removes together and nothing is ever orphaned."""
+    bulb = {
+        "kind": "sphere", "name": "bulb", "component": "light",
+        "material_slot": "m", "location": [0.6, 0, 3.0],
+        "params": {"radius": 0.08},
+    }
+    if bulb_gated:
+        bulb["visible_if"] = "second_arm"
+    return {
+        "asset_type": "custom", "name": "ToggleOrphanRepro", "units": "metric",
+        "code_mode": "advisory",
+        "parameters": [],
+        "toggles": [{"id": "second_arm", "label": "Second Arm", "value": True}],
+        "materials": [{"slot": "m", "preset": "galvanized_steel"}],
+        "components": ["post", "arm", "light"], "connections": [],
+        "primitives": [
+            {"kind": "cylinder", "name": "post", "component": "post",
+             "material_slot": "m", "location": [0, 0, 1.5],
+             "params": {"radius": 0.05, "depth": 3.0}},
+            {"kind": "box", "name": "arm", "component": "arm",
+             "material_slot": "m", "location": [0.3, 0, 3.0],
+             "params": {"size": [0.6, 0.05, 0.05]},
+             "visible_if": "second_arm"},
+            bulb,
+        ],
+    }
+
+
+class TestToggleDependencies:
+    def test_ungated_dependent_part_is_flagged(self):
+        # the broken repro: exactly one finding, naming both the orphaned
+        # component ('light') and the toggle that orphans it ('second_arm').
+        findings = check_toggle_dependencies(_toggle_orphan_repro(bulb_gated=False))
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding["limit_type"] == "toggle_orphan"
+        assert finding["severity"] == "error"
+        assert "light" in finding["message"]
+        assert "second_arm" in finding["message"]
+
+    def test_co_gated_dependent_part_is_clean(self):
+        # the corrected spec: the light shares the arm's visible_if, so
+        # switching second_arm off removes both together — no orphan.
+        findings = check_toggle_dependencies(_toggle_orphan_repro(bulb_gated=True))
+        assert findings == []
+
+    def test_baseline_floater_is_not_reattributed_to_a_toggle(self):
+        # a part that is ALREADY floating at the spec's own default state
+        # (a pre-existing buildability defect, unrelated to any toggle)
+        # must never be reported here — that diagnosis belongs to
+        # check_buildability, not this check. Moving the light far enough
+        # away that it never touches the arm even at default proves the
+        # diff-against-baseline design: the light is a floater in BOTH the
+        # baseline and the second_arm-off variant, so it is not a NEW
+        # floater and must not be flagged.
+        spec = _toggle_orphan_repro(bulb_gated=False)
+        for p in spec["primitives"]:
+            if p["name"] == "bulb":
+                p["location"] = [5.0, 0, 3.0]
+        assert check_toggle_dependencies(spec) == []
+
+    def test_connection_hardware_toggle_is_exempt(self):
+        # connection_hardware is skipped entirely (never flipped off by
+        # this check, exactly like check_dead_controls exempts it) — the
+        # real second_arm orphan is still reported, but nothing ever names
+        # connection_hardware as the culprit toggle.
+        spec = _toggle_orphan_repro(bulb_gated=False)
+        spec["toggles"].append(
+            {"id": "connection_hardware", "label": "Connection Hardware", "value": True}
+        )
+        findings = check_toggle_dependencies(spec)
+        assert len(findings) == 1
+        assert "second_arm" in findings[0]["message"]
+        assert "connection_hardware" not in findings[0]["message"]
+
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_bundled_examples_have_no_toggle_orphans(self, name):
+        # false-positive gate: every shipped example's toggle groups are
+        # already fully co-gated (park_bench's backrest/armrests gate every
+        # post/slat of that feature together; street_light's double_arm
+        # mirrors the arm AND its luminaire as one unit; bike_rack's
+        # base_plates and planter's planting are self-contained) — a
+        # neutered check that always returns [] would also pass this alone,
+        # which is why the repro tests above assert a real finding on a
+        # purpose-built reproduction.
+        assert check_toggle_dependencies(load(name)) == [], name
+
+    def test_no_toggles_returns_empty(self):
+        assert check_toggle_dependencies(
+            {"asset_type": "custom", "parameters": [], "toggles": []}
+        ) == []
+
+    def test_never_raises_on_malformed_input(self):
+        assert check_toggle_dependencies(None) == []
+        assert check_toggle_dependencies({}) == []
+        assert check_toggle_dependencies({"toggles": "not-a-list"}) == []
+        assert check_toggle_dependencies({"toggles": [1, 2, "bad"]}) == []
+
+    def test_neutered_check_would_fail_this_suite(self):
+        # guard against a no-op regression: the repro above must yield a
+        # non-empty result.
+        assert check_toggle_dependencies(_toggle_orphan_repro(bulb_gated=False)) != []
