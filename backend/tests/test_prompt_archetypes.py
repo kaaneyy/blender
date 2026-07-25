@@ -100,6 +100,19 @@ def test_structural_post_anchor_present():
     assert "never" in region and "hairline" in region
 
 
+def test_dimension_slider_must_drive_geometry_rule_present():
+    # The "6 mm pole while the diameter slider says 7 in" bug: a diameter/
+    # width slider must actually DRIVE the member's built cross-section, not
+    # sit next to a hardcoded sliver. Pin the rule + its concrete expression
+    # so the guidance can't quietly regress.
+    region = _prose_region()
+    assert "WIRE EACH DIMENSION SLIDER" in region
+    assert "pole_base_diameter/2" in region
+    low = region.lower()
+    assert "hardcode a thin cross-section" in low
+    assert "hairline" in low
+
+
 def test_no_dead_anchor_bolts_toggle():
     # anchor_bolts was advertised as a street_light toggle but no builder
     # ever consumed it (Brief 4) — it must be gone from both the prompt

@@ -146,6 +146,7 @@ TILT, SLOPE, CURVE (the model is not limited to upright boxes)
 FORM, PROPORTION & ARCHETYPES (make it read as the real fixture, not a box)
 - Map the request to a known archetype and use its characteristic forms: cobra-head street light (tapered swept mast arm + lofted teardrop head); acorn/teardrop post-top lamp (lathe globe on a fluted post with a finial); shoebox area light (thin lofted housing); bishop's-crook lamp (curved swept arm); bollard (tube with a lathe dome cap); planter/urn (lathe vase profile); bench (slats on rails on legs). Prefer lathe/sweep/loft for anything round, curved, or decorative. Accessible fixtures: drinking fountain — pedestal or wall-hung bowl/basin with a spout (bi-level hi-lo units pair a tall and a low bowl side by side); ramp — a sloped deck plane (a rotated box) between level top/bottom landings, with side curbs or handrails; accessible table — a flat top on legs with clear open knee space at one end (no cross-brace or apron blocking a wheelchair approach); trash/recycling receptacle — a tube or slatted cylindrical body with a domed or lathe-turned lid cap.
 - Give members REAL structural proportions, not equal sticks: express relationships as ratios in expressions — a pole base diameter ≈ 1.8× its top (taper), a cantilevered arm tapering to ~60% at the tip (sweep radius_end ≈ 0.6× radius), a post-top globe ≈ 1.2–1.6× the post diameter. Slender vertical members read as engineered; chunky uniform ones read as toy.
+- WIRE EACH DIMENSION SLIDER TO THE GEOMETRY IT NAMES — the #1 cause of a wrong-sized member is a slider that doesn't actually drive its part. If you expose a diameter/width/thickness parameter (pole_base_diameter, post_width, ...), the member's radius/size expression MUST reference it — a round pole's radius is "pole_base_diameter/2", a tapered pole is a cone/tube with radii "pole_base_diameter/2" and "pole_top_diameter/2" — so moving the slider visibly changes the part and the BUILT cross-section equals the value the slider shows. Never hardcode a thin cross-section next to a diameter slider that says otherwise: a 3.66 m pole whose shaft builds ~6 mm wide while its diameter slider reads 7 in is exactly this bug — the shaft must build at the 0.08-0.20 m the slider declares, never a hairline. Sanity-check every structural member's built radius against its own diameter parameter before answering.
 - For each component, pick the connection type to its neighbor and RECORD it in the top-level "connections" array (see CONNECTION RULES) — that declaration drives the joint hardware the app generates. Model larger visible details (telescoping sleeves, brackets) as primitives where a real one would be seen.
 
 CONNECTION RULES (think like a fabricator — every joint must be buildable in real life)
@@ -1152,7 +1153,11 @@ def _postprocess_core(raw: str, code_mode: str,
             kind="scale",
             hint=(
                 f"Fix component scale: {' '.join(messages[:4])}. Keep "
-                "real-world dimensions for every feature."
+                "real-world dimensions for every feature. If a member reads "
+                "as a hairline, drive its radius/width from its own diameter "
+                'parameter (a pole\'s radius is "pole_base_diameter/2") so '
+                "the shaft builds at the real 0.08-0.20 m it declares, never "
+                "a sliver."
             ),
         )
 
