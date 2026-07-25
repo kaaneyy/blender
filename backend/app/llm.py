@@ -125,6 +125,13 @@ def resolve_model(provider: str, requested: str | None) -> str:
     return env_model
 
 
+def active_provider() -> str:
+    """The normalized provider id from ``LLM_PROVIDER`` (default ``deepseek``).
+    Exposed so callers can special-case the keyless ``mock`` provider — e.g.
+    skip real retry backoff, since mock never rate-limits."""
+    return os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+
+
 class LLMError(RuntimeError):
     """Configuration or transport failure talking to the LLM provider."""
 
@@ -260,7 +267,7 @@ def _mock(user: str) -> str:
 
 def complete(system: str, user: str, *, temperature: float = 0.4,
              max_tokens: int = DEFAULT_MAX_TOKENS, model: str | None = None) -> str:
-    provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+    provider = active_provider()
     picked = resolve_model(provider, model)
 
     if provider == "mock":
@@ -393,7 +400,7 @@ def _anthropic_stream(api_key: str, model: str, system: str, user: str,
 def complete_stream(system: str, user: str, *, temperature: float = 0.4,
                     max_tokens: int = DEFAULT_MAX_TOKENS, model: str | None = None) -> Iterator[str]:
     """Streaming twin of :func:`complete`."""
-    provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+    provider = active_provider()
     picked = resolve_model(provider, model)
 
     if provider == "mock":
