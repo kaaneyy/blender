@@ -124,7 +124,7 @@ GEOMETRY RULES
 - PRIMITIVES ALWAYS WIN: whenever the spec includes a "primitives" array, the app builds THAT and ignores any curated builder entirely — even if asset_type happens to match one. So use a curated builder ONLY when the request needs NOTHING beyond the EXACT controls it lists below (these parameter/toggle/select ids and material slots, no more, no less) — then use it with those exact ids and DO NOT include "primitives":
 {json.dumps(BUILTIN_BUILDERS, indent=1)}
   Any styled or extended variant of a curated asset — Victorian styling, a lantern, a solar cap, motion sensors, or any other feature/detail the list above does not name — is NOT a match: keep a semantic asset_type (lowercase snake_case; reuse the SAME standards key when one fits, e.g. "street_light", so US-code dimensional limits still apply) and model ALL of its geometry yourself in "primitives", exactly like any other custom asset. Never invent a parameter/toggle/select id a builder doesn't consume just because it sounds plausible — a curated builder's geometry only reacts to the ids listed above; anything else is silently ignored, so unmodeled requests belong in "primitives" instead.
-- For ANY other asset, set a semantic asset_type (lowercase snake_case; reuse a standards key below when one fits) and model the geometry yourself in the "primitives" array. Kinds: box, cylinder, cone, sphere, and the fabrication kinds — lathe (revolve a profile: lantern globes, finials, domes, planters, decorative bases), sweep (a smooth tapered tube along a path: mast arms, handrails, curved members — ONE sweep beats a stack of cylinders), loft (taper between two cross-sections: cobra heads, flared transitions), tube (hollow pipe with wall thickness — poles/bollards/arms are never solid). Use "cut": true to subtract a primitive (bolt holes, slots) and "array" {{count, step}} for even repetition (pickets, slats).
+- For ANY other asset, set a semantic asset_type (lowercase snake_case; reuse a standards key below when one fits) and model the geometry yourself in the "primitives" array. Kinds: box, cylinder, cone, sphere, and the fabrication kinds — lathe (revolve a profile: lantern globes, finials, domes, planters, decorative bases), sweep (a smooth tapered tube along a path: mast arms, handrails, curved members — ONE sweep beats a stack of cylinders), loft (taper between two cross-sections profile_start→profile_end — each section shaped "ellipse" or "rect", so use "ellipse" with equal w/h for a round/circular section; there is NO "circle" shape: cobra heads, flared transitions), tube (hollow pipe with wall thickness — poles/bollards/arms are never solid). Use "cut": true to subtract a primitive (bolt holes, slots) and "array" {{count, step}} for even repetition (pickets, slats).
 - Primitive dimensions are METERS. +Z is up. The asset stands on the ground plane z=0 (nothing below z=0). A cylinder/cone's axis is Z; "location" is its center, so a post of depth H sits at z=H/2. rotation is Euler XYZ radians.
 - Every numeric field in a primitive may instead be a string expression over parameter/toggle ids, e.g. "pole_height/2" or "seat_height + 0.02". Allowed: numbers, ids, + - * / ( ), min(), max(), abs(). Toggle ids evaluate to 1/0. Parameter values are pre-converted to meters regardless of their display unit.
 - EVERY major dimension a designer would tweak must be a parameter (slider) referenced from expressions — never hard-code it. Optional features (backrest, second arm, finial, ...) must be toggles gating primitives via "visible_if".
@@ -961,6 +961,49 @@ def _enforce_integration(findings: list, lenient: bool) -> list:
     )
 
 
+#: Natural loft-profile shape words the model reaches for, mapped to the two
+#: shapes the schema enum AND ``shapes.ring_points`` actually understand
+#: (ellipse ⇒ round section; rect ⇒ softly-rounded rectangle). A circle/round/
+#: oval section is an ellipse with equal w/h; a square/rectangle section is a
+#: rect. The identity entries (ellipse→ellipse, rect→rect) are deliberate: they
+#: also normalize case ("Ellipse", "RECT") to the case-sensitive enum value.
+_PROFILE_SHAPE_SYNONYMS = {
+    "circle": "ellipse", "circular": "ellipse", "round": "ellipse",
+    "oval": "ellipse", "elliptical": "ellipse", "ellipse": "ellipse",
+    "rectangle": "rect", "rectangular": "rect", "square": "rect",
+    "box": "rect", "rect": "rect",
+}
+
+
+def _normalize_profile_shapes(spec: dict) -> None:
+    """In-place: map a loft ``profile_start``/``profile_end`` ``shape`` written
+    as a natural synonym (``circle``, ``round``, ``square``, ``Ellipse`` …) to
+    the canonical ``ellipse``/``rect`` the schema enum and ``ring_points``
+    understand. Runs BEFORE ``jsonschema.validate`` so a reasonable word the
+    model reaches for neither fails an otherwise-valid loft spec (the observed
+    "'circle' is not one of ['rect','ellipse']" failure) NOR — since
+    ``ring_points`` treats any non-``ellipse`` shape as a rounded rect — silently
+    builds a square-ish section where a round one was meant. Case/whitespace-
+    insensitive; an unrecognized shape is left untouched for the schema to
+    reject exactly as before. Total: never raises on malformed input."""
+    prims = spec.get("primitives")
+    if not isinstance(prims, list):
+        return
+    for prim in prims:
+        params = prim.get("params") if isinstance(prim, dict) else None
+        if not isinstance(params, dict):
+            continue
+        for key in ("profile_start", "profile_end"):
+            profile = params.get(key)
+            if not isinstance(profile, dict):
+                continue
+            shape = profile.get("shape")
+            if isinstance(shape, str):
+                canonical = _PROFILE_SHAPE_SYNONYMS.get(shape.strip().lower())
+                if canonical is not None:
+                    profile["shape"] = canonical
+
+
 def _postprocess(raw: str, code_mode: str, lenient_buildability: bool = False) -> dict:
     """Parse, schema-validate (T7.4), geometry-check, code-clamp (T2.3),
     buildability-check (contact graph: floating parts, below-grade geometry,
@@ -1026,6 +1069,11 @@ def _postprocess_core(raw: str, code_mode: str,
     # the caller asked for, or vice versa. Force this BEFORE jsonschema.
     # validate so the schema still sees (and accepts) a legal value.
     spec["code_mode"] = code_mode
+    # Map natural loft-profile shape synonyms ("circle", "square", "Ellipse",
+    # ...) to the canonical rect/ellipse the schema and ring_points understand,
+    # BEFORE validation — a reasonable word the model reaches for shouldn't fail
+    # an otherwise-good spec (nor silently build the wrong cross-section).
+    _normalize_profile_shapes(spec)
 
     try:
         jsonschema.validate(spec, ASSET_SPEC_SCHEMA)
