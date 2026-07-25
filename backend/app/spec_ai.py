@@ -23,8 +23,10 @@ abort immediately.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import jsonschema
@@ -51,6 +53,7 @@ from .llm import (  # noqa: E402
     DEFAULT_MAX_TOKENS,
     TRUNCATION_MAX_TOKENS_CEILING,
     LLMError,
+    active_provider,
     complete,
     complete_stream,
     strip_reasoning,
@@ -1182,6 +1185,34 @@ def _transient_llm_error(exc: LLMError) -> bool:
     return bool(_TRANSIENT_LLM_RE.search(str(exc)))
 
 
+#: Exponential backoff (seconds) between transient provider retries, and its
+#: cap. A "small" provider rate limit needs a real pause to clear — retrying a
+#: 429 the instant it arrives just spends the next attempt on the same limit,
+#: so all attempts burn in milliseconds and the generation dies. Kept modest so
+#: the added latency stays within a serverless request budget (at most two
+#: waits across MAX_ATTEMPTS: ~2s then ~4s).
+_RETRY_BACKOFF_BASE_S = 2.0
+_RETRY_BACKOFF_CAP_S = 8.0
+
+
+def _transient_backoff_seconds(attempt: int) -> float:
+    """Seconds to wait before the retry that follows the ``attempt``-th
+    transient provider failure: exponential (base ``_RETRY_BACKOFF_BASE_S``,
+    doubling each attempt), capped at ``_RETRY_BACKOFF_CAP_S``. attempt 1 → 2s,
+    2 → 4s, 3 → 8s, and flat at the cap thereafter."""
+    return min(_RETRY_BACKOFF_BASE_S * (2 ** max(0, attempt - 1)), _RETRY_BACKOFF_CAP_S)
+
+
+def _backoff_before_retry(attempt: int) -> None:
+    """Pause before retrying a transient provider failure so a small rate limit
+    actually clears. Skipped entirely for the keyless ``mock`` provider — it
+    never rate-limits, and the whole test suite runs on it, so tests pay no
+    real wall-clock sleep."""
+    if active_provider() == "mock":
+        return
+    time.sleep(_transient_backoff_seconds(attempt))
+
+
 def _correction_user(user: str, attempt: int, history: list, raw: str) -> str:
     """The corrective prompt for attempt N: the original request, the full
     error history (so the model never cycles back to a mistake it already
@@ -1248,6 +1279,7 @@ def _complete_with_retries(system: str, user: str, finalize, *,
             if attempt == MAX_ATTEMPTS or not _transient_llm_error(exc):
                 raise
             history.append(SpecGenerationError(str(exc), kind="provider"))
+            _backoff_before_retry(attempt)
             continue
         try:
             return finalize(raw, attempt == MAX_ATTEMPTS)
@@ -2721,44 +2753,61 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
     history: list = []
     raw = ""
     current_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
-    for attempt in range(1, max_attempts + 1):
-        message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
-        current_tokens = _escalate_truncated_budget(current_tokens, history)
-        parts = []
-        try:
-            for chunk in complete_stream(system, message, model=model,
-                                         max_tokens=current_tokens):
-                parts.append(chunk)
-                yield chunk
-        except LLMError as exc:
-            if attempt == max_attempts or not _transient_llm_error(exc):
-                payload = {"ok": False, "error": str(exc), "kind": "provider",
+    try:
+        for attempt in range(1, max_attempts + 1):
+            message = user if attempt == 1 else _correction_user(user, attempt, history, raw)
+            current_tokens = _escalate_truncated_budget(current_tokens, history)
+            parts = []
+            try:
+                for chunk in complete_stream(system, message, model=model,
+                                             max_tokens=current_tokens):
+                    parts.append(chunk)
+                    yield chunk
+            except LLMError as exc:
+                if attempt == max_attempts or not _transient_llm_error(exc):
+                    payload = {"ok": False, "error": str(exc), "kind": "provider",
+                               "attempts": attempt}
+                    break
+                history.append(SpecGenerationError(str(exc), kind="provider"))
+                yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
+                       f"{_KIND_LABEL['provider']}]\n\n")
+                _backoff_before_retry(attempt)
+                continue
+            raw = "".join(parts)
+            try:
+                payload = {"ok": True,
+                           "result": finalize(raw, attempt == max_attempts),
                            "attempts": attempt}
                 break
-            history.append(SpecGenerationError(str(exc), kind="provider"))
-            yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
-                   f"{_KIND_LABEL['provider']}]\n\n")
-            continue
-        raw = "".join(parts)
-        try:
-            payload = {"ok": True,
-                       "result": finalize(raw, attempt == max_attempts),
-                       "attempts": attempt}
-            break
-        except SpecGenerationError as err:
-            history.append(err)
-            if attempt == max_attempts:
-                failure = (
-                    f"Generation failed after {max_attempts} attempts. "
-                    f"Last error: {err}" if retry else str(err)
-                )
-                payload = {"ok": False, "error": failure, "kind": err.kind,
-                           "attempts": attempt}
-                break
-            label = _KIND_LABEL.get(err.kind, "fixing the reported error")
-            yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
-                   f"{label}: {err}]\n\n[attempt {attempt + 1} of "
-                   f"{max_attempts}]\n\n")
+            except SpecGenerationError as err:
+                history.append(err)
+                if attempt == max_attempts:
+                    failure = (
+                        f"Generation failed after {max_attempts} attempts. "
+                        f"Last error: {err}" if retry else str(err)
+                    )
+                    payload = {"ok": False, "error": failure, "kind": err.kind,
+                               "attempts": attempt}
+                    break
+                label = _KIND_LABEL.get(err.kind, "fixing the reported error")
+                yield (f"\n\n[attempt {attempt} of {max_attempts} failed — "
+                       f"{label}: {err}]\n\n[attempt {attempt + 1} of "
+                       f"{max_attempts}]\n\n")
+    except Exception as exc:  # last-resort guard — see below
+        # LLMError and SpecGenerationError are the EXPECTED failures, handled
+        # per-attempt above. Anything else (a finalize bug, a non-LLMError
+        # transport error, ...) would otherwise escape this generator and tear
+        # the SSE stream WITHOUT a terminal sentinel — which is exactly the
+        # cryptic "The stream ended without a result" the frontend shows. Catch
+        # it here so the client always receives a result envelope to act on.
+        # (GeneratorExit is a BaseException, not Exception, so a client
+        # disconnect still closes the generator cleanly and is not swallowed.)
+        payload = {"ok": False,
+                   "error": f"Generation failed unexpectedly: {exc}",
+                   "kind": "unknown"}
+    if payload is None:  # defensive: loop somehow produced no verdict at all
+        payload = {"ok": False, "error": "Generation produced no result",
+                   "kind": "unknown"}
     yield STREAM_SENTINEL + json.dumps(payload)
 
 
@@ -2788,6 +2837,13 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
                 yield STREAM_SENTINEL + json.dumps(
                     {"ok": False, "error": str(exc), "kind": "provider"})
                 return
+            parts = []
+            yield "\n[brief pass unavailable — designing from your request as-is]\n"
+        except Exception:
+            # an UNEXPECTED brief-pass failure must never tear the stream —
+            # fall through to designing from the raw request, exactly like a
+            # transient hiccup. The spec pass below still emits the one
+            # terminal sentinel, so the client always gets a result.
             parts = []
             yield "\n[brief pass unavailable — designing from your request as-is]\n"
         brief, panel = _finalize_panel("".join(parts), request)
