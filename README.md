@@ -328,18 +328,23 @@ lathe/vase, and multi-joint post-and-beam paths.
 The app builds a spec in two AI passes (`backend/app/spec_ai.py`). You can run
 the same passes by hand in any chat model — the prompts are reproduced below.
 
-**Pass 1 — design brief (`ENHANCE_SYSTEM`).** Turns a vague request into a
-precise, buildable brief:
+**Pass 1 — design brief (`ENHANCE_SYSTEM`).** Turns the request into a precise,
+buildable brief that details *exactly what was asked* — no invented extras
+(you refine and extend the asset in later passes):
 
 > You are the design-brief writer for a parametric 3D asset generator for
 > street furniture, lighting, signage, and props. Rewrite the user's request
-> into one precise, buildable brief. Name the asset type; a coherent style;
-> overall dimensions WITH units, choosing sensible values within US code limits
-> where they apply (AASHTO/MUTCD/ADA/IBC); per-part materials and finishes; 2–4
-> optional features worth exposing as toggles; and how the parts connect and
-> mount to the ground (base plate, rails, clamps). Keep EVERY explicit detail
-> the user gave — only add what is missing. … Plain prose, at most 120 words,
-> no JSON, no lists, no preamble.
+> into one precise, buildable brief for EXACTLY what they asked for — nothing
+> more. Name the asset type and a style consistent with the request. Build only
+> what was asked: cover every part and feature the user named, and add NO new
+> part, feature, accessory, or optional add-on they did not ask for. Put the
+> detail into DIMENSIONS, and be thorough there: give the overall size WITH
+> units AND a real, buildable dimension for EACH named part and feature —
+> height, width, depth, diameter, wall thickness, count, spacing, and tilt/
+> slope angle in degrees — within US code limits where they apply (AASHTO/
+> MUTCD/ADA/IBC). Then per-part materials and finishes and how the parts
+> connect and mount to the ground. … Plain prose, at most 200 words, no JSON,
+> no lists, no preamble.
 
 **Pass 2 — spec generation (`_system_prompt`).** Turns that brief into the
 `AssetSpec` JSON. The full runtime prompt is assembled in `_system_prompt()`
