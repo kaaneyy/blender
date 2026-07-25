@@ -201,10 +201,12 @@ def _mock(user: str) -> str:
     if user.startswith("ENHANCE PROMPT"):
         request = user.split("Request:", 1)[-1].strip()
         return (
-            f"Design brief: {request}. Code-compliant, galvanized-steel or "
+            f"Design brief: {request}. Exactly the requested asset and its "
+            "named parts, nothing extra; code-compliant, galvanized-steel or "
             "cast-iron structure with a clear load path to a base plate at "
-            "grade; members joined by through-bolts or band clamps; sliders "
-            "for the principal dimensions and toggles for optional features."
+            "grade; members joined by through-bolts or band clamps; every "
+            "named part given its own real dimensions (height, width, "
+            "diameter, wall thickness) as adjustable sliders."
         )
     if user.startswith("INSTALL GUIDE"):
         return (
