@@ -428,6 +428,47 @@ function HumanSilhouette({ x, color }: { x: number; color: string }) {
   );
 }
 
+/** A fixed real-world streetscape the asset stands on — a concrete sidewalk
+ * (top face at y=0, where the asset and the 6 ft figure stand), a ~6 in curb,
+ * an asphalt road with a dashed centerline, and a grass verge. Purely a scale
+ * reference like the silhouette: authored in Three's Y-up world, rendered
+ * OUTSIDE the asset group, so it never enters the .glb export. Real-world
+ * dimensions are the whole point — a hairline pole reads as obviously wrong
+ * next to an 8 ft walk and a 6 in curb. */
+function SceneContext() {
+  return (
+    <group>
+      {/* sidewalk slab (~8 ft deep) — its top face is the ground plane (y=0) */}
+      <mesh position={[0, -0.06, 0.2]} receiveShadow>
+        <boxGeometry args={[16, 0.12, 2.4]} />
+        <meshStandardMaterial color="#b7b5ab" roughness={0.96} />
+      </mesh>
+      {/* raised curb (~6 in) along the road edge */}
+      <mesh position={[0, 0.01, -1.0]} receiveShadow castShadow>
+        <boxGeometry args={[16, 0.3, 0.16]} />
+        <meshStandardMaterial color="#c9c7be" roughness={0.9} />
+      </mesh>
+      {/* asphalt roadway, set below the sidewalk */}
+      <mesh position={[0, -0.13, -4.5]} receiveShadow>
+        <boxGeometry args={[16, 0.12, 7]} />
+        <meshStandardMaterial color="#37373b" roughness={1} />
+      </mesh>
+      {/* dashed yellow centerline */}
+      {[-6, -4, -2, 0, 2, 4, 6].map((x) => (
+        <mesh key={x} position={[x, -0.063, -4.5]}>
+          <boxGeometry args={[1.1, 0.012, 0.16]} />
+          <meshStandardMaterial color="#e6bd35" roughness={0.7} />
+        </mesh>
+      ))}
+      {/* grass verge on the building side */}
+      <mesh position={[0, -0.06, 2.2]} receiveShadow>
+        <boxGeometry args={[16, 0.1, 1.6]} />
+        <meshStandardMaterial color="#6d9350" roughness={1} />
+      </mesh>
+    </group>
+  );
+}
+
 function VerticalDim({ x, height, label }: { x: number; height: number; label: string }) {
   return (
     <group position={[x, 0, 0]}>
@@ -543,6 +584,7 @@ export default function Viewport({
   const [lightsOn, setLightsOn] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [exploded, setExploded] = useState(false);
+  const [scene, setScene] = useState(false);
   const [tool, setTool] = useState<EditMode | null>(null);
   // the proxy group the transform gizmo drives (lives in the Z-up group, so
   // its local transform is authored coords); the gizmo widget itself renders
@@ -684,20 +726,29 @@ export default function Viewport({
           );
         })}
 
-        {/* ground grid: 1 ft / 5 ft cells in imperial, 0.5 m / 5 m in metric */}
-        <Grid
-          infiniteGrid
-          cellSize={imperial ? 0.3048 : 0.5}
-          sectionSize={imperial ? 1.524 : 5}
-          cellColor={colors.cell}
-          sectionColor={colors.section}
-          fadeDistance={60}
-          fadeStrength={1.5}
-        />
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
-          <planeGeometry args={[200, 200]} />
-          <shadowMaterial opacity={theme === "dark" ? 0.45 : 0.25} />
-        </mesh>
+        {/* ground: the streetscape scale-context when toggled on, else the
+            reference grid + shadow catcher. The scene meshes receive shadow
+            themselves, so the asset still casts onto the sidewalk. */}
+        {scene ? (
+          <SceneContext />
+        ) : (
+          <>
+            {/* grid: 1 ft / 5 ft cells in imperial, 0.5 m / 5 m in metric */}
+            <Grid
+              infiniteGrid
+              cellSize={imperial ? 0.3048 : 0.5}
+              sectionSize={imperial ? 1.524 : 5}
+              cellColor={colors.cell}
+              sectionColor={colors.section}
+              fadeDistance={60}
+              fadeStrength={1.5}
+            />
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
+              <planeGeometry args={[200, 200]} />
+              <shadowMaterial opacity={theme === "dark" ? 0.45 : 0.25} />
+            </mesh>
+          </>
+        )}
 
         {/* asset is authored Z-up; rotate into Three's Y-up world */}
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -845,6 +896,13 @@ export default function Viewport({
           ✱
         </button>
         <button
+          className={`nav-btn${scene ? " nav-btn--active" : ""}`}
+          onClick={() => setScene((v) => !v)}
+          title="Streetscape — set the asset on a sidewalk & curb to judge real-world scale"
+        >
+          🛣
+        </button>
+        <button
           className="nav-btn"
           onClick={() => apiRef.current?.screenshot()}
           title="Screenshot (download PNG)"
@@ -938,6 +996,9 @@ export default function Viewport({
       {banner && <div className="tour-hint tour-hint--check">{banner}</div>}
       {exportNotice && <div className="tour-hint tour-hint--error">{exportNotice}</div>}
       {touring && <div className="tour-hint">🔩 Touring connection points…</div>}
+      {scene && !touring && (
+        <div className="tour-hint">🛣 Streetscape scale — 6 ft figure · ~6 in curb · 8 ft walk</div>
+      )}
       {lightsOn && emitters.length > 0 && (
         <div className="tour-hint tour-hint--night">
           🌙 {emitters.length} fixture{emitters.length > 1 ? "s" : ""} lit ·{" "}
