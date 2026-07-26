@@ -21,6 +21,7 @@ import {
   type Variant,
 } from "./api";
 import { checkSpec } from "./standards";
+import { readSharedSpec, clearShareHash } from "./share";
 import { useSpecHistory } from "./hooks/useSpecHistory";
 import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
@@ -139,11 +140,22 @@ export default function App() {
   // top of the default — so an undo right after restore has nothing to
   // undo. See loadAutosavedSpec above.
   const [{ initialSpec, wasRestored }] = useState(() => {
+    // A shared-link spec (#s=…) wins over the autosave and the default — it's
+    // the design the person who opened the link came to see.
+    const shared = readSharedSpec();
+    if (shared && validateSpecForAdoption(shared) === null) {
+      return { initialSpec: shared, wasRestored: false };
+    }
     const restored = loadAutosavedSpec();
     return restored
       ? { initialSpec: restored, wasRestored: true }
       : { initialSpec: defaultSpec, wasRestored: false };
   });
+  // The shared spec is captured into initialSpec above; drop the hash so a
+  // later refresh restores from autosave instead of re-opening the link.
+  useEffect(() => {
+    clearShareHash();
+  }, []);
   const {
     spec,
     setSpec,
