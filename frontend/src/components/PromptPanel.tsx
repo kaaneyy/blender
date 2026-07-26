@@ -20,6 +20,7 @@ import {
   type Clarification,
   type ClarifyQuestion,
   type DeepseekModel,
+  type LayerStep,
   type PanelEntry,
   type SpecChanges,
   type StandardsUpdateResult,
@@ -81,6 +82,17 @@ function panelEntries(panel: PanelEntry[] | undefined): ChatEntry[] {
     entries.push({ role: "assetforge", text: `${p.icon} ${p.label}: ${take}` });
   }
   return entries;
+}
+
+/** One chat line summarizing the 4-layer build — which layers were built and
+ * (rarely) which were skipped. [] when there's no trace (older backend). */
+function layerEntries(layers: LayerStep[] | undefined): ChatEntry[] {
+  if (!layers || !layers.length) return [];
+  const built = layers.filter((l) => l.status === "built").map((l) => l.layer);
+  const skipped = layers.filter((l) => l.status === "skipped").map((l) => l.layer);
+  let text = `🧱 Built in ${layers.length} layers: ${built.join(" → ")}`;
+  if (skipped.length) text += ` · skipped: ${skipped.join(", ")}`;
+  return [{ role: "assetforge", text }];
 }
 
 /** Optional "✏️ what changed" chat line appended right after an AI edit,
@@ -314,7 +326,7 @@ export default function PromptPanel({
   const runGenerate = (text: string, clarifications: Clarification[] = []) =>
     run("generate", async () => {
       if (!text) return;
-      const { spec: newSpec, brief, panel } = await generateSpecStream(
+      const { spec: newSpec, brief, panel, layers } = await generateSpecStream(
         text, setStreamText, model, clarifications,
       );
       const problem = onSpec(newSpec);
@@ -334,6 +346,7 @@ export default function PromptPanel({
         role: "assetforge",
         text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.${statusSuffix(newSpec)}`,
       });
+      entries.push(...layerEntries(layers));
       entries.push(...panelEntries(panel));
       setChat(entries);
       setPrompt("");
