@@ -29,6 +29,8 @@ import { auditConnections } from "../builders";
 import Modal from "./Modal";
 import StreamLine from "./StreamLine";
 import { EXAMPLE_ASSETS } from "../examples";
+import PresetGallery from "./PresetGallery";
+import { encodeSpecToUrl } from "../share";
 
 /** Live, free, client-side connection/buildability findings for a spec (no
  * network — same deterministic auditor behind "Check connections"). Used to
@@ -253,6 +255,8 @@ export default function PromptPanel({
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [guide, setGuide] = useState<string | null>(null);
   const [standardsResult, setStandardsResult] = useState<StandardsUpdateResult | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const [model, setModel] = useState<DeepseekModel>(() => {
     // fall back to the default when the saved id is empty OR retired (e.g. a
     // previously-stored "deepseek-chat"), so the dropdown never shows a dead value
@@ -610,6 +614,20 @@ export default function PromptPanel({
     download(`${spec.name || spec.asset_type}.json`, JSON.stringify(spec, null, 2), "application/json");
   };
 
+  /** Copy a shareable link (the whole spec encoded in the URL hash) to the
+   * clipboard. Falls back to a manual-copy prompt where the clipboard API is
+   * unavailable (insecure context or denied permission). */
+  const shareLink = async () => {
+    const url = encodeSpecToUrl(spec);
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 2000);
+    } catch {
+      window.prompt("Copy this share link:", url);
+    }
+  };
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -641,6 +659,17 @@ export default function PromptPanel({
             ))}
           </select>
         </label>
+        <button
+          className="btn btn--ghost btn--sm preset-open"
+          onClick={() => setGalleryOpen(true)}
+          disabled={busy !== false}
+          title="Browse the curated starter assets as a visual gallery"
+        >
+          ⊞ Browse the preset gallery
+        </button>
+        {galleryOpen && (
+          <PresetGallery onClose={() => setGalleryOpen(false)} onSelect={loadExample} />
+        )}
 
         <h3>Describe any asset</h3>
         <label className="model-row" title="Which DeepSeek model the AI uses for generate, refine, and focus">
@@ -944,6 +973,13 @@ export default function PromptPanel({
         <span className="panel-section__title">Export &amp; tools</span>
         <button className="btn btn--secondary" onClick={downloadSpec}>
           Download spec (.json)
+        </button>
+        <button
+          className="btn btn--secondary"
+          onClick={shareLink}
+          title="Copy a link that opens this exact design — the whole spec is encoded in the URL"
+        >
+          {shareCopied ? "✓ Link copied!" : "🔗 Share link"}
         </button>
         <button className="btn btn--secondary" onClick={() => runGuide()} disabled={busy !== false}>
           {busy === "guide" ? "Writing guide…" : "📋 Installation guide"}
