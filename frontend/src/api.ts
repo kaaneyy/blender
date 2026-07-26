@@ -351,12 +351,34 @@ export function summarizeChanges(changes: SpecChanges | undefined): string | nul
   return parts.length ? parts.join(" · ") : null;
 }
 
+/** One step of the 4-layer generation pipeline (structure → function →
+ * connections → materials), surfaced so the UI can show how the asset was
+ * built and whether any layer was skipped. */
+export interface LayerStep {
+  layer: string;
+  status: "built" | "skipped";
+}
+
+/** Tolerant parse of the optional `layers` trace — an older backend omits it,
+ * and any malformed shape degrades to `undefined` rather than throwing. */
+function parseLayers(raw: unknown): LayerStep[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: LayerStep[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return undefined;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.layer !== "string") return undefined;
+    out.push({ layer: rec.layer, status: rec.status === "skipped" ? "skipped" : "built" });
+  }
+  return out.length ? out : undefined;
+}
+
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   clarifications: Clarification[] = [],
-): Promise<{ spec: AssetSpec; brief?: string; panel?: PanelEntry[] }> {
+): Promise<{ spec: AssetSpec; brief?: string; panel?: PanelEntry[]; layers?: LayerStep[] }> {
   const result = await streamPost(
     "/generate-spec-stream",
     { prompt, code_mode: "strict", model, clarifications },
@@ -367,6 +389,7 @@ export async function generateSpecStream(
     spec: result.spec as AssetSpec,
     brief: typeof result.brief === "string" ? result.brief : undefined,
     panel: parsePanel(result.panel),
+    layers: parseLayers(result.layers),
   };
 }
 
