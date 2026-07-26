@@ -28,6 +28,13 @@ export interface CommittedTransform {
 
 const HUMAN_HEIGHT = 1.8288; // 6 ft
 
+/** z-index cap for the in-scene <Html> dimension labels. drei defaults Html to
+ * ~16.7M, which paints these labels OVER app chrome (modals show through them).
+ * 40 keeps them above the viewport (grid/scene) and above the nav/hint chrome
+ * as before, but below the modal overlay (z-index 50 in styles.css), so a modal
+ * cleanly covers them. */
+const LABEL_Z_RANGE: [number, number] = [40, 0];
+
 const THEME_COLORS = {
   light: { bg: "#eef1f5", cell: "#c3cad4", section: "#8d99a8", silhouette: "#3f4a5a" },
   dark: { bg: "#15181d", cell: "#2b323c", section: "#48525f", silhouette: "#8b98ab" },
@@ -421,7 +428,7 @@ function HumanSilhouette({ x, color }: { x: number; color: string }) {
         <sphereGeometry args={[0.12, 16, 12]} />
         <meshStandardMaterial color={color} roughness={0.9} />
       </mesh>
-      <Html position={[0, HUMAN_HEIGHT + 0.25, 0]} center>
+      <Html position={[0, HUMAN_HEIGHT + 0.25, 0]} center zIndexRange={LABEL_Z_RANGE}>
         <div className="dim-label dim-label--muted">6 ft</div>
       </Html>
     </group>
@@ -475,7 +482,7 @@ function VerticalDim({ x, height, label }: { x: number; height: number; label: s
       <Line points={[[0, 0, 0], [0, height, 0]]} color="#e11d48" lineWidth={1.5} dashed dashSize={0.15} gapSize={0.1} />
       <Line points={[[-0.2, 0, 0], [0.2, 0, 0]]} color="#e11d48" lineWidth={1.5} />
       <Line points={[[-0.2, height, 0], [0.2, height, 0]]} color="#e11d48" lineWidth={1.5} />
-      <Html position={[0, height / 2, 0]} center>
+      <Html position={[0, height / 2, 0]} center zIndexRange={LABEL_Z_RANGE}>
         <div className="dim-label">{label}</div>
       </Html>
     </group>
@@ -488,7 +495,7 @@ function HorizontalDim({ y, length, label }: { y: number; length: number; label:
       <Line points={[[0, 0, 0], [length, 0, 0]]} color="#0ea5e9" lineWidth={1.5} dashed dashSize={0.15} gapSize={0.1} />
       <Line points={[[0, -0.2, 0], [0, 0.2, 0]]} color="#0ea5e9" lineWidth={1.5} />
       <Line points={[[length, -0.2, 0], [length, 0.2, 0]]} color="#0ea5e9" lineWidth={1.5} />
-      <Html position={[length / 2, 0.35, 0]} center>
+      <Html position={[length / 2, 0.35, 0]} center zIndexRange={LABEL_Z_RANGE}>
         <div className="dim-label dim-label--blue">{label}</div>
       </Html>
     </group>
