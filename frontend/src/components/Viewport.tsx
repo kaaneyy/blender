@@ -15,6 +15,7 @@ import { aabb, resolveMaterial, specParams, preEditPrimitives, componentPivot } 
 import { formatLength } from "../units";
 import { lightProfile } from "../lighting";
 import AssetMesh, { type Selection, PrimitiveMesh } from "./AssetMesh";
+import OverflowMenu from "./OverflowMenu";
 
 /** Which manipulation the transform gizmo performs. */
 export type EditMode = "translate" | "rotate" | "scale";
@@ -852,15 +853,6 @@ export default function Viewport({
         <button className="nav-btn" onClick={() => apiRef.current?.home()} title="Reset view">
           ⌂
         </button>
-        <button className="nav-btn" onClick={() => apiRef.current?.topView()} title="Top view">
-          ⬒
-        </button>
-        <button className="nav-btn" onClick={() => apiRef.current?.frontView()} title="Front view">
-          ▥
-        </button>
-        <button className="nav-btn" onClick={() => apiRef.current?.sideView()} title="Side view">
-          ◫
-        </button>
         <button
           className="nav-btn nav-btn--dial"
           onClick={() => apiRef.current?.faceNorth()}
@@ -881,34 +873,41 @@ export default function Viewport({
             <div className="dial__sundot" />
           </div>
         </button>
-        <button
-          className={`nav-btn${lightsOn ? " nav-btn--active" : ""}`}
-          onClick={() => setLightsOn((v) => !v)}
-          title={lightsOn ? "Night / lights on — click for day" : "Night — turn the sun off and the lights on"}
-        >
-          {lightsOn ? "🌙" : "☀"}
-        </button>
-        <button
-          className={`nav-btn${wireframe ? " nav-btn--active" : ""}`}
-          onClick={() => setWireframe((v) => !v)}
-          title="Wireframe — see through to the structure"
-        >
-          ◧
-        </button>
-        <button
-          className={`nav-btn${exploded ? " nav-btn--active" : ""}`}
-          onClick={() => setExploded((v) => !v)}
-          title="Exploded view — separate the components"
-        >
-          ✱
-        </button>
-        <button
-          className={`nav-btn${scene ? " nav-btn--active" : ""}`}
-          onClick={() => setScene((v) => !v)}
-          title="Streetscape — set the asset on a sidewalk & curb to judge real-world scale"
-        >
-          🛣
-        </button>
+        <OverflowMenu
+          className="nav-btn"
+          trigger="⋯"
+          title="Views & display"
+          placement="above"
+          items={[
+            { label: "⬒ Top view", onClick: () => apiRef.current?.topView() },
+            { label: "▥ Front view", onClick: () => apiRef.current?.frontView() },
+            { label: "◫ Side view", onClick: () => apiRef.current?.sideView() },
+            {
+              label: `${lightsOn ? "🌙" : "☀"} Night / lights`,
+              onClick: () => setLightsOn((v) => !v),
+              active: lightsOn,
+              title: "Turn the sun off and the fixtures on",
+            },
+            {
+              label: "◧ Wireframe",
+              onClick: () => setWireframe((v) => !v),
+              active: wireframe,
+              title: "See through to the structure",
+            },
+            {
+              label: "✱ Exploded view",
+              onClick: () => setExploded((v) => !v),
+              active: exploded,
+              title: "Separate the components",
+            },
+            {
+              label: "🛣 Streetscape scale",
+              onClick: () => setScene((v) => !v),
+              active: scene,
+              title: "Set the asset on a sidewalk & curb to judge real-world scale",
+            },
+          ]}
+        />
         <button
           className="nav-btn"
           onClick={() => apiRef.current?.screenshot()}

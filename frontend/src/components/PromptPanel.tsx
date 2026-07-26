@@ -31,6 +31,7 @@ import Modal from "./Modal";
 import StreamLine from "./StreamLine";
 import { EXAMPLE_ASSETS } from "../examples";
 import PresetGallery from "./PresetGallery";
+import OverflowMenu from "./OverflowMenu";
 import { encodeSpecToUrl } from "../share";
 
 /** Live, free, client-side connection/buildability findings for a spec (no
@@ -655,23 +656,6 @@ export default function PromptPanel({
       </div>
 
       <div className="panel-section panel-section--flush">
-        <label className="model-row" title="Load one of the bundled example assets">
-          <span>Examples</span>
-          <select
-            value=""
-            onChange={(e) => loadExample(e.target.value)}
-            disabled={busy !== false}
-          >
-            <option value="" disabled>
-              Load an example asset…
-            </option>
-            {EXAMPLE_ASSETS.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.label}
-              </option>
-            ))}
-          </select>
-        </label>
         <button
           className="btn btn--ghost btn--sm preset-open"
           onClick={() => setGalleryOpen(true)}
@@ -983,23 +967,29 @@ export default function PromptPanel({
       </div>
 
       <div className="panel-section">
-        <span className="panel-section__title">Export &amp; tools</span>
-        <button className="btn btn--secondary" onClick={downloadSpec}>
-          Download spec (.json)
-        </button>
-        <button
+        <OverflowMenu
           className="btn btn--secondary"
-          onClick={shareLink}
-          title="Copy a link that opens this exact design — the whole spec is encoded in the URL"
-        >
-          {shareCopied ? "✓ Link copied!" : "🔗 Share link"}
-        </button>
-        <button className="btn btn--secondary" onClick={() => runGuide()} disabled={busy !== false}>
-          {busy === "guide" ? "Writing guide…" : "📋 Installation guide"}
-        </button>
-        <button className="btn btn--ghost" onClick={runStandardsUpdate} disabled={busy !== false}>
-          {busy === "standards" ? "Researching standards…" : "🏛 Refresh US standards DB"}
-        </button>
+          trigger="☰ Export & tools"
+          title="Export & tools"
+          items={[
+            { label: "⬇ Download spec (.json)", onClick: downloadSpec },
+            {
+              label: shareCopied ? "✓ Link copied!" : "🔗 Share link",
+              onClick: shareLink,
+              title: "Copy a link that opens this exact design — the whole spec is encoded in the URL",
+            },
+            {
+              label: busy === "guide" ? "Writing guide…" : "📋 Installation guide",
+              onClick: () => runGuide(),
+              disabled: busy !== false,
+            },
+            {
+              label: busy === "standards" ? "Researching standards…" : "🏛 Refresh US standards DB",
+              onClick: runStandardsUpdate,
+              disabled: busy !== false,
+            },
+          ]}
+        />
         <p className="hint">
           Turn the spec into a real Blender / SketchUp file (see README → “Open
           your asset in Blender”):
