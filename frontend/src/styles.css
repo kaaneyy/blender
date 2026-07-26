@@ -2134,3 +2134,66 @@ hr {
   border-radius: 5px;
   padding: 2px 6px;
 }
+
+/* ── overflow / burger menu (OverflowMenu.tsx) ── */
+.overflow-menu {
+  position: relative;
+  display: inline-block;
+}
+.overflow-menu__trigger {
+  width: 100%;
+}
+.overflow-menu__list {
+  position: absolute;
+  z-index: 45; /* above the viewport chrome & dim labels (≤40), below modals (50) */
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.overflow-menu__list--below {
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+}
+/* opens to the LEFT of the trigger — for the right-edge viewport nav column */
+.overflow-menu__list--left {
+  right: calc(100% + 8px);
+  top: 0;
+}
+/* opens ABOVE the trigger — for the bottom viewport nav row */
+.overflow-menu__list--above {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+.overflow-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.overflow-menu__item:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+.overflow-menu__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.overflow-menu__item--active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
