@@ -8,6 +8,7 @@ import type { CodeViolation } from "../standards";
 import { MATERIAL_PRESETS, resolveMaterial } from "../builders";
 import { convert, counterpart, isLengthUnit, unitSymbol } from "../units";
 import { computeOptionDeps } from "../optionDeps";
+import OverflowMenu from "./OverflowMenu";
 
 /** Which length unit a parameter is DISPLAYED in for the chosen system: ft↔m,
  * in↔cm. The spec always keeps the parameter's native unit — this is pure
@@ -455,20 +456,10 @@ export default function ControlsPanel({
       ))}
 
       <h3>Tools</h3>
-      <button
-        className={`hardware-btn${hardwareOn ? " hardware-btn--on" : ""}`}
-        onClick={onHardware}
-        title="Adds engineered bolt/nut assemblies wherever components meet — included in exports too"
-      >
-        🔩 {hardwareOn ? "Hide" : "Show"} bolts &amp; connections
-      </button>
-      <button
-        className="hardware-btn"
-        onClick={onTour}
-        title="Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)"
-      >
-        🎥 Tour the connections
-      </button>
+      {/* The two most-used one-click actions stay prominent; the three
+          situational connection tools (a display toggle, a camera tour, and
+          the API-cost AI variant of the check) tuck into one labeled menu so
+          the panel isn't a stack of five heavy buttons. */}
       <button
         className="hardware-btn"
         onClick={onCheck}
@@ -478,19 +469,36 @@ export default function ControlsPanel({
       </button>
       <button
         className="hardware-btn"
-        onClick={onCheckAI}
-        title="Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm."
-      >
-        🤖 Check connections with AI
-      </button>
-      <button
-        className="hardware-btn"
         onClick={onImprove}
         disabled={improveDisabled}
         title="Runs the app's checks and an AI pass on the current asset, then adopts the improved result."
       >
         ✨ Improve
       </button>
+      <OverflowMenu
+        className="hardware-btn"
+        trigger="🔩 Connection tools ▾"
+        title="Connection tools"
+        placement="below"
+        items={[
+          {
+            label: `🔩 ${hardwareOn ? "Hide" : "Show"} bolts & connections`,
+            onClick: onHardware,
+            active: hardwareOn,
+            title: "Adds engineered bolt/nut assemblies wherever components meet — included in exports too",
+          },
+          {
+            label: "🎥 Tour the connections",
+            onClick: onTour,
+            title: "Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)",
+          },
+          {
+            label: "🤖 Check connections with AI",
+            onClick: onCheckAI,
+            title: "Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm.",
+          },
+        ]}
+      />
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,
         size, and group settings.
@@ -525,45 +533,38 @@ export default function ControlsPanel({
         <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
       ))}
 
-      {/* ── save / open (Brief: Save / Open / autosave) ── */}
-      <div className="file-row">
-        <button
+      {/* ── file, history & reset (declutter round 2): the low-frequency
+          Save / Open / Library / Reset actions collapse into one "File" menu;
+          the frequently-used Undo / Redo stay one-click beside it. ── */}
+      <div className="footer-row">
+        <OverflowMenu
           className="reset"
-          onClick={onSave}
-          title="Download this design as spec.json — the exact file the Blender export pipeline (build_cli.py / blender -b -P blender/build_cli.py) reads."
-        >
-          💾 Save spec
-        </button>
-        <button
-          className="reset"
-          onClick={() => fileInputRef.current?.click()}
-          title="Load a spec JSON file (e.g. one from Save spec, or from examples/) back into the app."
-        >
-          📂 Open spec…
-        </button>
-        <button
-          className="reset"
-          onClick={onLibrary}
-          title="Save the current design to a searchable local library, or load/fork/delete a saved one."
-        >
-          📚 Library
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json,application/json"
-          className="visually-hidden"
-          onChange={handleFileChange}
+          trigger="💾 File ▾"
+          title="Save, open, library, reset"
+          placement="above"
+          items={[
+            {
+              label: "💾 Save spec",
+              onClick: onSave,
+              title: "Download this design as spec.json — the exact file the Blender export pipeline (build_cli.py / blender -b -P blender/build_cli.py) reads.",
+            },
+            {
+              label: "📂 Open spec…",
+              onClick: () => fileInputRef.current?.click(),
+              title: "Load a spec JSON file (e.g. one from Save spec, or from examples/) back into the app.",
+            },
+            {
+              label: "📚 Library",
+              onClick: onLibrary,
+              title: "Save the current design to a searchable local library, or load/fork/delete a saved one.",
+            },
+            {
+              label: "↺ Reset to defaults",
+              onClick: onReset,
+              title: "Discard all changes and reload the default asset.",
+            },
+          ]}
         />
-      </div>
-      {openError && (
-        <div className="violation" role="alert">
-          <p>{openError}</p>
-        </div>
-      )}
-      {/* ── end save / open ── */}
-
-      <div className="history-row">
         <button
           className="reset"
           onClick={onUndo}
@@ -580,10 +581,19 @@ export default function ControlsPanel({
         >
           ↪︎ Redo
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="visually-hidden"
+          onChange={handleFileChange}
+        />
       </div>
-      <button className="reset" onClick={onReset}>
-        Reset to defaults
-      </button>
+      {openError && (
+        <div className="violation" role="alert">
+          <p>{openError}</p>
+        </div>
+      )}
     </div>
   );
 }
