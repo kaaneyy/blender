@@ -1512,61 +1512,170 @@ def _run_qa_review(request: str, spec: dict, violations: list, prims: list,
         return {"verdict": "skip", "problems": [], "fixes": []}
 
 
-def _generate_finalize(code_mode: str, request: str, brief: str, panel: list | None,
-                       model: str | None):
-    """Build the ``finalize(raw, lenient)`` callable for generate_spec/
-    stream_generate_spec ONLY: the ordinary ``_postprocess_core`` build/
-    validate pipeline, then ONE QA reviewer call over the result
-    (``_run_qa_review``) riding the SAME attempt. A sanitized "reject" on a
-    non-lenient attempt raises a classified "qa_review"
-    :class:`SpecGenerationError` (message = the problems, hint = the fixes)
-    so the EXISTING retry engine regenerates with the reviewer's concrete
-    fixes — no extra attempts beyond MAX_ATTEMPTS. ``result["qa"]`` is
-    attached on every path: "approved"/"rejected" from a real reviewer
-    verdict — "rejected" only reachable on the lenient final attempt, since
-    it always ships (it never raises) — or "skipped" when QA infrastructure
-    failed. "brief"/"panel" ride along exactly as before."""
-    def finalize(raw: str, lenient: bool = False) -> dict:
-        out, prims = _postprocess_core(raw, code_mode, lenient_buildability=lenient)
-        qa = _run_qa_review(request, out.get("spec") or {}, out.get("violations") or [],
-                            prims, model)
-        if qa["verdict"] == "reject" and not lenient:
-            message = ("QA review rejected the generated spec: "
-                       + "; ".join(qa["problems"]) if qa["problems"]
-                       else "QA review rejected the generated spec.")
-            raise SpecGenerationError(
-                message, kind="qa_review",
-                hint=("; ".join(qa["fixes"])
-                     or "Address the QA reviewer's problems and regenerate."),
-            )
-        out["qa"] = {"verdict": _QA_VERDICT_LABEL[qa["verdict"]],
-                     "problems": qa["problems"], "fixes": qa["fixes"]}
-        out["brief"] = brief
-        if panel:
-            out["panel"] = panel
-        return out
-    return finalize
+# ---------------------------------------------------------------------------
+# 4-layer generation pipeline (the default generate). Rather than one spec-
+# writing call, the asset is built by four specialists in dependency order —
+# STRUCTURE (the load-bearing skeleton) → FUNCTION (the working parts it
+# exists for) → CONNECTIONS (how it holds together + mounts) → MATERIALS &
+# FINISH (the skin). An AssetSpec is a coupled whole (primitives reference
+# parameters, connections reference component names, materials reference
+# slots), so the layers run SEQUENTIALLY, each building on the accumulated
+# spec — coherence by construction. Layer 1 is a generate; layers 2-4 are
+# scoped edits on the growing spec (the same _run_edit path refine/focus/
+# wizard use). "Combine" is the accumulation; a final QA reviewer judges the
+# whole (advisory — it does not re-run the layers). Layers 2-4 degrade
+# gracefully: a layer that can't be built after retries is skipped, the
+# accumulated spec carries on, and the miss is recorded in the "layers" trace.
+# ---------------------------------------------------------------------------
+
+#: the four layers, in the order they build.
+LAYER_ORDER = ("structure", "function", "connections", "materials")
+#: human labels for the streaming stage banners and the "layers" trace.
+_LAYER_LABEL = {
+    "structure": "structure",
+    "function": "function",
+    "connections": "connections",
+    "materials": "materials & finish",
+}
+
+_LAYER_DIRECTIVES = {
+    "structure": (
+        "LAYER 1 of 4 — STRUCTURE (the skeleton). Build ONLY the load-bearing "
+        "frame of this asset: set the asset_type, expose the major dimensions as "
+        "parameters (sliders), and model the primary structural members — the "
+        "pole/mast/column, frame, legs, rails/stretchers, and the base or footing "
+        "at grade — as primitives at real, buildable dimensions with real "
+        "cross-sections (each member's radius/width driven by its diameter "
+        "parameter; never a hairline). Do NOT model the functional parts yet (no "
+        "luminaire head, seat, sign face, basket, spout), do NOT add joint "
+        "hardware, and keep each member to a single sensible default material — "
+        "later layers add function, connections, and finish. The result must be a "
+        "schema-valid, buildable structural massing everything else will hang on."
+    ),
+    "function": (
+        "LAYER 2 of 4 — FUNCTION (the working parts). The structural skeleton is "
+        "already built (below). Now add the parts the asset EXISTS FOR — the "
+        "luminaire head + lens, the seat and back, the sign face, the basket, the "
+        "spout, the planter vessel — each as its own component with primitives, "
+        "positioned where it really sits on the structure; give lenses a "
+        "lamp_lens material with realistic emission. Expose what a user would "
+        "tune (optional features as visible_if toggles, key dimensions/angles as "
+        "sliders), reusing existing ids and adding new ones only for genuinely "
+        "new controls. Do NOT re-style existing parts, add joint hardware, or "
+        "change the structure's dimensions — connections and materials are later "
+        "layers. Return the FULL updated AssetSpec JSON, keeping the structure's "
+        "components, parameters, and values stable."
+    ),
+    "connections": (
+        "LAYER 3 of 4 — CONNECTIONS (how it holds together). The structure and "
+        "function are built (below). Work joint by joint from the ground up: for "
+        "each pair of touching components choose the fabrication type a crew would "
+        "use and DECLARE it in the top-level \"connections\" array — anchor_base "
+        "(a structural vertical at grade, b:\"ground\"), band_clamp (arm on a "
+        "round pole), slip_fit (telescoping post-top), carriage_bolt (wood on "
+        "metal), through_bolt (bolted lap), flange_splice (collinear end-to-end), "
+        "weld (shop-welded steel), lag_screw, or none (concealed / cast-integral). "
+        "Add connecting members (rails, brackets, gussets, collars, base plates) "
+        "ONLY where a part would otherwise float or have nothing to fasten to; "
+        "joined parts MUST interpenetrate 10-20 mm. Do NOT restyle the asset or "
+        "change its materials. Return the FULL updated AssetSpec JSON, keeping "
+        "asset_type, geometry, materials, and all existing ids/values stable "
+        "except the connecting members a real joint requires."
+    ),
+    "materials": (
+        "LAYER 4 of 4 — MATERIALS & FINISH (the skin). The whole asset is built "
+        "and connected (below). Give every material slot the right preset and "
+        "surface properties for the part it covers and the asset's style: set the "
+        "fitting preset and, where it helps, color, metalness, roughness, "
+        "uv_scale, emission (2-6 for lit lenses), and finish (cast for cast-iron "
+        "bases/finials, machined for turned fittings, sheet for housings/panels, "
+        "rough for galvanized poles and concrete). Add weathering ONLY if the "
+        "request implies age or setting. Honor any style/material words in the "
+        "original request. GEOMETRY IS READ-ONLY FOR THIS LAYER: do NOT change "
+        "geometry, connections, toggles, or parameters — every primitive, "
+        "component, parameter, and toggle value must come back byte-identical. "
+        "Return the FULL updated AssetSpec JSON, changing only the materials."
+    ),
+}
+
+
+def _structure_user(panel_request: str) -> str:
+    """Layer 1 is a GENERATE from the brief, scoped to the structural skeleton."""
+    return f"Request: {panel_request}\n\n{_LAYER_DIRECTIVES['structure']}"
+
+
+def _layer_user(layer: str, spec: dict, brief: str) -> str:
+    """Layers 2-4 are EDITS on the accumulated spec: the current spec + the
+    design brief (overall intent) + this layer's directive."""
+    return (
+        f"Here is the current AssetSpec, built by the previous layer(s):\n"
+        f"{json.dumps(spec, separators=(',', ':'))}\n\n"
+        f"Design brief (the overall intent to honor):\n{brief}\n\n"
+        f"{_LAYER_DIRECTIVES[layer]}"
+    )
+
+
+def _finalize_layered(spec: dict, request: str, brief: str, panel: list | None,
+                      trace: list, code_mode: str, model: str | None) -> dict:
+    """Combine step: re-validate/build the accumulated spec once (leniently —
+    each layer already validated as it went), run ONE advisory QA review over
+    the whole, and attach brief/panel/qa + the per-layer ``layers`` trace."""
+    out, prims = _postprocess_core(json.dumps(spec), code_mode, lenient_buildability=True)
+    qa = _run_qa_review(request, out.get("spec") or {}, out.get("violations") or [],
+                        prims, model)
+    out["qa"] = {"verdict": _QA_VERDICT_LABEL[qa["verdict"]],
+                 "problems": qa["problems"], "fixes": qa["fixes"]}
+    out["brief"] = brief
+    if panel:
+        out["panel"] = panel
+    out["layers"] = trace
+    return out
+
+
+def _generate_layered(request: str, code_mode: str, model: str | None,
+                      brief: str, panel: list | None) -> dict:
+    """Build the asset with the four-layer pipeline and combine. Layer 1
+    (structure) is a generate; layers 2-4 (function/connections/materials) are
+    scoped edits on the accumulated spec that degrade gracefully — a layer that
+    fails after retries is skipped so the rest of the build still ships."""
+    panel_request = _panel_request(brief, panel)
+    trace: list = []
+    # Layer 1 — STRUCTURE: generate a buildable skeleton (rides the classified
+    # retry engine exactly like the old single-shot generate).
+    out = _complete_with_retries(
+        _system_prompt(code_mode), _structure_user(panel_request),
+        lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+        model=model)
+    spec = out["spec"]
+    trace.append({"layer": "structure", "status": "built"})
+    # Layers 2-4 — scoped edits on the growing spec; a stubborn layer is
+    # skipped (accumulated spec carries on) rather than bricking the build.
+    for layer in ("function", "connections", "materials"):
+        try:
+            out = _run_edit(
+                _system_prompt(code_mode), _layer_user(layer, spec, brief),
+                code_mode, spec, model=model,
+                wizard_step_key="materials" if layer == "materials" else None,
+                integration_gate=True)
+            spec = out["spec"]
+            trace.append({"layer": layer, "status": "built"})
+        except (SpecGenerationError, LLMError) as err:
+            trace.append({"layer": layer, "status": "skipped", "error": str(err)[:200]})
+    return _finalize_layered(spec, panel_request, brief, panel, trace, code_mode, model)
 
 
 def generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                   clarifications: list | None = None) -> dict:
     """T2.1: natural-language prompt (+ answered clarifying questions) →
-    four-persona design-panel brief (one extra AI call) → validated
-    AssetSpec (+ violations), read back by ONE AI QA reviewer call before it
-    ships (see ``_generate_finalize``) — a rejection triggers the existing
-    classified retry with the reviewer's concrete fixes as the hint. The
-    brief rides along in the result so the UI can show how the request was
-    interpreted; when the panel pass parsed, the 4 ordered persona takes
-    ride along too as "panel"; ``result["qa"]`` always carries the
-    reviewer's verdict ("approved" / "rejected" / "skipped")."""
+    four-persona design-panel brief → the 4-LAYER generation pipeline
+    (STRUCTURE → FUNCTION → CONNECTIONS → MATERIALS, ``_generate_layered``) →
+    a final advisory QA review. Each layer specializes in one system and
+    builds on the accumulated spec; layers 2-4 degrade gracefully. The brief
+    (and the 4 persona takes as "panel") ride along in the result, as does a
+    per-layer "layers" trace and the QA verdict."""
     request = _clarified_prompt(prompt, clarifications)
     brief, panel = _design_panel(request, model=model)
-    panel_request = _panel_request(brief, panel)
-    return _complete_with_retries(
-        _system_prompt(code_mode), f"Request: {panel_request}",
-        _generate_finalize(code_mode, panel_request, brief, panel, model),
-        model=model,
-    )
+    return _generate_layered(request, code_mode, model, brief, panel)
 
 
 def _refine_user(spec: dict, message: str) -> str:
@@ -2742,17 +2851,21 @@ _KIND_LABEL = {
 }
 
 
-def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None,
+def _stream_attempts(system, user, finalize, retry: bool = True, model: str | None = None,
                      max_tokens: int | None = None):
-    """``finalize(raw, lenient=False)`` turns the streamed text into the
-    result payload. On a classified failure the pipeline announces what went
-    wrong and what it's fixing, then re-prompts with the targeted correction
-    — up to MAX_ATTEMPTS model calls. The final attempt finalizes leniently
-    so a spec that still fails only the buildability check ships with
-    warnings instead of dying. A "truncated" failure also escalates
-    ``max_tokens`` for the next attempt (see ``_escalate_truncated_budget``)
-    so a spec that genuinely needs more output room gets a real second
-    chance instead of truncating identically on every attempt."""
+    """Stream ONE classified-retry call: yield the model's text live and
+    RETURN the terminal result envelope — ``{"ok": True, "result", "attempts"}``
+    on success, or ``{"ok": False, "error", "kind", "attempts"}`` on a
+    classified failure. Never yields a sentinel; the caller decides when to
+    terminate the stream. Shared by :func:`_stream_pipeline` (single call → one
+    sentinel) and :func:`stream_generate_spec`'s layered pipeline (a chain of
+    calls → one sentinel).
+
+    ``finalize(raw, lenient=False)`` turns the streamed text into the result.
+    On a classified failure it announces what went wrong and re-prompts with a
+    targeted correction — up to MAX_ATTEMPTS model calls; the final attempt
+    finalizes leniently, a "truncated" failure escalates ``max_tokens``, and a
+    transient provider error backs off before retrying."""
     payload = None
     max_attempts = MAX_ATTEMPTS if retry else 1
     history: list = []
@@ -2813,17 +2926,29 @@ def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | No
     if payload is None:  # defensive: loop somehow produced no verdict at all
         payload = {"ok": False, "error": "Generation produced no result",
                    "kind": "unknown"}
+    return payload
+
+
+def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None,
+                     max_tokens: int | None = None):
+    """A single streaming call → live text + ONE terminal sentinel payload
+    (thin wrapper over :func:`_stream_attempts`). Used by refine / focus /
+    wizard / improve / review / standards — behavior is identical to before
+    the ``_stream_attempts`` extraction."""
+    payload = yield from _stream_attempts(system, user, finalize, retry=retry,
+                                          model=model, max_tokens=max_tokens)
     yield STREAM_SENTINEL + json.dumps(payload)
 
 
 def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
                          clarifications: list | None = None):
-    """Two visible stages in one stream: the four-persona design panel
-    being written, then the spec being designed from its brief (+ takes),
-    read back by the same AI QA reviewer pass as :func:`generate_spec` (see
-    ``_generate_finalize``) before the final payload ships — its verdict
-    rides along in the result as "qa". Answered clarifying questions are
-    folded into the request before the panel pass."""
+    """Streaming twin of :func:`generate_spec`: the four-persona design brief,
+    then the 4-LAYER pipeline built live — one visible stage per layer
+    (structure → function → connections → materials) — then an advisory QA
+    review, then a single terminal payload. Layers 2-4 degrade gracefully (a
+    skipped layer keeps the build so far). The result carries brief/panel/qa
+    and the per-layer "layers" trace. Answered clarifying questions fold into
+    the request before the brief pass."""
     request = _clarified_prompt(prompt, clarifications)
 
     def gen():
@@ -2853,13 +2978,42 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
             yield "\n[brief pass unavailable — designing from your request as-is]\n"
         brief, panel = _finalize_panel("".join(parts), request)
         panel_request = _panel_request(brief, panel)
-        yield "\n\n[designing the asset from the brief]\n\n"
 
-        yield from _stream_pipeline(
-            _system_prompt(code_mode), f"Request: {panel_request}",
-            _generate_finalize(code_mode, panel_request, brief, panel, model),
-            model=model,
-        )
+        # Layer 1 — STRUCTURE: generate the buildable skeleton.
+        yield f"\n\n[layer 1/4 — {_LAYER_LABEL['structure']}]\n\n"
+        payload = yield from _stream_attempts(
+            _system_prompt(code_mode), _structure_user(panel_request),
+            lambda raw, lenient=False: _postprocess(raw, code_mode, lenient_buildability=lenient),
+            model=model)
+        if not payload["ok"]:
+            # nothing structural to build → ship the classified error as-is
+            yield STREAM_SENTINEL + json.dumps(payload)
+            return
+        spec = payload["result"]["spec"]
+        trace: list = [{"layer": "structure", "status": "built"}]
+
+        # Layers 2-4 — FUNCTION, CONNECTIONS, MATERIALS: scoped edits on the
+        # accumulated spec; a stubborn layer is skipped and the build carries on.
+        for n, layer in enumerate(("function", "connections", "materials"), start=2):
+            yield f"\n\n[layer {n}/4 — {_LAYER_LABEL[layer]}]\n\n"
+            layer_payload = yield from _stream_attempts(
+                _system_prompt(code_mode), _layer_user(layer, spec, brief),
+                _edit_finalize(code_mode, spec,
+                               wizard_step_key="materials" if layer == "materials" else None,
+                               integration_gate=True),
+                model=model)
+            if layer_payload["ok"]:
+                spec = layer_payload["result"]["spec"]
+                trace.append({"layer": layer, "status": "built"})
+            else:
+                yield f"\n[{_LAYER_LABEL[layer]} layer skipped — keeping the build so far]\n"
+                trace.append({"layer": layer, "status": "skipped",
+                              "error": str(layer_payload.get("error", ""))[:200]})
+
+        # Combine: final advisory QA over the whole, then the terminal payload.
+        yield "\n\n[combining the layers & reviewing]\n\n"
+        final = _finalize_layered(spec, panel_request, brief, panel, trace, code_mode, model)
+        yield STREAM_SENTINEL + json.dumps({"ok": True, "result": final})
 
     return gen()
 

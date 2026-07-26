@@ -83,82 +83,64 @@ def collect_stream(gen):
 
 
 class TestGenerateQAReview:
-    def test_reject_then_approve(self, monkeypatch):
-        """attempt 1 spec -> QA reject (problems/fixes) -> the correction
-        prompt for attempt 2 carries the reviewer's fix text -> attempt 2
-        spec -> QA approve -> the shipped spec is attempt 2's."""
-        valid_2 = json.dumps({**spec_dict(), "name": "Attempt Two Light"})
-        calls = script_complete(monkeypatch, [
-            PANEL_REPLY,
-            VALID,
-            qa_json("reject",
-                    problems=["Pole height reads as 0.02 m — absurdly short for a street light"],
-                    fixes=["Set pole_height to at least 3 m as the request implies"]),
-            valid_2,
-            qa_json("approve"),
-        ])
+    """generate now runs the 4-layer pipeline (structure → function →
+    connections → materials); QA is a FINAL ADVISORY review — it reports a
+    verdict but never re-runs the layers. The non-stream complete() sequence
+    for a clean generate is: [design brief, layer1, layer2, layer3, layer4,
+    QA] = 6 calls."""
+    #: the 5 spec-writing calls (brief + 4 layers), before the QA call.
+    LAYER_REPLIES = [PANEL_REPLY, VALID, VALID, VALID, VALID]
+
+    def test_qa_verdict_and_layers_trace(self, monkeypatch):
+        calls = script_complete(monkeypatch, [*self.LAYER_REPLIES, qa_json("approve")])
         out = generate_spec("a street light")
 
-        assert len(calls) == 5
-        assert calls[2].startswith("QA REVIEW.")
-        # the correction prompt for attempt 2 contains the reviewer's fix
-        assert "Set pole_height to at least 3 m as the request implies" in calls[3]
-        # the shipped spec is attempt 2's, not attempt 1's
-        assert out["spec"]["name"] == "Attempt Two Light"
+        assert len(calls) == 6
+        assert calls[5].startswith("QA REVIEW.")  # QA is the final call
+        assert out["spec"]["asset_type"] == "street_light"
         assert out["qa"]["verdict"] == "approved"
-        assert out["qa"]["problems"] == []
+        assert [l["layer"] for l in out["layers"]] == list(spec_ai.LAYER_ORDER)
+        assert [l["status"] for l in out["layers"]] == ["built"] * 4
 
-    def test_qa_provider_error_skips_and_ships_on_first_attempt(self, monkeypatch):
-        calls = script_complete(monkeypatch, [
-            PANEL_REPLY,
-            VALID,
-            LLMError("LLM provider returned 500: upstream boom"),
-        ])
-        out = generate_spec("a street light")
-
-        assert len(calls) == 3  # panel, spec attempt 1, QA attempt 1 — no retry
-        assert out["spec"]["asset_type"] == "street_light"
-        assert out["qa"]["verdict"] == "skipped"
-        assert out["qa"]["problems"] == []
-        assert out["qa"]["fixes"] == []
-
-    def test_qa_malformed_json_skips_and_generation_unaffected(self, monkeypatch):
-        calls = script_complete(monkeypatch, [
-            PANEL_REPLY,
-            VALID,
-            "this is not JSON at all, sorry",
-        ])
-        out = generate_spec("a street light")
-
-        assert len(calls) == 3
-        assert out["spec"]["asset_type"] == "street_light"
-        assert out["qa"]["verdict"] == "skipped"
-
-    def test_qa_missing_verdict_field_skips(self, monkeypatch):
-        calls = script_complete(monkeypatch, [
-            PANEL_REPLY,
-            VALID,
-            json.dumps({"problems": ["something"], "fixes": []}),  # no "verdict"
-        ])
-        out = generate_spec("a street light")
-
-        assert len(calls) == 3
-        assert out["qa"]["verdict"] == "skipped"
-
-    def test_persistent_reject_ships_on_lenient_final_attempt(self, monkeypatch):
-        """Rejects on every attempt: the final (lenient) attempt SHIPS
-        anyway with the rejection visible — generation never fails."""
+    def test_qa_reject_is_advisory_ships_without_retry(self, monkeypatch):
+        # QA reject on the layered pipeline is ADVISORY: the spec still ships
+        # with the rejection visible, and there is NO regeneration.
         reject = qa_json("reject", problems=["problem X"], fixes=["fix X"])
-        calls = script_complete(monkeypatch, [
-            PANEL_REPLY, VALID, reject, VALID, reject, VALID, reject,
-        ])
+        calls = script_complete(monkeypatch, [*self.LAYER_REPLIES, reject])
         out = generate_spec("a street light")
 
-        assert len(calls) == 1 + 2 * MAX_ATTEMPTS  # panel + (spec, QA) per attempt
+        assert len(calls) == 6  # exactly one pass + one QA call — no retry
         assert out["spec"]["asset_type"] == "street_light"
         assert out["qa"]["verdict"] == "rejected"
         assert out["qa"]["problems"] == ["problem X"]
         assert out["qa"]["fixes"] == ["fix X"]
+
+    def test_qa_provider_error_skips_and_ships(self, monkeypatch):
+        calls = script_complete(monkeypatch, [
+            *self.LAYER_REPLIES,
+            LLMError("LLM provider returned 500: upstream boom"),
+        ])
+        out = generate_spec("a street light")
+
+        assert len(calls) == 6
+        assert out["spec"]["asset_type"] == "street_light"
+        assert out["qa"]["verdict"] == "skipped"
+        assert out["qa"]["problems"] == [] and out["qa"]["fixes"] == []
+
+    def test_qa_malformed_json_skips(self, monkeypatch):
+        script_complete(monkeypatch, [*self.LAYER_REPLIES, "this is not JSON at all"])
+        out = generate_spec("a street light")
+
+        assert out["spec"]["asset_type"] == "street_light"
+        assert out["qa"]["verdict"] == "skipped"
+
+    def test_qa_missing_verdict_field_skips(self, monkeypatch):
+        script_complete(monkeypatch, [
+            *self.LAYER_REPLIES, json.dumps({"problems": ["x"], "fixes": []}),
+        ])
+        out = generate_spec("a street light")
+
+        assert out["qa"]["verdict"] == "skipped"
 
     def test_refine_spec_never_runs_qa_review(self, monkeypatch):
         """refine/focus/wizard/improve/variations must be completely
@@ -174,8 +156,9 @@ class TestGenerateQAReview:
         assert out["spec"]["asset_type"] == "street_light"
         assert "qa" not in out
 
-    def test_stream_generate_spec_carries_qa(self, monkeypatch):
-        stream_calls = script_stream(monkeypatch, [PANEL_REPLY, VALID])
+    def test_stream_generate_spec_carries_qa_and_layers(self, monkeypatch):
+        # streamed: complete_stream = [brief, layer1..layer4] = 5; QA = 1 complete.
+        stream_calls = script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, VALID, VALID])
         complete_calls = script_complete(monkeypatch, [qa_json("approve")])
 
         raw, payload = collect_stream(stream_generate_spec("a street light"))
@@ -183,26 +166,21 @@ class TestGenerateQAReview:
         assert payload["ok"] is True
         assert payload["result"]["spec"]["asset_type"] == "street_light"
         assert payload["result"]["qa"]["verdict"] == "approved"
-        assert len(stream_calls) == 2  # panel pass + spec generation, streamed
+        assert [l["status"] for l in payload["result"]["layers"]] == ["built"] * 4
+        assert len(stream_calls) == 5  # brief + 4 layers, streamed
         assert len(complete_calls) == 1  # the QA reviewer call, non-streamed
         assert complete_calls[0].startswith("QA REVIEW.")
 
-    def test_stream_generate_spec_qa_reject_then_approve(self, monkeypatch):
-        valid_2 = json.dumps({**spec_dict(), "name": "Streamed Attempt Two"})
-        stream_calls = script_stream(monkeypatch, [PANEL_REPLY, VALID, valid_2])
+    def test_stream_generate_spec_qa_reject_is_advisory(self, monkeypatch):
+        script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, VALID, VALID])
         complete_calls = script_complete(monkeypatch, [
-            qa_json("reject", problems=["too short"], fixes=["make the pole taller"]),
-            qa_json("approve"),
-        ])
+            qa_json("reject", problems=["too short"], fixes=["make the pole taller"])])
 
         raw, payload = collect_stream(stream_generate_spec("a street light"))
 
         assert payload["ok"] is True
-        assert payload["result"]["spec"]["name"] == "Streamed Attempt Two"
-        assert payload["result"]["qa"]["verdict"] == "approved"
-        assert len(complete_calls) == 2  # one QA call per attempt
-        assert "make the pole taller" in stream_calls[2]  # attempt-2 correction prompt
-        assert "addressing the AI reviewer's rejections" in raw
+        assert payload["result"]["qa"]["verdict"] == "rejected"
+        assert len(complete_calls) == 1  # advisory — one QA call, no re-run
 
 
 class TestGeometryDigest:

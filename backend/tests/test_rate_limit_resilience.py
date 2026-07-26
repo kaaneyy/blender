@@ -158,13 +158,13 @@ class TestStreamAlwaysTerminates:
     def test_generate_stream_survives_unexpected_brief_pass_failure(self, monkeypatch):
         # An unexpected (non-LLMError) failure in the design-brief pass must not
         # tear the generate stream: it degrades to designing from the raw
-        # request and the spec pass still ships the one terminal payload. The
-        # brief pass streams first, then the spec pass — so a scripted sequence
-        # of [brief boom, VALID spec] exercises both.
+        # request and the 4-layer pipeline still ships the one terminal payload.
+        # The brief pass streams first, then the 4 layers — a scripted sequence
+        # of [brief boom, VALID, VALID, ...] exercises the degrade + build.
         replies = [RuntimeError("brief pass exploded"), VALID]
         calls = _script_stream(monkeypatch, replies)
         raw, payload = _collect(spec_ai.stream_generate_spec("a park bench"))
         assert payload["ok"] is True
         assert payload["result"]["spec"]["asset_type"] == "street_light"
         assert "designing from your request as-is" in raw
-        assert len(calls) == 2
+        assert len(calls) == 5  # brief (boom → degrade) + 4 layer calls, streamed

@@ -326,10 +326,13 @@ def test_generate_stream_has_brief_stages():
     payload = stream_payload(r)
     raw = r.text.split(SENTINEL)[0]
     assert "[refining your request into a design brief]" in raw
-    assert "[designing the asset from the brief]" in raw
+    # the 4-layer pipeline streams one visible stage per layer, then combines
+    assert "[layer 1/4 — structure]" in raw
+    assert "[layer 4/4 — materials & finish]" in raw
     assert payload["ok"] is True
     assert payload["result"]["brief"].startswith("Design brief:")
     assert payload["result"]["spec"]["asset_type"] == "bench"
+    assert [l["status"] for l in payload["result"]["layers"]] == ["built"] * 4
 
 
 def test_model_dropdown_allowlist():
