@@ -491,37 +491,25 @@ button:disabled {
   text-align: left;
 }
 
-.hardware-btn--on {
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
 .header-tools {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-/* ── undo/redo history controls (Brief: spec editor undo/redo) ── */
-.history-row {
+/* ── footer: a File menu (Save / Open / Library / Reset) + Undo / Redo in
+ * one compact row (declutter round 2) — replaces the old separate
+ * .file-row / .history-row / full-width Reset stack. The three cells share
+ * the width equally; the hidden file <input> is position:absolute so it
+ * takes no cell. ── */
+.footer-row {
   display: flex;
   gap: 6px;
 }
 
-.history-row .reset {
-  flex: 1;
-}
-/* ── end undo/redo history controls ── */
-
-/* ── save / open / autosave (Brief: Save / Open / autosave) ── */
-.file-row {
-  display: flex;
-  gap: 6px;
-}
-
-.file-row .reset {
-  flex: 1;
+.footer-row .reset,
+.footer-row .overflow-menu {
+  flex: 1 1 0;
 }
 
 .visually-hidden {
