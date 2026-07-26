@@ -59,6 +59,7 @@ ARCHITECTURE RULE: One shared JSON "AssetSpec" schema drives everything — the 
 - [x] T2.5 Endpoint `POST /refine-spec`: current spec + user chat message ("make it art-deco, add a second arm") → LLM returns modified spec. Always re-validate.
 - [x] T2.6 Retry logic: if JSON parse fails, re-prompt once with the parse error appended.
 - [x] T2.7 *(beyond plan)* "Generate anything": specs may carry their own `primitives` array with dimensions as sandboxed arithmetic expressions over parameter/toggle ids (`blender/builders/{expr,generic}.py`, mirrored in `frontend/src/{expr,builders/generic}.ts`) — AI-generated assets stay fully slider-parametric without a curated builder.
+- [x] T2.8 *(beyond plan)* AI edit & review suite around the base generate/refine loop: `/focus-spec` (deep-detail one named area), `/improve-spec` (runs the app's checks + a four-persona AI review and applies fixes), `/wizard-step` (guided step-by-step build), `/variations-spec` (N perturbations), `/review-connections` (AI fabrication review reusing the deterministic auditor's fix vocabulary), `/clarify-request` (pre-generation clarifying questions), and a pre-delivery **QA reviewer** read-back on every generation — each schema-validated, code-clamped, and test-built, all with SSE `-stream` twins. A four-persona design-brief pass precedes generation; provider calls carry classified retry with exponential backoff.
 
 ## PHASE 3 — Procedural Geometry (the core)
 
@@ -66,9 +67,9 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 
 - [x] T3.1 `/blender/builders/base.py`: builder registry, `build(spec) -> bpy objects`, component naming convention `AssetName/ComponentName` (SketchUp imports DAE nodes as nested components — naming matters). *Implemented with a pure `compute_primitives` layer (no bpy, unit-testable, mirrors to JS) + bpy realization layer.*
 - [~] T3.2 Implement builders (each ~1 file, each maps params/toggles → geometry):
-      - [x] `street_light.py` (pole taper, arm curve, luminaire head, base plate + anchor bolts toggle)
-      - [ ] `pedestrian_lamp.py` (post lantern styles: acorn, teardrop, modern)
-      - [ ] `bench.py`, `bollard.py`, `traffic_sign.py`, `trash_bin.py`, `planter.py`, `hydrant.py`
+      - [x] `street_light.py` (pole taper, arm curve, luminaire head, base plate + mounting select)
+      - [x] `accessible_table.py` (ADA table: top on legs, clear knee/toe space) *(added beyond the original list)*
+      - [ ] `pedestrian_lamp.py`, `bench.py`, `bollard.py`, `traffic_sign.py`, `trash_bin.py`, `planter.py`, `hydrant.py` — intentionally NOT curated builders: the generic primitives path (T2.7) already builds these fully parametrically (the bench, planter, bike-rack, and pergola examples all ship that way), so a curated builder is only added when a type needs bespoke logic beyond primitives.
 - [~] T3.3 Material system: PBR presets (galvanized steel, powder-coat black, cast iron, concrete, brushed aluminum) assigned per component slot; bake to simple diffuse for DAE (SketchUp ignores full PBR). *Presets + per-slot overrides (color, metalness/reflection, roughness, uv_scale, emission) shipped as spec fields, UI sliders, and prompt-settable properties; applied to Principled BSDF in Blender and mirrored in the preview. Image-texture baking pending.*
 - [ ] T3.4 LOD generator: decimate modifier at 100% / 50% / 20% poly budget, user-selectable.
 - [x] T3.5 CLI harness: `blender -b -P build_cli.py -- spec.json out.glb` for testing without the web app. *Also runs Blender-free (`python3 blender/build_cli.py spec.json out.json` validates + dumps primitives) and exports native `.blend` files.*
@@ -129,15 +130,15 @@ Strategy: implement each asset_type ONCE as a Python builder module used by BOTH
 
 ## PHASE 6 — Quality-of-life features
 
-- [ ] T6.1 Asset library: save/load specs per user, fork existing assets, tag & search.
-- [ ] T6.2 Preset gallery: 20+ curated starting specs per category (user clicks instead of prompting).
-- [ ] T6.3 Variation generator: "give me 4 variants" → LLM perturbs spec within code limits, grid preview, pick one.
+- [x] T6.1 Asset library: save / load / fork specs, tag & search (localStorage-backed; `LibraryPanel.tsx` + `library/store.ts`).
+- [x] T6.2 Preset gallery: a visual grid of the bundled curated starters, click to load (`PresetGallery.tsx`). *(Surfaces the shipped example set through the same validated load path as the dropdown — not yet the full 20+ per category.)*
+- [x] T6.3 Variation generator: "give me 4 variants" → the spec is perturbed along fixed, distinct design axes (proportion, mass, ornament, stance…), grid preview, pick one (`VariationsPanel.tsx`, `/variations-spec`).
 - [ ] T6.4 Batch export: select N assets → one zip.
-- [ ] T6.5 Share link: read-only spec URL others can fork.
-- [ ] T6.6 Randomize-seed button for organic details (weathering, wood grain UV offsets).
-- [ ] T6.7 Undo/redo stack on spec state (immutable spec snapshots).
+- [x] T6.5 Share link: a "🔗 Share link" button copies a URL that encodes the whole spec in its hash; opening it loads that exact design (`share.ts`). No server/storage.
+- [x] T6.6 Randomize-seed button: re-rolls `spec.seed`, reshuffling the preview's organic grime/grain placement (per material slot). Preview-only surface finish.
+- [x] T6.7 Undo/redo stack on spec state (immutable snapshots; `hooks/useSpecHistory.ts`, ⌘Z / ⇧⌘Z).
 - [ ] T6.8 Prompt history + "explain my asset" (LLM summarizes dims + code refs, exportable spec sheet PDF).
-- [ ] T6.9 Scene context toggle: drop asset onto sample sidewalk/street scene to judge scale.
+- [x] T6.9 Scene context toggle: a 🛣 button sets the asset on a sample sidewalk / curb / road with the 6 ft figure to judge scale (`Viewport.tsx` `SceneContext`).
 
 ## PHASE 7 — Hardening
 
