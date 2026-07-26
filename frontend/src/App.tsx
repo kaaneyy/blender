@@ -475,6 +475,13 @@ export default function App() {
       materials: (s.materials ?? []).map((m) => ({ ...m, weathering: value })),
     }));
 
+  /** "🎲 Randomize": re-roll the spec seed, which reshuffles the organic
+   * grime/grain pattern in the preview (own undo step — a discrete action). */
+  const randomizeSeed = () => {
+    commitBoundary();
+    setSpec((s) => ({ ...s, seed: Math.floor(Math.random() * 1_000_000_000) }));
+  };
+
   /** "Show/hide bolts & connections": ensure the connection_hardware toggle
    * exists in the spec (so it exports too), then flip it. */
   const toggleHardware = () =>
@@ -910,6 +917,7 @@ export default function App() {
             onToggle={updateToggle}
             onMaterial={updateMaterial}
             onWeatherAll={weatherAll}
+            onRandomizeSeed={randomizeSeed}
             onDisplayUnits={setDisplayUnits}
             onHardware={toggleHardware}
             onTour={startTour}

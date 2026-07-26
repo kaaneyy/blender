@@ -109,6 +109,21 @@ function getNoiseImage(): HTMLCanvasElement {
   return canvas;
 }
 
+/** Deterministic noise placement (offset + rotation) from the spec seed and
+ * the material slot, so a new seed reshuffles the organic grime/grain pattern
+ * and each slot varies a little. Preview-only surface finish — Blender does its
+ * own texturing — so this needs no builder mirror. */
+function noisePlacement(seed: number, slot: string): { ox: number; oy: number; rot: number } {
+  let h = Math.imul((seed | 0) ^ 0x9e3779b9, 0x85ebca6b);
+  for (let i = 0; i < slot.length; i++) h = Math.imul(h ^ slot.charCodeAt(i), 0x01000193);
+  const next = () => {
+    h = Math.imul(h ^ (h >>> 15), 1 | h);
+    h = (h + Math.imul(h ^ (h >>> 7), 61 | h)) ^ h;
+    return ((h ^ (h >>> 14)) >>> 0) / 4294967296;
+  };
+  return { ox: next(), oy: next(), rot: next() * Math.PI * 2 };
+}
+
 function useSlotMaterial(
   spec: AssetSpec,
   slot: string,
@@ -119,12 +134,19 @@ function useSlotMaterial(
   const resolved = resolveMaterial(spec, slot);
   const shade = weatheredShading(resolved); // D2: aged color/roughness/metalness
   const isEmitter = slot === "lens" || resolved.emission > 0;
+  const seed = spec.seed ?? 0;
   return useMemo(() => {
     const tex = new THREE.CanvasTexture(getNoiseImage());
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     // weathering tightens the grime pattern so dirt reads as finer speckle
     const tiles = resolved.uvScale * (1 + 1.5 * resolved.weathering);
     tex.repeat.set(tiles, tiles);
+    // seed shuffles the grime/grain placement (and varies it per slot) so
+    // "Randomize" produces organic variety without touching geometry
+    const place = noisePlacement(seed, slot);
+    tex.center.set(0.5, 0.5);
+    tex.rotation = place.rot;
+    tex.offset.set(place.ox, place.oy);
     const color = new THREE.Color(shade.color);
     // at night, emitter lenses glow noticeably (in their own color)
     const nightGlow = lightsOn && isEmitter ? Math.max(shade.emission, 2.5) : shade.emission;
@@ -141,7 +163,7 @@ function useSlotMaterial(
       emissiveIntensity,
       wireframe,
     });
-  }, [shade.color, shade.metalness, shade.roughness, resolved.uvScale, resolved.weathering, shade.emission, highlight, wireframe, lightsOn, isEmitter]);
+  }, [shade.color, shade.metalness, shade.roughness, resolved.uvScale, resolved.weathering, shade.emission, highlight, wireframe, lightsOn, isEmitter, seed, slot]);
 }
 
 /** Rotates Three's Y-axis cylinders/cones onto the local Z axis so the

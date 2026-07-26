@@ -33,6 +33,7 @@ interface Props {
   onToggle: (id: string, value: boolean) => void;
   onMaterial: (slot: string, patch: Partial<SpecMaterial>) => void;
   onWeatherAll: (value: number) => void;
+  onRandomizeSeed: () => void;
   onDisplayUnits: (u: UnitSystem) => void;
   onHardware: () => void;
   onTour: () => void;
@@ -316,6 +317,7 @@ export default function ControlsPanel({
   onToggle,
   onMaterial,
   onWeatherAll,
+  onRandomizeSeed,
   onDisplayUnits,
   onHardware,
   onTour,
@@ -508,6 +510,16 @@ export default function ControlsPanel({
           />
           <span className="matrow__value">{globalWeather.toFixed(2)}</span>
         </div>
+      )}
+      {(spec.materials?.length ?? 0) > 0 && (
+        <button
+          className="btn btn--ghost btn--sm"
+          style={{ width: "100%", marginTop: 6 }}
+          onClick={onRandomizeSeed}
+          title="Reshuffle the organic grime/grain pattern (re-rolls the seed) — most visible with weathering turned up"
+        >
+          🎲 Randomize weathering pattern
+        </button>
       )}
       {spec.materials?.map((m) => (
         <MaterialControl key={m.slot} spec={spec} material={m} onMaterial={onMaterial} />
