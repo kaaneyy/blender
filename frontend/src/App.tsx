@@ -3,13 +3,14 @@
  * selection editor (position nudges, dimensions, group stats). Spec state
  * is the single source of truth; mesh + code checks recompute synchronously
  * on every change — the preview never waits on the server (T4.6). */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import defaultSpecJson from "../../examples/street_light.json";
 import type { AssetSpec, Primitive, SpecMaterial, SpecPrimitive, UnitSystem, Vec3 } from "./types";
 import { applyAuditFixes, auditConnections, computePrimitives } from "./builders";
 import type { AuditFinding, AuditReport } from "./builders";
 import {
   improveSpecStream,
+  isAbortError,
   reviewConnectionsStream,
   summarizeChanges,
   variationsSpec,
@@ -80,6 +81,25 @@ function validateSpecForAdoption(candidate: AssetSpec): string | null {
   }
 }
 
+/** "Always show the bolts & connections unless they're switched off": every
+ * spec that reaches the app gets a `connection_hardware` toggle, defaulting
+ * to ON when it doesn't carry one — AI-generated and most bundled specs
+ * don't, which used to leave the joints invisible until the user went
+ * looking for the button. An explicit `false` (the user hid them, and it
+ * autosaved) is respected, so "closed" stays closed. The toggle is part of
+ * the spec, so the Blender export agrees with the preview. */
+function withHardwareShown(spec: AssetSpec): AssetSpec {
+  const toggles = spec.toggles ?? [];
+  if (toggles.some((t) => t.id === "connection_hardware")) return spec;
+  return {
+    ...spec,
+    toggles: [
+      ...toggles,
+      { id: "connection_hardware", label: "Connection Hardware", value: true },
+    ],
+  };
+}
+
 /** Read + validate the autosaved spec, if any. A corrupt or invalid stored
  * value is discarded silently (the key is cleared) so it can never come back
  * to bite a later load. Any localStorage failure (quota, private mode,
@@ -144,12 +164,12 @@ export default function App() {
     // the design the person who opened the link came to see.
     const shared = readSharedSpec();
     if (shared && validateSpecForAdoption(shared) === null) {
-      return { initialSpec: shared, wasRestored: false };
+      return { initialSpec: withHardwareShown(shared), wasRestored: false };
     }
     const restored = loadAutosavedSpec();
     return restored
-      ? { initialSpec: restored, wasRestored: true }
-      : { initialSpec: defaultSpec, wasRestored: false };
+      ? { initialSpec: withHardwareShown(restored), wasRestored: true }
+      : { initialSpec: withHardwareShown(defaultSpec), wasRestored: false };
   });
   // The shared spec is captured into initialSpec above; drop the hash so a
   // later refresh restores from autosave instead of re-opening the link.
@@ -178,6 +198,13 @@ export default function App() {
   // "local" = the deterministic auditor (recomputed live); "ai" = the AI
   // fabrication review (a one-shot snapshot fetched from the backend).
   // Both feed the same panel, preview, and confirm-to-apply machinery. ──
+  /** Controllers for the AI calls this component owns, so each panel's ✕ can
+   * abort the request in flight. A cancelled call applies nothing — see
+   * closeCheck / closeImprove / closeVariations. */
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const improveAbortRef = useRef<AbortController | null>(null);
+  const variantsAbortRef = useRef<AbortController | null>(null);
+
   const [checkMode, setCheckMode] = useState<null | "local" | "ai">(null);
   const [aiReport, setAiReport] = useState<AuditReport | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
@@ -352,14 +379,28 @@ export default function App() {
     setAiStream("");
     setCheckMode("ai");
     setAiBusy(true);
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
-    reviewConnectionsStream(spec, setAiStream, model)
+    reviewConnectionsStream(spec, setAiStream, model, controller.signal)
       .then(setAiReport)
-      .catch((e) => setAiError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setAiBusy(false));
+      .catch((e) => {
+        // a cancel is not a failure: report nothing, propose nothing
+        if (!isAbortError(e)) setAiError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (aiAbortRef.current === controller) aiAbortRef.current = null;
+        setAiBusy(false);
+      });
   };
 
+  /** ✕ on the check panel: abort an in-flight AI review and close. Nothing
+   * was ever applied without confirmation, so cancelling leaves the asset
+   * exactly as it is. */
   const closeCheck = () => {
+    aiAbortRef.current?.abort();
+    aiAbortRef.current = null;
+    setAiBusy(false);
     setCheckMode(null);
     setAiReport(null);
     setAiError(null);
@@ -381,9 +422,14 @@ export default function App() {
     setImproveConsensus(undefined);
     setImproveStream("");
     setImproveBusy(true);
+    const controller = new AbortController();
+    improveAbortRef.current = controller;
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
-    improveSpecStream(spec, setImproveStream, model)
+    improveSpecStream(spec, setImproveStream, model, controller.signal)
       .then((result) => {
+        // a cancel that lost the race with the response must still change
+        // nothing — never adopt a spec the user already dismissed
+        if (controller.signal.aborted) return;
         const err = adoptSpec(result.spec);
         if (err) {
           setImproveError(err);
@@ -394,11 +440,22 @@ export default function App() {
         setImproveChanges(result.changes);
         setImproveConsensus(result.consensus);
       })
-      .catch((e) => setImproveError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setImproveBusy(false));
+      .catch((e) => {
+        if (!isAbortError(e)) setImproveError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (improveAbortRef.current === controller) improveAbortRef.current = null;
+        setImproveBusy(false);
+      });
   };
 
+  /** ✕ on the improve panel: abort the in-flight AI pass and close it,
+   * applying NOTHING — the asset stays exactly as it was before Improve was
+   * clicked (the adopt only ever happens on a completed, un-aborted run). */
   const closeImprove = () => {
+    improveAbortRef.current?.abort();
+    improveAbortRef.current = null;
+    setImproveBusy(false);
     setImproveError(null);
     setImproveFindings(null);
     setImprovePerspectives(undefined);
@@ -417,14 +474,25 @@ export default function App() {
     setVariantsBusy(true);
     setVariantsError(null);
     setVariants(null);
+    const controller = new AbortController();
+    variantsAbortRef.current = controller;
     const model = (localStorage.getItem("af-model") ?? "") as DeepseekModel | "";
-    variationsSpec(spec, 4, model)
+    variationsSpec(spec, 4, model, controller.signal)
       .then(setVariants)
-      .catch((e) => setVariantsError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setVariantsBusy(false));
+      .catch((e) => {
+        if (!isAbortError(e)) setVariantsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (variantsAbortRef.current === controller) variantsAbortRef.current = null;
+        setVariantsBusy(false);
+      });
   };
 
+  /** ✕ on the variants grid: abort the in-flight batch and close. Variants
+   * are only ever adopted by an explicit pick, so nothing changes. */
   const closeVariations = () => {
+    variantsAbortRef.current?.abort();
+    variantsAbortRef.current = null;
     setVariantsOpen(false);
     setVariantsBusy(false);
     setVariants(null);
@@ -648,12 +716,15 @@ export default function App() {
    * swap is always its own undo step: commitBoundary() guarantees it can
    * never coalesce into whatever edit burst happened to precede it. */
   const adoptSpec = (newSpec: AssetSpec): string | null => {
-    const err = validateSpecForAdoption(newSpec);
+    // hardware defaults ON for a spec that doesn't declare the toggle, so a
+    // freshly generated asset shows its bolts without hunting for a button
+    const next = withHardwareShown(newSpec);
+    const err = validateSpecForAdoption(next);
     if (err) return err;
     commitBoundary();
-    setSpec(newSpec);
+    setSpec(next);
     setSelected(null);
-    setDisplayUnits(newSpec.units ?? "imperial");
+    setDisplayUnits(next.units ?? "imperial");
     setHomeId((h) => h + 1); // glide the camera to frame the new asset
     return null;
   };
@@ -731,13 +802,21 @@ export default function App() {
           <div className="panel check-panel">
             <div className="panel__header">
               <h3>🤖 AI connection review</h3>
-              <button className="close" onClick={closeCheck} title="Close the AI review">
+              <button
+                className="close"
+                onClick={closeCheck}
+                title={aiBusy ? "Cancel the review — nothing will change" : "Close the AI review"}
+              >
                 ✕
               </button>
             </div>
             {aiBusy ? (
               <>
-                <StreamLine title="Reviewing every joint…" text={aiStream} />
+                <StreamLine
+                  title="Reviewing every joint…"
+                  text={aiStream}
+                  onCancel={closeCheck}
+                />
                 <p className="hint">
                   The AI reads the spec, the generated joint schedule, and the
                   deterministic findings, then proposes fixes in the same
@@ -758,13 +837,25 @@ export default function App() {
           <div className="panel check-panel">
             <div className="panel__header">
               <h3>✨ Improve</h3>
-              <button className="close" onClick={closeImprove} title="Close the improve panel">
+              <button
+                className="close"
+                onClick={closeImprove}
+                title={
+                  improveBusy
+                    ? "Cancel Improve — the asset stays exactly as it is"
+                    : "Close the improve panel"
+                }
+              >
                 ✕
               </button>
             </div>
             {improveBusy ? (
               <>
-                <StreamLine title="Checking and improving the asset…" text={improveStream} />
+                <StreamLine
+                  title="Checking and improving the asset…"
+                  text={improveStream}
+                  onCancel={closeImprove}
+                />
                 <p className="hint">
                   Runs the app's deterministic checks against the current
                   asset, then asks the AI to improve it in one pass — the
@@ -924,11 +1015,13 @@ export default function App() {
             onCheck={startCheck}
             onCheckAI={startAiCheck}
             onImprove={startImprove}
+            onVariations={startVariations}
+            variationsBusy={variantsBusy}
             improveDisabled={aiBusy || improveBusy}
             locked={locked}
             onLock={toggleLock}
             onReset={() => {
-              setSpec(structuredClone(defaultSpec));
+              setSpec(withHardwareShown(structuredClone(defaultSpec)));
               setSelected(null);
               setRestoredNotice(false);
               try {

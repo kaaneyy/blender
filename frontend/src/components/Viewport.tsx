@@ -714,9 +714,14 @@ export default function Viewport({
       >
         <color attach="background" args={[lightsOn ? "#0a0d14" : colors.bg]} />
         <StudioEnvironment dim={lightsOn} />
-        {/* night: dim ambient + faint moonlight; day: sun */}
-        <ambientLight intensity={lightsOn ? 0.06 : 0.35} />
-        <directionalLight position={sunPos} intensity={lightsOn ? 0.08 : 1.2} castShadow />
+        {/* Night removes the sun outright — it isn't dimmed, it's gone (no
+            sun light, no sun shadows), so the fixtures below are the only
+            thing lighting the asset. A little more ambient than the old
+            night value stands in for skyglow now that the directional light
+            is absent, keeping unlit assets readable in silhouette. Day puts
+            the sun back exactly as before. */}
+        <ambientLight intensity={lightsOn ? 0.13 : 0.35} />
+        {!lightsOn && <directionalLight position={sunPos} intensity={1.2} castShadow />}
 
         {/* the asset's own fixtures, lit at night */}
         {emitters.map((prim) => {
@@ -863,16 +868,20 @@ export default function Viewport({
             <div className="dial__needle" />
           </div>
         </button>
-        <button
-          className="nav-btn nav-btn--dial"
-          onClick={() => setSunAzDeg((d) => (d + 45) % 360)}
-          title={`Sun from ${sunAzDeg}° — click to rotate the sun`}
-        >
-          <span className="dial__sun">☀</span>
-          <div className="dial" ref={sunNeedleRef}>
-            <div className="dial__sundot" />
-          </div>
-        </button>
+        {/* the sun dial only exists while there IS a sun — night removes the
+            light, so its azimuth control goes with it */}
+        {!lightsOn && (
+          <button
+            className="nav-btn nav-btn--dial"
+            onClick={() => setSunAzDeg((d) => (d + 45) % 360)}
+            title={`Sun from ${sunAzDeg}° — click to rotate the sun`}
+          >
+            <span className="dial__sun">☀</span>
+            <div className="dial" ref={sunNeedleRef}>
+              <div className="dial__sundot" />
+            </div>
+          </button>
+        )}
         <OverflowMenu
           className="nav-btn"
           trigger="⋯"

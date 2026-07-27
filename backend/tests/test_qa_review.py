@@ -156,8 +156,13 @@ class TestGenerateQAReview:
         assert out["spec"]["asset_type"] == "street_light"
         assert "qa" not in out
 
-    def test_stream_generate_spec_carries_qa_and_layers(self, monkeypatch):
-        # streamed: complete_stream = [brief, layer1..layer4] = 5; QA = 1 complete.
+    def test_stream_generate_spec_carries_layers_and_skips_qa(self, monkeypatch):
+        """The STREAMING generate does NOT run the QA reviewer. Its verdict is
+        advisory and nothing in the UI reads it, while the call added a whole
+        extra provider round-trip at the very end of an already-long run —
+        exactly where a serverless/proxy timeout cuts the connection and costs
+        the user the entire generation. Non-streamed generate_spec keeps it
+        (see test_qa_verdict_and_layers_trace above)."""
         stream_calls = script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, VALID, VALID])
         complete_calls = script_complete(monkeypatch, [qa_json("approve")])
 
@@ -165,22 +170,10 @@ class TestGenerateQAReview:
 
         assert payload["ok"] is True
         assert payload["result"]["spec"]["asset_type"] == "street_light"
-        assert payload["result"]["qa"]["verdict"] == "approved"
         assert [l["status"] for l in payload["result"]["layers"]] == ["built"] * 4
         assert len(stream_calls) == 5  # brief + 4 layers, streamed
-        assert len(complete_calls) == 1  # the QA reviewer call, non-streamed
-        assert complete_calls[0].startswith("QA REVIEW.")
-
-    def test_stream_generate_spec_qa_reject_is_advisory(self, monkeypatch):
-        script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, VALID, VALID])
-        complete_calls = script_complete(monkeypatch, [
-            qa_json("reject", problems=["too short"], fixes=["make the pole taller"])])
-
-        raw, payload = collect_stream(stream_generate_spec("a street light"))
-
-        assert payload["ok"] is True
-        assert payload["result"]["qa"]["verdict"] == "rejected"
-        assert len(complete_calls) == 1  # advisory — one QA call, no re-run
+        assert complete_calls == []  # no QA round-trip on the streaming path
+        assert "qa" not in payload["result"]
 
 
 class TestGeometryDigest:

@@ -41,6 +41,11 @@ interface Props {
   onCheck: () => void;
   onCheckAI: () => void;
   onImprove: () => void;
+  /** "🎛 4 variants": request 4 alternate takes and open the preview grid
+   * (App owns the request/state; this panel only triggers it). */
+  onVariations: () => void;
+  /** Disables the variants trigger and swaps its label while a batch runs. */
+  variationsBusy: boolean;
   /** true while any AI call (the AI check or improve itself) is in flight */
   improveDisabled: boolean;
   /** true = spec/code slider limits enforced; false = free dimensions */
@@ -132,11 +137,19 @@ function MaterialControl({
           </option>
         ))}
       </select>
-      {slider("reflection", "metalness", 0, 1, 0.05, resolved.metalness)}
-      {slider("roughness", "roughness", 0, 1, 0.05, resolved.roughness)}
-      {slider("uv scale", "uv_scale", 0.25, 8, 0.25, resolved.uvScale)}
-      {slider("glow", "emission", 0, 6, 0.25, resolved.emission)}
-      {slider("weathering", "weathering", 0, 1, 0.05, resolved.weathering)}
+      {/* The five fine-tune sliders live behind a disclosure so a spec with
+          several material slots doesn't bury the rest of the panel — the
+          slot's name, color and preset (what you change most) stay visible.
+          A native <details> keeps it keyboard- and screen-reader-friendly
+          with no extra state. */}
+      <details className="material__tune">
+        <summary>reflection · roughness · uv · glow · weathering</summary>
+        {slider("reflection", "metalness", 0, 1, 0.05, resolved.metalness)}
+        {slider("roughness", "roughness", 0, 1, 0.05, resolved.roughness)}
+        {slider("uv scale", "uv_scale", 0.25, 8, 0.25, resolved.uvScale)}
+        {slider("glow", "emission", 0, 6, 0.25, resolved.emission)}
+        {slider("weathering", "weathering", 0, 1, 0.05, resolved.weathering)}
+      </details>
     </div>
   );
 }
@@ -325,6 +338,8 @@ export default function ControlsPanel({
   onCheck,
   onCheckAI,
   onImprove,
+  onVariations,
+  variationsBusy,
   improveDisabled,
   locked,
   onLock,
@@ -456,49 +471,54 @@ export default function ControlsPanel({
       ))}
 
       <h3>Tools</h3>
-      {/* The two most-used one-click actions stay prominent; the three
-          situational connection tools (a display toggle, a camera tour, and
-          the API-cost AI variant of the check) tuck into one labeled menu so
-          the panel isn't a stack of five heavy buttons. */}
-      <button
-        className="hardware-btn"
-        onClick={onCheck}
-        title="Audit every joint like a fabricator: hardware sticking into thin air, parts that don't really touch, floating members, below-grade geometry. Fixes are proposed, previewed on hover, and applied only when you confirm."
-      >
-        🔍 Check connections
-      </button>
-      <button
-        className="hardware-btn"
-        onClick={onImprove}
-        disabled={improveDisabled}
-        title="Runs the app's checks and an AI pass on the current asset, then adopts the improved result."
-      >
-        ✨ Improve
-      </button>
-      <OverflowMenu
-        className="hardware-btn"
-        trigger="🔩 Connection tools ▾"
-        title="Connection tools"
-        placement="below"
-        items={[
-          {
-            label: `🔩 ${hardwareOn ? "Hide" : "Show"} bolts & connections`,
-            onClick: onHardware,
-            active: hardwareOn,
-            title: "Adds engineered bolt/nut assemblies wherever components meet — included in exports too",
-          },
-          {
-            label: "🎥 Tour the connections",
-            onClick: onTour,
-            title: "Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)",
-          },
-          {
-            label: "🤖 Check connections with AI",
-            onClick: onCheckAI,
-            title: "Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm.",
-          },
-        ]}
-      />
+      {/* Six tools on a 2x3 grid — every one visible at a glance, in half the
+          vertical space the old full-width stack took. */}
+      <div className="tools-grid">
+        <button
+          className="hardware-btn"
+          onClick={onCheck}
+          title="Audit every joint like a fabricator: hardware sticking into thin air, parts that don't really touch, floating members, below-grade geometry. Fixes are proposed, previewed on hover, and applied only when you confirm."
+        >
+          🔍 Check connections
+        </button>
+        <button
+          className="hardware-btn"
+          onClick={onCheckAI}
+          title="Ask the AI to review every joint like a fabricator — joint types vs. materials, missing declarations, assembly access. Same rules as the deterministic check: proposals preview on hover and apply only when you confirm."
+        >
+          🤖 Check with AI
+        </button>
+        <button
+          className={`hardware-btn${hardwareOn ? " hardware-btn--on" : ""}`}
+          onClick={onHardware}
+          title="Adds engineered bolt/nut assemblies wherever components meet — included in exports too. Shown by default; hide them here."
+        >
+          🔩 {hardwareOn ? "Hide" : "Show"} bolts
+        </button>
+        <button
+          className="hardware-btn"
+          onClick={onTour}
+          title="Fly the camera to every connection point in order, highlighting each one (turns the hardware on if needed)"
+        >
+          🎥 Tour connections
+        </button>
+        <button
+          className="hardware-btn"
+          onClick={onImprove}
+          disabled={improveDisabled}
+          title="Runs the app's checks and an AI pass on the current asset, then adopts the improved result."
+        >
+          ✨ Improve
+        </button>
+        <button
+          className="hardware-btn"
+          onClick={onVariations}
+          disabled={improveDisabled || variationsBusy}
+          title="Ask the AI for 4 alternate takes on the current asset, preview each in 3D, and pick one to adopt"
+        >
+          {variationsBusy ? "✨ Requesting…" : "🎛 4 variants"}
+        </button>
+      </div>
       <p className="hint">
         Tip: click any part in the 3D view to edit just that part — position,
         size, and group settings.

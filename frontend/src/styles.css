@@ -491,6 +491,59 @@ button:disabled {
   text-align: left;
 }
 
+/* the bolts/connections button reads "on" while the hardware is shown */
+.hardware-btn--on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Tools: six actions on a 2x3 grid instead of a full-width stack. Cells
+ * share the width evenly and centre their (short) labels; long labels wrap
+ * rather than overflow, so every tool stays readable at panel width. ── */
+.tools-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.tools-grid .hardware-btn {
+  text-align: center;
+  padding: 9px 8px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+/* ── per-material fine-tune disclosure: the five sliders (reflection,
+ * roughness, uv scale, glow, weathering) collapse under one summary line so
+ * a multi-slot spec stays scannable. ── */
+.material__tune > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 3px 0;
+  user-select: none;
+}
+
+.material__tune > summary::-webkit-details-marker {
+  display: none;
+}
+
+.material__tune > summary::before {
+  content: "\25b8\00a0";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.material__tune[open] > summary::before {
+  content: "\25be\00a0";
+}
+
+.material__tune > summary:hover {
+  color: var(--text);
+}
+
 .header-tools {
   display: flex;
   align-items: center;
@@ -1303,7 +1356,8 @@ hr {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
@@ -1323,6 +1377,26 @@ hr {
   font-weight: 400;
   font-style: italic;
   color: var(--text-faint);
+}
+
+/* ✕ that aborts the streaming request (nothing is applied on cancel) — the
+ * last cell of the card's flex row, never shrinking, so it stays reachable
+ * however long the title or the streamed tail gets. */
+.stream-card__cancel {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.stream-card__cancel:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 @keyframes pulse {
