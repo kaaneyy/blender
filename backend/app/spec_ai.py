@@ -1616,15 +1616,26 @@ def _layer_user(layer: str, spec: dict, brief: str) -> str:
 
 
 def _finalize_layered(spec: dict, request: str, brief: str, panel: list | None,
-                      trace: list, code_mode: str, model: str | None) -> dict:
+                      trace: list, code_mode: str, model: str | None,
+                      run_qa: bool = True) -> dict:
     """Combine step: re-validate/build the accumulated spec once (leniently —
-    each layer already validated as it went), run ONE advisory QA review over
-    the whole, and attach brief/panel/qa + the per-layer ``layers`` trace."""
+    each layer already validated as it went), optionally run ONE advisory QA
+    review over the whole, and attach brief/panel/qa + the per-layer ``layers``
+    trace.
+
+    ``run_qa=False`` skips the review. The STREAMING path passes it: the QA
+    verdict is advisory and nothing in the UI reads it, so on that path it was
+    a whole extra provider call — more tokens, and ~a call's worth of extra
+    wall clock at the very END of an already-long 5-call run, which is exactly
+    where a serverless/proxy timeout cuts the connection and costs the user
+    the entire generation. The non-streaming :func:`generate_spec` keeps it.
+    """
     out, prims = _postprocess_core(json.dumps(spec), code_mode, lenient_buildability=True)
-    qa = _run_qa_review(request, out.get("spec") or {}, out.get("violations") or [],
-                        prims, model)
-    out["qa"] = {"verdict": _QA_VERDICT_LABEL[qa["verdict"]],
-                 "problems": qa["problems"], "fixes": qa["fixes"]}
+    if run_qa:
+        qa = _run_qa_review(request, out.get("spec") or {}, out.get("violations") or [],
+                            prims, model)
+        out["qa"] = {"verdict": _QA_VERDICT_LABEL[qa["verdict"]],
+                     "problems": qa["problems"], "fixes": qa["fixes"]}
     out["brief"] = brief
     if panel:
         out["panel"] = panel
@@ -2929,15 +2940,53 @@ def _stream_attempts(system, user, finalize, retry: bool = True, model: str | No
     return payload
 
 
+def _with_terminal_sentinel(inner):
+    """Wrap a streaming generator so the client ALWAYS receives exactly ONE
+    terminal sentinel + result envelope.
+
+    Every streaming endpoint ends with ``STREAM_SENTINEL + json`` — the
+    frontend raises "The stream ended without a result" when it never arrives,
+    throwing away every token the run already spent. Individual passes guard
+    themselves, but an exception raised BETWEEN them (a combine step, a
+    finalizer, a bug) escapes the generator and tears the stream mid-flight.
+    This wrapper is the backstop: it forwards the inner stream untouched, and
+    if that stream ends — or dies — without having emitted a sentinel, it
+    emits one describing the failure. A run can then always be acted on
+    instead of vanishing.
+
+    Only ``Exception`` is caught: ``GeneratorExit`` is a ``BaseException``, so
+    a client disconnect still closes the generator cleanly rather than trying
+    to write to a socket nobody is reading.
+    """
+    emitted = False
+    try:
+        for chunk in inner:
+            if not emitted and isinstance(chunk, str) and STREAM_SENTINEL in chunk:
+                emitted = True
+            yield chunk
+    except Exception as exc:
+        if not emitted:
+            yield STREAM_SENTINEL + json.dumps(
+                {"ok": False, "error": f"Generation failed unexpectedly: {exc}",
+                 "kind": "unknown"})
+        return
+    if not emitted:
+        yield STREAM_SENTINEL + json.dumps(
+            {"ok": False, "error": "Generation produced no result", "kind": "unknown"})
+
+
 def _stream_pipeline(system, user, finalize, retry: bool = True, model: str | None = None,
                      max_tokens: int | None = None):
     """A single streaming call → live text + ONE terminal sentinel payload
     (thin wrapper over :func:`_stream_attempts`). Used by refine / focus /
     wizard / improve / review / standards — behavior is identical to before
     the ``_stream_attempts`` extraction."""
-    payload = yield from _stream_attempts(system, user, finalize, retry=retry,
-                                          model=model, max_tokens=max_tokens)
-    yield STREAM_SENTINEL + json.dumps(payload)
+    def inner():
+        payload = yield from _stream_attempts(system, user, finalize, retry=retry,
+                                              model=model, max_tokens=max_tokens)
+        yield STREAM_SENTINEL + json.dumps(payload)
+
+    return _with_terminal_sentinel(inner())
 
 
 def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | None = None,
@@ -3010,12 +3059,23 @@ def stream_generate_spec(prompt: str, code_mode: str = "strict", model: str | No
                 trace.append({"layer": layer, "status": "skipped",
                               "error": str(layer_payload.get("error", ""))[:200]})
 
-        # Combine: final advisory QA over the whole, then the terminal payload.
-        yield "\n\n[combining the layers & reviewing]\n\n"
-        final = _finalize_layered(spec, panel_request, brief, panel, trace, code_mode, model)
+        # Combine into the terminal payload. The layers already validated and
+        # BUILT this spec, so a failure here (a lenient re-validate that trips,
+        # a finalizer bug) must never throw that work — and its tokens — away:
+        # fall back to shipping the accumulated spec. The client recomputes
+        # code violations locally anyway.
+        yield "\n\n[combining the layers]\n\n"
+        try:
+            final = _finalize_layered(spec, panel_request, brief, panel, trace,
+                                      code_mode, model, run_qa=False)
+        except Exception as exc:
+            final = {"spec": spec, "violations": [], "brief": brief, "layers": trace,
+                     "combine_error": str(exc)[:200]}
+            if panel:
+                final["panel"] = panel
         yield STREAM_SENTINEL + json.dumps({"ok": True, "result": final})
 
-    return gen()
+    return _with_terminal_sentinel(gen())
 
 
 def stream_refine_spec(spec: dict, message: str, code_mode: str = "strict",

@@ -135,10 +135,15 @@ class TestGracefulDegradation:
 
 class TestStreaming:
     def test_streams_a_stage_per_layer_and_one_sentinel(self, monkeypatch):
+        # the STREAMING path skips the advisory QA call (nothing reads its
+        # verdict, and it sat on the critical path where a timeout cuts the
+        # connection) — so the 5 streamed replies are the whole run.
         script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, VALID, VALID])
-        script_complete(monkeypatch, [QA_APPROVE])  # QA is non-streamed
+        calls = script_complete(monkeypatch, [])
 
         raw, payload = collect_stream(stream_generate_spec("a street light"))
+
+        assert calls == []  # no extra non-streamed provider call
 
         for stage in ("layer 1/4 — structure", "layer 2/4 — function",
                       "layer 3/4 — connections", "layer 4/4 — materials & finish",
@@ -150,7 +155,7 @@ class TestStreaming:
     def test_stream_middle_layer_skipped_still_ships(self, monkeypatch):
         # brief, structure, function, connections(fail), materials
         script_stream(monkeypatch, [PANEL_REPLY, VALID, VALID, NON_TRANSIENT, VALID])
-        script_complete(monkeypatch, [QA_APPROVE])
+        script_complete(monkeypatch, [])
 
         raw, payload = collect_stream(stream_generate_spec("a street light"))
 

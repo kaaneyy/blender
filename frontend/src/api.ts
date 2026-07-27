@@ -244,11 +244,81 @@ export async function variationsSpec(
 
 const SENTINEL = "<<<ASSETFORGE_RESULT>>>";
 
+/** Every top-level `{...}` block in `text`, in order. String-aware (braces
+ * and escapes inside JSON strings don't affect nesting), so it only returns
+ * blocks that actually balanced — a block truncated mid-write is skipped
+ * rather than returned broken. */
+function jsonObjectsIn(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === "}" && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        out.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
+
+/** Last spec-shaped JSON object in streamed text, or null.
+ *
+ * When a stream dies before its terminal sentinel — a serverless/proxy
+ * timeout, a dropped connection — the model's work is still sitting in the
+ * text we already received. Rather than discard a whole generation (and
+ * everything it cost), pull the most recent complete spec back out of it.
+ * The layered pipeline emits one spec per layer, so the LAST complete block
+ * is the most finished; a block truncated mid-write never balances, so the
+ * previous layer's spec is used instead. Callers still adopt the result
+ * through the normal validate-and-build gate, so an unusable salvage is
+ * rejected exactly like any other bad spec. */
+export function salvageSpec(text: string): AssetSpec | null {
+  const blocks = jsonObjectsIn(text.replace(/<\/?think>/g, ""));
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(blocks[i]);
+    } catch {
+      continue; // not JSON (a prose brace, a partial write) — keep looking
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const obj = parsed as Record<string, unknown>;
+    // accept either a bare spec or one wrapped in a result envelope
+    const raw = obj.spec && typeof obj.spec === "object" ? obj.spec : obj;
+    const cand = raw as Record<string, unknown>;
+    if (typeof cand.asset_type === "string" && Array.isArray(cand.parameters)) {
+      return cand as unknown as AssetSpec;
+    }
+  }
+  return null;
+}
+
 async function streamPost(
   path: string,
   body: unknown,
   onChunk: (text: string) => void,
   signal?: AbortSignal,
+  /** Last-resort recovery when the stream ends with no terminal sentinel:
+   * given everything received so far, return a result envelope to use, or
+   * null to surface the error. Lets a cut connection still yield the work the
+   * model already streamed instead of costing the user the whole run. */
+  salvage?: (text: string) => Record<string, unknown> | null,
 ): Promise<Record<string, unknown>> {
   if (signal?.aborted) throw abortError();
   let resp: Response;
@@ -299,7 +369,18 @@ async function streamPost(
   }
 
   const idx = buf.indexOf(SENTINEL);
-  if (idx === -1) throw new Error("The stream ended without a result — try again.");
+  if (idx === -1) {
+    // The connection died before the backend could send its result envelope
+    // (serverless timeout, proxy cut, network drop). Everything the model
+    // streamed is still in `buf` — recover a usable result from it rather
+    // than throwing away the whole run.
+    const rescued = salvage?.(buf);
+    if (rescued) return rescued;
+    throw new Error(
+      "The stream ended before the result arrived, and nothing usable could be " +
+        "recovered from it — try again.",
+    );
+  }
   onChunk(buf.slice(0, idx));
   const payload = JSON.parse(buf.slice(idx + SENTINEL.length));
   if (!payload.ok) throw new Error(String(payload.error ?? "Generation failed"));
@@ -406,18 +487,34 @@ function parseLayers(raw: unknown): LayerStep[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** Salvage helper shared by the spec-returning streams: wraps a recovered
+ * spec in the same envelope shape the backend would have sent, flagged
+ * `recovered` so the UI can say the result came from a truncated stream. */
+function salvageSpecEnvelope(text: string): Record<string, unknown> | null {
+  const spec = salvageSpec(text);
+  return spec ? { spec, recovered: true } : null;
+}
+
 export async function generateSpecStream(
   prompt: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   clarifications: Clarification[] = [],
   signal?: AbortSignal,
-): Promise<{ spec: AssetSpec; brief?: string; panel?: PanelEntry[]; layers?: LayerStep[] }> {
+): Promise<{
+  spec: AssetSpec;
+  brief?: string;
+  panel?: PanelEntry[];
+  layers?: LayerStep[];
+  /** true when the spec was recovered from a stream that ended early */
+  recovered?: boolean;
+}> {
   const result = await streamPost(
     "/generate-spec-stream",
     { prompt, code_mode: "strict", model, clarifications },
     onChunk,
     signal,
+    salvageSpecEnvelope,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return {
@@ -425,6 +522,7 @@ export async function generateSpecStream(
     brief: typeof result.brief === "string" ? result.brief : undefined,
     panel: parsePanel(result.panel),
     layers: parseLayers(result.layers),
+    recovered: result.recovered === true,
   };
 }
 
@@ -434,15 +532,20 @@ export async function refineSpecStream(
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   signal?: AbortSignal,
-): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
+): Promise<{ spec: AssetSpec; changes?: SpecChanges; recovered?: boolean }> {
   const result = await streamPost(
     "/refine-spec-stream",
     { spec, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
     signal,
+    salvageSpecEnvelope,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
-  return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
+  return {
+    spec: result.spec as AssetSpec,
+    changes: parseChanges(result.changes),
+    recovered: result.recovered === true,
+  };
 }
 
 /** Deep-detail one named area of the current spec, keeping the rest intact. */
@@ -458,6 +561,7 @@ export async function focusSpecStream(
     { spec, area, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
     signal,
+    salvageSpecEnvelope,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return result.spec as AssetSpec;
@@ -475,15 +579,20 @@ export async function wizardStepStream(
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   signal?: AbortSignal,
-): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
+): Promise<{ spec: AssetSpec; changes?: SpecChanges; recovered?: boolean }> {
   const result = await streamPost(
     "/wizard-step-stream",
     { spec, step, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
     signal,
+    salvageSpecEnvelope,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
-  return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
+  return {
+    spec: result.spec as AssetSpec,
+    changes: parseChanges(result.changes),
+    recovered: result.recovered === true,
+  };
 }
 
 /** AI fabrication review of the spec's connections. The backend answers in
@@ -664,6 +773,7 @@ export async function improveSpecStream(
     { spec, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
     signal,
+    salvageSpecEnvelope,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
@@ -678,7 +788,15 @@ export async function installGuideStream(
   onChunk: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  const result = await streamPost("/install-guide-stream", { spec }, onChunk, signal);
+  const result = await streamPost(
+    "/install-guide-stream",
+    { spec },
+    onChunk,
+    signal,
+    // the guide is prose: whatever streamed before the cut is already the
+    // guide, so keep it instead of losing the whole call
+    (text) => (text.trim().length > 200 ? { guide: text.trim() } : null),
+  );
   if (typeof result?.guide !== "string") throw new Error("Backend returned no guide");
   return result.guide;
 }

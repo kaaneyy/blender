@@ -97,6 +97,22 @@ function layerEntries(layers: LayerStep[] | undefined): ChatEntry[] {
   return [{ role: "assetforge", text }];
 }
 
+/** Chat line shown when a result had to be rescued from a stream that ended
+ * early (a serverless/proxy timeout, a dropped connection). The work isn't
+ * lost — it's just missing whatever the last layer would have added. */
+function recoveredEntries(recovered: boolean | undefined): ChatEntry[] {
+  if (!recovered) return [];
+  return [
+    {
+      role: "assetforge",
+      text:
+        "⚠️ The connection dropped before the server finished, so this was " +
+        "recovered from what had already been generated — the last step may " +
+        "be missing. Refine it, or generate again if it looks off.",
+    },
+  ];
+}
+
 /** Optional "✏️ what changed" chat line appended right after an AI edit,
  * built from the backend's `changes` diff envelope — [] when there's
  * nothing to show (no envelope from an older backend, or a failed/empty
@@ -350,7 +366,7 @@ export default function PromptPanel({
   const runGenerate = (text: string, clarifications: Clarification[] = []) =>
     run("generate", async (signal) => {
       if (!text) return;
-      const { spec: newSpec, brief, panel, layers } = await generateSpecStream(
+      const { spec: newSpec, brief, panel, layers, recovered } = await generateSpecStream(
         text, setStreamText, model, clarifications, signal,
       );
       const problem = onSpec(newSpec);
@@ -370,6 +386,7 @@ export default function PromptPanel({
         role: "assetforge",
         text: `Built "${newSpec.name}" (${newSpec.asset_type}). Refine it below or tweak the sliders.${statusSuffix(newSpec)}`,
       });
+      entries.push(...recoveredEntries(recovered));
       entries.push(...layerEntries(layers));
       entries.push(...panelEntries(panel));
       setChat(entries);
@@ -381,7 +398,7 @@ export default function PromptPanel({
   const runGuidedStart = (text: string, clarifications: Clarification[] = []) =>
     run("wizard", async (signal) => {
       if (!text) return;
-      const { spec: newSpec, brief, panel } = await generateSpecStream(
+      const { spec: newSpec, brief, panel, recovered } = await generateSpecStream(
         text, setStreamText, model, clarifications, signal,
       );
       const problem = onSpec(newSpec);
@@ -401,6 +418,7 @@ export default function PromptPanel({
         role: "assetforge",
         text: `Step 1 — built the form of "${newSpec.name}". Review it, then refine or accept.${statusSuffix(newSpec)}`,
       });
+      entries.push(...recoveredEntries(recovered));
       entries.push(...panelEntries(panel));
       setChat(entries);
       setPrompt("");
@@ -596,7 +614,7 @@ export default function PromptPanel({
     run("refine", async (signal) => {
       const msg = refineMsg.trim();
       if (!msg) return;
-      const { spec: newSpec, changes } = await refineSpecStream(
+      const { spec: newSpec, changes, recovered } = await refineSpecStream(
         spec, msg + groundingBlock(spec), setStreamText, model, signal,
       );
       const problem = onSpec(newSpec);
@@ -605,6 +623,7 @@ export default function PromptPanel({
         ...c,
         { role: "you", text: msg },
         { role: "assetforge", text: `Updated "${newSpec.name}".${statusSuffix(newSpec)}` },
+        ...recoveredEntries(recovered),
         ...changeEntries(changes),
       ]);
       setRefineMsg("");
