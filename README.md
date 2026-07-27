@@ -127,6 +127,16 @@ browser.
 Every push to this repository redeploys your URL automatically — you never
 repeat these steps.
 
+> **Note on `maxDuration`.** `vercel.json` gives the API function
+> `"maxDuration": 300` (5 minutes). A generation runs five AI calls back to
+> back and can outlive the 60-second platform default; when it does, Vercel
+> kills the function mid-response and the app has to recover the asset from
+> the partial stream instead of receiving a finished one. **300 requires a
+> Vercel Pro plan** — on the free Hobby plan the maximum is 60, and a higher
+> value fails the deploy with a plan-limit error. If you're on Hobby, change
+> that number to `60`; generation still works, it just leans on the recovery
+> path more often.
+
 ### Turn on the AI (DeepSeek)
 
 Without this step everything works except the "Describe any asset" box.
