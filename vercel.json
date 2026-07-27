@@ -5,7 +5,8 @@
   "outputDirectory": "frontend/dist",
   "functions": {
     "api/index.py": {
-      "excludeFiles": "{frontend/**,docs/**,.git/**}"
+      "excludeFiles": "{frontend/**,docs/**,.git/**}",
+      "maxDuration": 300
     }
   },
   "rewrites": [
