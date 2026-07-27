@@ -11,6 +11,7 @@ import {
   focusSpecStream,
   generateSpecStream,
   installGuideStream,
+  isAbortError,
   refineSpecStream,
   summarizeChanges,
   updateStandardsStream,
@@ -281,6 +282,12 @@ export default function PromptPanel({
   const [clarify, setClarify] = useState<ClarifyState | null>(null);
   const [clarifyBusy, setClarifyBusy] = useState<false | "generate" | "wizard">(false);
   const guideCache = useRef<{ key: string; text: string } | null>(null);
+  /** Controller for the AI call currently in flight, so the ✕ on the
+   * streaming card (and a clarify cancel) can abort it. */
+  const abortRef = useRef<AbortController | null>(null);
+  /** Controller for the in-flight /clarify-request specifically — the clarify
+   * popup's ✕ has to abort it WITHOUT falling through to generation. */
+  const clarifyAbortRef = useRef<AbortController | null>(null);
   const violationCount = Object.keys(violations).length;
 
   // the clarify popup is open from the moment questions are requested (shows
@@ -309,26 +316,42 @@ export default function PromptPanel({
     if (clarify) clarifyFirstSelectRef.current?.focus();
   }, [clarify]);
 
-  const run = async (kind: Exclude<Busy, false>, task: () => Promise<void>) => {
+  /** Runs one AI task with a fresh AbortController so the ✕ on the streaming
+   * card can cancel it. A cancelled task throws before it ever reaches
+   * `onSpec`, so nothing is applied and no error banner is shown — the asset
+   * is left exactly as it was. */
+  const run = async (
+    kind: Exclude<Busy, false>,
+    task: (signal: AbortSignal) => Promise<void>,
+  ) => {
     if (busy) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(kind);
     setError(null);
     setStreamText("");
     try {
-      await task();
+      await task(controller.signal);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!isAbortError(e)) setError(e instanceof Error ? e.message : String(e));
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setBusy(false);
       setStreamText("");
     }
   };
 
+  /** ✕ on the streaming card: abort whatever AI call is in flight. */
+  const cancelRun = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
+
   const runGenerate = (text: string, clarifications: Clarification[] = []) =>
-    run("generate", async () => {
+    run("generate", async (signal) => {
       if (!text) return;
       const { spec: newSpec, brief, panel, layers } = await generateSpecStream(
-        text, setStreamText, model, clarifications,
+        text, setStreamText, model, clarifications, signal,
       );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
@@ -356,10 +379,10 @@ export default function PromptPanel({
   /** Start the guided 4-step build: generate the raw form, then enter the
    * wizard at step 1. Steps never auto-chain from here. */
   const runGuidedStart = (text: string, clarifications: Clarification[] = []) =>
-    run("wizard", async () => {
+    run("wizard", async (signal) => {
       if (!text) return;
       const { spec: newSpec, brief, panel } = await generateSpecStream(
-        text, setStreamText, model, clarifications,
+        text, setStreamText, model, clarifications, signal,
       );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
@@ -394,8 +417,10 @@ export default function PromptPanel({
     if (!text || busy !== false || clarifyBusy !== false) return;
     setError(null);
     setClarifyBusy(mode);
+    const controller = new AbortController();
+    clarifyAbortRef.current = controller;
     try {
-      const questions = await clarifyRequest(text, model);
+      const questions = await clarifyRequest(text, model, controller.signal);
       setClarify({
         forPrompt: text,
         mode,
@@ -403,13 +428,34 @@ export default function PromptPanel({
         choices: questions.map(() => ""),
         custom: questions.map(() => ""),
       });
-    } catch {
+    } catch (e) {
       setClarify(null);
+      // A CANCEL stops here — the user asked for nothing to happen, so it must
+      // not fall through into a generation. Any other failure still degrades
+      // to generating directly (clarifying is an enhancement, never a gate).
+      if (isAbortError(e)) return;
       if (mode === "wizard") void runGuidedStart(text);
       else void runGenerate(text);
     } finally {
+      if (clarifyAbortRef.current === controller) clarifyAbortRef.current = null;
       setClarifyBusy(false);
     }
+  };
+
+  /** Abort an in-flight /clarify-request and close the popup, generating
+   * nothing (see the isAbortError branch in startClarify). */
+  const cancelClarify = () => {
+    clarifyAbortRef.current?.abort();
+    clarifyAbortRef.current = null;
+    setClarify(null);
+  };
+
+  /** The popup's ✕ / backdrop / Esc: cancel outright while the questions are
+   * still loading, else skip them and continue with the flow (today's
+   * behavior once they're on screen). */
+  const dismissClarify = () => {
+    if (clarify === null) cancelClarify();
+    else finishClarify(false);
   };
 
   const setClarifyChoice = (i: number, value: string) =>
@@ -449,7 +495,7 @@ export default function PromptPanel({
   useEffect(() => {
     if (!clarifyOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finishClarify(false);
+      if (e.key === "Escape") dismissClarify();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -462,7 +508,7 @@ export default function PromptPanel({
    * are explicitly told not to touch geometry, and grounding them with a
    * connection complaint would fight that scope. */
   const applyWizardChange = () =>
-    run("wizard", async () => {
+    run("wizard", async (signal) => {
       if (wizardStep === null) return;
       const msg = wizardMsg.trim();
       if (!msg) return;
@@ -471,8 +517,8 @@ export default function PromptPanel({
       const sent = groundGeometry ? msg + groundingBlock(spec) : msg;
       const { spec: newSpec, changes } =
         step.key === "form"
-          ? await refineSpecStream(spec, sent, setStreamText, model)
-          : await wizardStepStream(spec, step.key as WizardStep, sent, setStreamText, model);
+          ? await refineSpecStream(spec, sent, setStreamText, model, signal)
+          : await wizardStepStream(spec, step.key as WizardStep, sent, setStreamText, model, signal);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
@@ -492,7 +538,7 @@ export default function PromptPanel({
    * its very first attempt instead of only after the user notices and asks
    * again. */
   const acceptWizardStep = () =>
-    run("wizard", async () => {
+    run("wizard", async (signal) => {
       if (wizardStep === null) return;
       if (wizardStep >= WIZARD_STEPS.length - 1) {
         setChat((c) => [
@@ -511,6 +557,7 @@ export default function PromptPanel({
         note,
         setStreamText,
         model,
+        signal,
       );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
@@ -546,11 +593,11 @@ export default function PromptPanel({
   };
 
   const runRefine = () =>
-    run("refine", async () => {
+    run("refine", async (signal) => {
       const msg = refineMsg.trim();
       if (!msg) return;
       const { spec: newSpec, changes } = await refineSpecStream(
-        spec, msg + groundingBlock(spec), setStreamText, model,
+        spec, msg + groundingBlock(spec), setStreamText, model, signal,
       );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
@@ -565,10 +612,10 @@ export default function PromptPanel({
 
   /** Deep-detail ONE area, leaving everything else untouched. */
   const runFocus = () =>
-    run("focus", async () => {
+    run("focus", async (signal) => {
       const area = focusArea.trim();
       if (!area) return;
-      const newSpec = await focusSpecStream(spec, area, setStreamText, model);
+      const newSpec = await focusSpecStream(spec, area, setStreamText, model, signal);
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
@@ -584,7 +631,7 @@ export default function PromptPanel({
    * connections audit also fetches the server's machine findings (floating
    * parts, dead declarations) so the AI fixes measured problems, not vibes. */
   const runPreset = (preset: { label: string; message: string }) =>
-    run("refine", async () => {
+    run("refine", async (signal) => {
       let message = preset.message;
       if (preset.label.includes("connections")) {
         const findings = await buildabilityFindings(spec);
@@ -592,7 +639,9 @@ export default function PromptPanel({
           message += `\nMachine findings to fix first:\n- ${findings.join("\n- ")}`;
         }
       }
-      const { spec: newSpec, changes } = await refineSpecStream(spec, message, setStreamText, model);
+      const { spec: newSpec, changes } = await refineSpecStream(
+        spec, message, setStreamText, model, signal,
+      );
       const problem = onSpec(newSpec);
       if (problem) throw new Error(problem);
       setChat((c) => [
@@ -611,17 +660,17 @@ export default function PromptPanel({
       setGuide(guideCache.current.text);
       return;
     }
-    void run("guide", async () => {
+    void run("guide", async (signal) => {
       setGuide(null);
-      const text = await installGuideStream(spec, setStreamText);
+      const text = await installGuideStream(spec, setStreamText, signal);
       guideCache.current = { key, text };
       setGuide(text);
     });
   };
 
   const runStandardsUpdate = () =>
-    run("standards", async () => {
-      setStandardsResult(await updateStandardsStream(setStreamText));
+    run("standards", async (signal) => {
+      setStandardsResult(await updateStandardsStream(setStreamText, signal));
     });
 
   const downloadSpec = () => {
@@ -715,7 +764,7 @@ export default function PromptPanel({
       </div>
 
       {clarifyOpen && (
-        <div className="modal-overlay" onClick={() => finishClarify(false)}>
+        <div className="modal-overlay" onClick={dismissClarify}>
           <div
             className="modal clarify-modal"
             role="dialog"
@@ -732,9 +781,17 @@ export default function PromptPanel({
               </h3>
               <button
                 className="close"
-                onClick={() => finishClarify(false)}
-                title="Skip and generate directly"
-                aria-label="Skip and generate directly"
+                onClick={dismissClarify}
+                title={
+                  clarify === null
+                    ? "Cancel — nothing will be generated"
+                    : "Skip and generate directly"
+                }
+                aria-label={
+                  clarify === null
+                    ? "Cancel — nothing will be generated"
+                    : "Skip and generate directly"
+                }
               >
                 ✕
               </button>
@@ -743,7 +800,7 @@ export default function PromptPanel({
               {clarify === null ? (
                 <div className="clarify-modal__loading">
                   <span className="clarify-modal__spinner" aria-hidden="true" />
-                  <p>Thinking of a few quick questions…</p>
+                  <p>Thinking of a few quick questions… (✕ cancels)</p>
                 </div>
               ) : (
                 <>
@@ -943,7 +1000,9 @@ export default function PromptPanel({
         </div>
       )}
 
-      {busy !== false && <StreamLine title={BUSY_TITLES[busy]} text={streamText} />}
+      {busy !== false && (
+        <StreamLine title={BUSY_TITLES[busy]} text={streamText} onCancel={cancelRun} />
+      )}
 
       {error && (
         <div className="violation" role="alert">

@@ -20,15 +20,40 @@ export const MODEL_OPTIONS: Array<{ id: DeepseekModel; label: string; hint: stri
  * back to, so a retired id like deepseek-chat never sticks in the dropdown). */
 export const DEFAULT_MODEL: DeepseekModel = "deepseek-v4-flash";
 
-async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+/** True for the rejection a fetch produces when its AbortSignal fires — i.e.
+ * the user cancelled. Callers use this to stay silent (no error banner, no
+ * spec change) instead of reporting a failure: a cancel is not an error.
+ * Covers both the DOMException browsers throw and the plain `{name}` shape a
+ * polyfill/test double may use. */
+export function isAbortError(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { name?: unknown }).name === "AbortError";
+}
+
+/** Rejection used when a caller passes a signal that is ALREADY aborted —
+ * shaped like a real fetch abort so `isAbortError` catches it too. */
+function abortError(): Error {
+  const err = new Error("Cancelled");
+  err.name = "AbortError";
+  return err;
+}
+
+async function post(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  if (signal?.aborted) throw abortError();
   let resp: Response;
   try {
     resp = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    // a cancel must surface as a cancel, never as "backend unreachable"
+    if (isAbortError(e)) throw e;
     throw new Error(
       "Could not reach the AI backend. If you deployed to Vercel, make sure " +
         "the last deployment succeeded; for local dev, start it with " +
@@ -101,8 +126,9 @@ export interface Clarification {
 export async function clarifyRequest(
   prompt: string,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<ClarifyQuestion[]> {
-  const data = await post("/clarify-request", { prompt, model });
+  const data = await post("/clarify-request", { prompt, model }, signal);
   if (!Array.isArray(data?.questions)) throw new Error("Backend returned no questions");
   return (data.questions as Array<Record<string, unknown>>).map((q) => {
     const question: ClarifyQuestion = {
@@ -193,13 +219,13 @@ export async function variationsSpec(
   spec: AssetSpec,
   count = 4,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<Variant[]> {
-  const data = await post("/variations-spec", {
-    spec,
-    count,
-    code_mode: spec.code_mode ?? "strict",
-    model,
-  });
+  const data = await post(
+    "/variations-spec",
+    { spec, count, code_mode: spec.code_mode ?? "strict", model },
+    signal,
+  );
   if (!Array.isArray(data?.variants)) throw new Error("Backend returned no variants");
   const out: Variant[] = [];
   (data.variants as unknown[]).forEach((item, i) => {
@@ -222,15 +248,20 @@ async function streamPost(
   path: string,
   body: unknown,
   onChunk: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  if (signal?.aborted) throw abortError();
   let resp: Response;
   try {
     resp = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    // a cancel must surface as a cancel, never as "backend unreachable"
+    if (isAbortError(e)) throw e;
     throw new Error(
       "Could not reach the AI backend. If you deployed to Vercel, make sure " +
         "the last deployment succeeded; for local dev, start it with " +
@@ -253,6 +284,8 @@ async function streamPost(
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     for (;;) {
+      // honor a cancel promptly even where the reader itself doesn't reject
+      if (signal?.aborted) throw abortError();
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
@@ -378,11 +411,13 @@ export async function generateSpecStream(
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
   clarifications: Clarification[] = [],
+  signal?: AbortSignal,
 ): Promise<{ spec: AssetSpec; brief?: string; panel?: PanelEntry[]; layers?: LayerStep[] }> {
   const result = await streamPost(
     "/generate-spec-stream",
     { prompt, code_mode: "strict", model, clarifications },
     onChunk,
+    signal,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return {
@@ -398,11 +433,13 @@ export async function refineSpecStream(
   message: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
   const result = await streamPost(
     "/refine-spec-stream",
     { spec, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
+    signal,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
@@ -414,11 +451,13 @@ export async function focusSpecStream(
   area: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<AssetSpec> {
   const result = await streamPost(
     "/focus-spec-stream",
     { spec, area, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
+    signal,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return result.spec as AssetSpec;
@@ -435,11 +474,13 @@ export async function wizardStepStream(
   message: string,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<{ spec: AssetSpec; changes?: SpecChanges }> {
   const result = await streamPost(
     "/wizard-step-stream",
     { spec, step, message, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
+    signal,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   return { spec: result.spec as AssetSpec, changes: parseChanges(result.changes) };
@@ -454,8 +495,9 @@ export async function reviewConnectionsStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<AuditReport> {
-  const result = await streamPost("/review-connections-stream", { spec, model }, onChunk);
+  const result = await streamPost("/review-connections-stream", { spec, model }, onChunk, signal);
   if (!Array.isArray(result?.findings)) throw new Error("Backend returned no findings");
   return result as unknown as AuditReport;
 }
@@ -615,11 +657,13 @@ export async function improveSpecStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,
   model: DeepseekModel | "" = "",
+  signal?: AbortSignal,
 ): Promise<ImproveResult> {
   const result = await streamPost(
     "/improve-spec-stream",
     { spec, code_mode: spec.code_mode ?? "strict", model },
     onChunk,
+    signal,
   );
   if (!result?.spec) throw new Error("Backend returned no spec");
   const findings = Array.isArray(result.findings) ? (result.findings as Finding[]) : [];
@@ -632,14 +676,21 @@ export async function improveSpecStream(
 export async function installGuideStream(
   spec: AssetSpec,
   onChunk: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const result = await streamPost("/install-guide-stream", { spec }, onChunk);
+  const result = await streamPost("/install-guide-stream", { spec }, onChunk, signal);
   if (typeof result?.guide !== "string") throw new Error("Backend returned no guide");
   return result.guide;
 }
 
 export async function updateStandardsStream(
   onChunk: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<StandardsUpdateResult> {
-  return (await streamPost("/update-standards-stream", {}, onChunk)) as unknown as StandardsUpdateResult;
+  return (await streamPost(
+    "/update-standards-stream",
+    {},
+    onChunk,
+    signal,
+  )) as unknown as StandardsUpdateResult;
 }
