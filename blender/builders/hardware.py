@@ -221,6 +221,21 @@ def _round_radius(prim: Primitive) -> float:
     )
 
 
+def _is_square_tube(p: Primitive) -> bool:
+    """Hollow SQUARE stock (HSS) — a tube whose section is square. It is
+    still an upright structural member (same load path, same anchor base),
+    but nothing round-section wraps it: no band clamp, no slip fitter, and
+    its base plate is square."""
+    return p.kind == "tube" and p.params.get("section") == "square"
+
+
+def _is_round_section(p: Primitive) -> bool:
+    """True when the member presents a ROUND cross-section — the thing a
+    band clamp or slip fitter needs. Square stock is deliberately excluded
+    even though it is otherwise a perfectly good upright member."""
+    return p.kind in ROUND_KINDS and not _is_square_tube(p)
+
+
 def _is_upright_round(p: Primitive) -> bool:
     return p.kind in ("cylinder", "cone", "tube") and all(
         abs(a) < 1e-3 for a in p.rotation
@@ -728,6 +743,9 @@ def compute_hardware(prims: List[Primitive], spec=None) -> List[Primitive]:
         if p.kind == "box":
             member_r = max(p.params["size"][0], p.params["size"][1]) / 2
             shape = "square"
+        elif _is_square_tube(p):
+            member_r = p.params["radius"]  # half-width across flats
+            shape = "square"
         else:
             member_r = _radius_at_z(p, 0.0)
             shape = "round"
@@ -822,7 +840,7 @@ def _dispatch(joint: int, cand: dict, spec) -> List[Primitive]:
             axis != 2
             and upright is not None
             and not _is_upright_round(other)
-            and other.kind in ROUND_KINDS
+            and _is_round_section(other)
         ):
             ctype = "band_clamp"
         elif axis == 2 and pipe is not None and base_c[2] + base_h[2] <= 0.15:

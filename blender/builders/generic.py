@@ -23,12 +23,19 @@ def expression_env(spec: dict) -> dict:
     return env
 
 
+#: params whose value is a NAME, not a number — passed through untouched so
+#: the expression evaluator never tries to resolve e.g. "square" as a variable
+_ENUM_PARAMS = {"section"}
+
+
 def _eval_params(raw_params: dict, env: dict) -> dict:
     """Evaluate primitive params: scalars, triples, lathe profiles, sweep
     paths, and loft cross-sections all accept expressions."""
     params = {}
     for key, value in raw_params.items():
-        if key == "profile":
+        if key in _ENUM_PARAMS:
+            params[key] = value  # a named choice, never arithmetic
+        elif key == "profile":
             if isinstance(value, str):
                 params[key] = value  # named profile, resolved at realization
             else:

@@ -108,6 +108,8 @@ export interface SpecPrimitive {
     path?: Array<Array<number | string>>;
     radius_end?: number | string;
     wall?: number | string;
+    /** kind=tube: "round" (default) or "square" hollow stock (HSS) */
+    section?: "round" | "square";
     profile_start?: { shape: string; w: number | string; h: number | string };
     profile_end?: { shape: string; w: number | string; h: number | string };
   };
@@ -177,6 +179,8 @@ export interface Primitive {
     path?: Vec3[];
     radius_end?: number;
     wall?: number;
+    /** kind=tube: "round" (default) or "square" hollow stock (HSS) */
+    section?: "round" | "square";
     profile_start?: LoftProfile;
     profile_end?: LoftProfile;
   };

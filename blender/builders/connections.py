@@ -45,6 +45,11 @@ AXIS_ROT = {
 }
 
 
+#: shop-standard clearance of a drilled hole over its bolt diameter
+#: (1/16 in, AISC J3.2 nominal) — a 1/2 in anchor is drilled 9/16 in.
+HOLE_CLEARANCE = 0.0016
+
+
 def _pos(center: Sequence[float], axis: int, along: float) -> Tuple[float, float, float]:
     out = list(center)
     out[axis] = along
@@ -475,9 +480,24 @@ def ground_connection(
              cy + bolt_circle_r * math.sin(2.0 * math.pi * i / n_bolts))
             for i in range(n_bolts)
         ]
+    #: clearance of a drilled hole over its bolt — 1/16 in, the shop standard
+    #: (AISC J3.2 nominal): a 1/2 in anchor gets a 9/16 in hole. The drawing's
+    #: FOOT DETAIL calls this out as the (0.535) 4x hole.
+    hole_r = bolt_r + HOLE_CLEARANCE / 2
     for i, (x, y) in enumerate(anchor_xy):
         proj = 0.03  # bolt projection above the flange
         shaft_depth = flange_top + proj
+        prims.append(
+            # the drilled hole itself: negative space through plate AND grout,
+            # boolean-subtracted in Blender (never rendered in the preview) so
+            # the plate is actually drilled rather than merely having a bolt
+            # standing on it. Over-long on purpose so both faces cut clean.
+            Primitive(
+                kind="cylinder", name=f"{n}anchor_hole_{i + 1}", component=component,
+                location=(x, y, flange_top / 2), material_slot=slot, cut=True,
+                params={"radius": hole_r, "depth": flange_top * 2.4},
+            )
+        )
         prims.extend([
             Primitive(
                 kind="cylinder", name=f"{n}anchor_bolt_{i + 1}", component=component,

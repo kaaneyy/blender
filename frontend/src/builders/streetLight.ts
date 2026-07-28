@@ -71,7 +71,9 @@ function armPrimitives(
       location: [0, 0, 0],
       rotation: [0, 0, 0],
       materialSlot: "pole",
-      params: { path, radius: ARM_RADIUS * 1.25, radius_end: ARM_RADIUS * 0.8 },
+      // mast arms are hollow tube like the pole (see the shaft's `shell`):
+    // outer profile unchanged, real-world mass.
+    params: { path, radius: ARM_RADIUS * 1.25, radius_end: ARM_RADIUS * 0.8, shell: 0.0048 },
     },
     {
       kind: "tube",
@@ -161,7 +163,11 @@ function computeStreetLight(spec: AssetSpec): Primitive[] {
     location: [0, 0, poleHeight / 2],
     rotation: [0, 0, 0],
     materialSlot: "pole",
-    params: { radius_bottom: baseR, radius_top: topR, depth: poleHeight },
+    // a real tapered steel pole is HOLLOW — 3/16 in wall. `shell` is a
+    // Blender solidify, so the outer profile (and every preview dimension)
+    // is unchanged; it only makes the pole weigh what a pole weighs
+    // instead of a solid billet.
+    params: { radius_bottom: baseR, radius_top: topR, depth: poleHeight, shell: 0.0048 },
   });
   prims.push({
     kind: "lathe",

@@ -2259,3 +2259,95 @@ hr {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ── shop drawing sheet (ShopDrawing.tsx): orthographic views + dimensions
+ * + weight block, drawn as inline SVG so it prints and downloads. Ink is
+ * theme-aware via currentColor-ish tokens. ── */
+.shop-drawing {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sd {
+  width: 100%;
+  height: auto;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+}
+
+.sd__part {
+  fill: var(--panel-3);
+  stroke: var(--text);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sd__witness,
+.sd__dim {
+  stroke: var(--accent);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.sd__witness {
+  stroke-dasharray: 2 2;
+  opacity: 0.75;
+}
+
+.sd__dimtext {
+  fill: var(--accent);
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  text-anchor: middle;
+}
+
+.sd__viewlabel {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-anchor: middle;
+}
+
+.sd__block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sd__weight {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.sd__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sd__table td {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sd__num {
+  text-align: right;
+  font-family: ui-monospace, monospace;
+}
+
+.sd__stock {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media print {
+  .sd {
+    border: none;
+  }
+}

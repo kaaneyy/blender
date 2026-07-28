@@ -218,6 +218,11 @@
                 "type": ["number", "string"],
                 "description": "For kind=tube: wall thickness in meters."
               },
+              "section": {
+                "type": "string",
+                "enum": ["round", "square"],
+                "description": "For kind=tube: cross-section shape. round (default) is pipe; square is HSS/square tube — bike racks, sign posts, and railings are commonly square stock. `radius` is the half-width across flats either way, so a 2 in square tube has radius 0.0254 and a 0.188 in wall is wall 0.0048."
+              },
               "profile_start": {
                 "type": "object",
                 "additionalProperties": false,

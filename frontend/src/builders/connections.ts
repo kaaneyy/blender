@@ -15,6 +15,10 @@ export const AXIS_ROT: Record<number, Vec3> = {
   2: [0, 0, 0],
 };
 
+/** shop-standard clearance of a drilled hole over its bolt diameter
+ * (1/16 in, AISC J3.2 nominal) — a 1/2 in anchor is drilled 9/16 in. */
+const HOLE_CLEARANCE = 0.0016;
+
 function pos(center: readonly number[], axis: number, along: number): Vec3 {
   const out = [...center] as Vec3;
   out[axis] = along;
@@ -542,9 +546,27 @@ export function groundConnection(
       return [cx + boltCircleR * Math.cos(a), cy + boltCircleR * Math.sin(a)];
     });
   }
+  // clearance of a drilled hole over its bolt — 1/16 in, the shop standard
+  // (AISC J3.2 nominal): a 1/2 in anchor gets a 9/16 in hole. The drawing's
+  // FOOT DETAIL calls this out as the (0.535) 4x hole.
+  const holeR = boltR + HOLE_CLEARANCE / 2;
   anchorXY.forEach(([x, y], i) => {
     const proj = 0.03;
     const shaftDepth = flangeTop + proj;
+    prims.push({
+      // the drilled hole itself: negative space through plate AND grout,
+      // boolean-subtracted in Blender (never rendered in the preview) so the
+      // plate is actually drilled rather than merely having a bolt standing
+      // on it. Over-long on purpose so both faces cut clean.
+      kind: "cylinder",
+      name: `${n}anchor_hole_${i + 1}`,
+      component,
+      location: [x, y, flangeTop / 2],
+      rotation: [0, 0, 0],
+      materialSlot: slot,
+      cut: true,
+      params: { radius: holeR, depth: flangeTop * 2.4 },
+    });
     prims.push(
       {
         kind: "cylinder",

@@ -30,6 +30,9 @@ function evalParams(rp: NonNullable<AssetSpec["primitives"]>[number]["params"], 
   if (rp.shell !== undefined) params.shell = evalExpr(rp.shell, env);
   if (rp.radius_end !== undefined) params.radius_end = evalExpr(rp.radius_end, env);
   if (rp.wall !== undefined) params.wall = evalExpr(rp.wall, env);
+  // a named choice, never arithmetic — passed through untouched so the
+  // expression evaluator never tries to resolve e.g. "square" as a variable
+  if (rp.section !== undefined) params.section = rp.section;
   if (rp.profile !== undefined) {
     params.profile =
       typeof rp.profile === "string"

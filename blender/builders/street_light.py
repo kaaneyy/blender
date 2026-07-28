@@ -78,7 +78,10 @@ def _arm_primitives(arm_length: float, pole_height: float,
             component="arm",
             location=(0.0, 0.0, 0.0),
             material_slot="pole",
-            params={"path": path, "radius": ARM_RADIUS * 1.25, "radius_end": ARM_RADIUS * 0.8},
+            # mast arms are hollow tube like the pole (see the shaft's
+            # `shell`): outer profile unchanged, real-world mass.
+            params={"path": path, "radius": ARM_RADIUS * 1.25,
+                    "radius_end": ARM_RADIUS * 0.8, "shell": 0.0048},
         ),
         Primitive(  # C2: telescoping slip-fitter collar wrapping the pole
             kind="tube",
@@ -181,7 +184,12 @@ def compute_primitives(spec: dict) -> List[Primitive]:
             component="pole",
             location=(0.0, 0.0, pole_height / 2),
             material_slot="pole",
-            params={"radius_bottom": base_r, "radius_top": top_r, "depth": pole_height},
+            # a real tapered steel pole is HOLLOW — 3/16 in wall. `shell`
+            # is a Blender solidify, so the outer profile (and every preview
+            # dimension) is unchanged; it only makes the pole weigh what a
+            # pole weighs instead of a solid billet.
+            params={"radius_bottom": base_r, "radius_top": top_r,
+                    "depth": pole_height, "shell": 0.0048},
         )
     )
     prims.append(

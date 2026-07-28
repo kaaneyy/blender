@@ -23,3 +23,5 @@ export type { Aabb } from "./hardware";
 export { componentPivot } from "./edits";
 export { auditConnections, applyAuditFixes } from "./audit";
 export type { AuditFinding, AuditFix, AuditReport, FixOp } from "./audit";
+export { computeTakeoff, solidVolume, stockCallout, materialFamily, KG_PER_LB } from "./takeoff";
+export type { PartWeight, Takeoff } from "./takeoff";

@@ -128,17 +128,32 @@ def realize_loft(prim, segments: int):
 
 
 def realize_tube(prim, segments: int):
-    """B5: hollow cylinder — poles, bollards, and arms are never solid."""
+    """B5: hollow tube — poles, bollards, and arms are never solid.
+
+    ``section="square"`` builds hollow square stock (HSS) instead of pipe:
+    bike racks, sign posts and railings are commonly square tube. ``radius``
+    is the half-width across flats for both sections, so the wall solidify
+    below is identical either way."""
     import bpy
 
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=prim.params["radius"],
-        depth=prim.params["depth"],
-        location=prim.location,
-        rotation=prim.rotation,
-        vertices=segments,
-    )
-    obj = bpy.context.active_object
+    if prim.params.get("section") == "square":
+        r = prim.params["radius"]
+        bpy.ops.mesh.primitive_cube_add(
+            size=2.0, location=prim.location, rotation=prim.rotation,
+        )
+        obj = bpy.context.active_object
+        obj.scale = (r, r, prim.params["depth"] / 2.0)
+        # bake the scale in before solidify, or the wall comes out uneven
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    else:
+        bpy.ops.mesh.primitive_cylinder_add(
+            radius=prim.params["radius"],
+            depth=prim.params["depth"],
+            location=prim.location,
+            rotation=prim.rotation,
+            vertices=segments,
+        )
+        obj = bpy.context.active_object
     sol = obj.modifiers.new("AF_Tube", "SOLIDIFY")
     sol.thickness = prim.params["wall"]
     sol.offset = -1.0
