@@ -217,7 +217,10 @@ class TestRepeatGroupThinning:
         gussets, for a meaningfully smaller, still-buildable joint set."""
         spec = load("pergola.json")
         prims = compute_primitives(spec)
-        hardware = [p for p in prims if p.component == "hardware"]
+        # leanness is about VISIBLE hardware: drilled bolt holes are negative
+        # space (cut=True), subtracted in Blender and never rendered, so they
+        # don't count toward the part swarm this test guards against.
+        hardware = [p for p in prims if p.component == "hardware" and not p.cut]
         records = [p.meta["joint"] for p in prims if p.meta and "joint" in p.meta]
         by_type = {}
         for r in records:

@@ -274,11 +274,23 @@ export function PrimitiveMesh({
       );
       fix = AXIS_FIX;
       break;
-    case "tube": // preview shows the outer shell; wall is a Blender solidify
-      geometry = (
-        <cylinderGeometry args={[prim.params.radius!, prim.params.radius!, prim.params.depth!, 24]} />
-      );
-      fix = AXIS_FIX;
+    // preview shows the outer shell; wall is a Blender solidify. section
+    // "square" is hollow square stock (HSS) — radius is the half-width
+    // across flats for both sections, so the outer shell is 2r across.
+    case "tube":
+      geometry =
+        prim.params.section === "square" ? (
+          <boxGeometry
+            args={[prim.params.radius! * 2, prim.params.radius! * 2, prim.params.depth!]}
+          />
+        ) : (
+          <cylinderGeometry
+            args={[prim.params.radius!, prim.params.radius!, prim.params.depth!, 24]}
+          />
+        );
+      // a box is already authored Z-up (like case "box"); only the round
+      // section needs Three's Y-up cylinder rotated onto Z
+      fix = prim.params.section === "square" ? [0, 0, 0] : AXIS_FIX;
       break;
     case "cone":
       geometry = (

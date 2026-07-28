@@ -28,6 +28,7 @@ import CheckPanel from "./components/CheckPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import LibraryPanel from "./components/LibraryPanel";
 import PromptPanel from "./components/PromptPanel";
+import ShopDrawing from "./components/ShopDrawing";
 import SelectionPanel from "./components/SelectionPanel";
 import StreamLine from "./components/StreamLine";
 import VariationsPanel from "./components/VariationsPanel";
@@ -248,6 +249,8 @@ export default function App() {
   // the single-slot autosave and the one-file Save/Open flow above.
   // `libraryOpen` just gates whether the modal renders. ──
   const [libraryOpen, setLibraryOpen] = useState(false);
+  /** "📐 Shop drawing": the dimensioned sheet over the current build. */
+  const [drawingOpen, setDrawingOpen] = useState(false);
   const [variants, setVariants] = useState<Variant[] | null>(null);
   const [variantsError, setVariantsError] = useState<string | null>(null);
 
@@ -776,6 +779,7 @@ export default function App() {
           onSpec={adoptSpec}
           onVariations={startVariations}
           variationsBusy={variantsBusy}
+          onShopDrawing={() => setDrawingOpen(true)}
         />
       </aside>
       <main className="viewport">
@@ -1050,6 +1054,14 @@ export default function App() {
           onPick={adoptSpec}
           onClose={closeVariations}
           onRetry={startVariations}
+        />
+      )}
+      {drawingOpen && (
+        <ShopDrawing
+          spec={spec}
+          primitives={primitives}
+          displayUnits={displayUnits}
+          onClose={() => setDrawingOpen(false)}
         />
       )}
       {libraryOpen && (

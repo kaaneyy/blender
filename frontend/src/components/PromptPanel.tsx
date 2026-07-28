@@ -262,6 +262,7 @@ export default function PromptPanel({
   onSpec,
   onVariations,
   variationsBusy,
+  onShopDrawing,
 }: {
   spec: AssetSpec;
   violations: Record<string, CodeViolation>;
@@ -275,6 +276,8 @@ export default function PromptPanel({
   onVariations: () => void;
   /** Disables the trigger and swaps its label while a batch is in flight. */
   variationsBusy: boolean;
+  /** Opens the dimensioned shop-drawing sheet (App owns the modal). */
+  onShopDrawing: () => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [refineMsg, setRefineMsg] = useState("");
@@ -1050,6 +1053,11 @@ export default function PromptPanel({
           trigger="☰ Export & tools"
           title="Export & tools"
           items={[
+            {
+              label: "📐 Shop drawing",
+              onClick: onShopDrawing,
+              title: "Dimensioned orthographic views, stock callouts and the weight block — printable",
+            },
             { label: "⬇ Download spec (.json)", onClick: downloadSpec },
             {
               label: shareCopied ? "✓ Link copied!" : "🔗 Share link",

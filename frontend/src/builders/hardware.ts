@@ -215,6 +215,21 @@ function roundRadius(prim: Primitive): number {
   );
 }
 
+/** Hollow SQUARE stock (HSS) — a tube whose section is square. It is still
+ * an upright structural member (same load path, same anchor base), but
+ * nothing round-section wraps it: no band clamp, no slip fitter, and its
+ * base plate is square. */
+function isSquareTube(p: Primitive): boolean {
+  return p.kind === "tube" && p.params.section === "square";
+}
+
+/** True when the member presents a ROUND cross-section — the thing a band
+ * clamp or slip fitter needs. Square stock is deliberately excluded even
+ * though it is otherwise a perfectly good upright member. */
+function isRoundSection(p: Primitive): boolean {
+  return ROUND_KINDS.has(p.kind) && !isSquareTube(p);
+}
+
 function isUprightRound(p: Primitive): boolean {
   return (
     (p.kind === "cylinder" || p.kind === "cone" || p.kind === "tube") &&
@@ -735,6 +750,9 @@ export function computeHardware(prims: Primitive[], spec?: AssetSpec): Primitive
     if (p.kind === "box") {
       memberR = Math.max(p.params.size![0], p.params.size![1]) / 2;
       shape = "square";
+    } else if (isSquareTube(p)) {
+      memberR = p.params.radius!; // half-width across flats
+      shape = "square";
     } else {
       memberR = radiusAtZ(p, 0);
       shape = "round";
@@ -831,7 +849,7 @@ function dispatch(joint: number, cand: Candidate, spec?: AssetSpec): Primitive[]
       axis !== 2 &&
       upright !== null &&
       !isUprightRound(other) &&
-      ROUND_KINDS.has(other.kind)
+      isRoundSection(other)
     ) {
       ctype = "band_clamp";
     } else if (axis === 2 && pipe !== null && baseC[2] + baseH[2] <= 0.15) {
