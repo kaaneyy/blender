@@ -218,6 +218,10 @@
                 "type": ["number", "string"],
                 "description": "For kind=tube: wall thickness in meters."
               },
+              "bend_radius": {
+                "type": ["number", "string"],
+                "description": "For kind=sweep: fillet every interior corner of the path with an arc of this radius (metres) — a called-out bend, like a drawing's radiused corners, instead of an arbitrary spline curve. A radius too large for its corner tightens to fit rather than overshooting."
+              },
               "section": {
                 "type": "string",
                 "enum": ["round", "square"],

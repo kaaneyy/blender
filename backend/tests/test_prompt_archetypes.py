@@ -113,6 +113,22 @@ def test_dimension_slider_must_drive_geometry_rule_present():
     assert "hairline" in low
 
 
+def test_fabrication_stock_rule_present():
+    # The geometry now models real stock — hollow sections, wall thickness,
+    # square HSS, called-out bends — but the model only reaches for it if the
+    # prompt asks. Pin the rule and its concrete numbers so a generated asset
+    # comes out fabrication-grade instead of a solid sculpture.
+    region = _prose_region()
+    assert "BUILD IT LIKE A FABRICATOR" in region
+    low = region.lower()
+    assert '"section": "square"' in region, "square stock must be named"
+    assert '"wall"' in region and '"shell"' in region
+    assert '"bend_radius"' in region
+    assert "billet" in low, "the solid-member failure mode is called out"
+    # the worked example: a 2 in square rack member
+    assert "0.0254" in region and "0.0048" in region
+
+
 def test_no_dead_anchor_bolts_toggle():
     # anchor_bolts was advertised as a street_light toggle but no builder
     # ever consumed it (Brief 4) — it must be gone from both the prompt

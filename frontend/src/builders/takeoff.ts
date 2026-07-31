@@ -263,8 +263,18 @@ export function computeTakeoff(primitives: Primitive[], spec?: AssetSpec): Takeo
 /** Shop description of a member's stock, e.g. "2.0 SQ x 0.188 wall tube" or
  * "3.5 OD x 0.125 wall pipe" — null for parts that aren't stock shapes. */
 export function stockCallout(prim: Primitive, imperial = true): string | null {
-  if (prim.kind !== "tube") return null;
   const p = prim.params;
+  const fmt3 = (v: number) => Number(v.toPrecision(3)).toString();
+  if (prim.kind === "sweep") {
+    // a bent member's shop note is its diameter and its called-out radius
+    const bend = p.bend_radius;
+    if (!bend) return null;
+    const across = 2 * p.radius!;
+    return imperial
+      ? `${fmt3(across / 0.0254)} OD bent tube, R ${fmt3(bend / 0.0254)} bend`
+      : `${fmt3(across * 1000)} mm OD bent tube, R ${fmt3(bend * 1000)} mm bend`;
+  }
+  if (prim.kind !== "tube") return null;
   let wall = p.wall ?? 0;
   let across = 2 * p.radius!;
   let unit = "";
