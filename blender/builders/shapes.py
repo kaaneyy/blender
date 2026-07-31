@@ -75,3 +75,80 @@ def profile_bounds(points: Sequence[Tuple[float, float]]) -> Tuple[float, float,
     max_r = max(abs(r) for r, _ in points)
     zs = [z for _, z in points]
     return max_r, min(zs), max(zs)
+
+
+def fillet_path(path: Sequence[Sequence[float]], radius: float,
+                segments: int = 8) -> List[Tuple[float, float, float]]:
+    """Replace each interior corner of a 3D polyline with a circular arc of
+    ``radius`` — a specified bend, the way a drawing calls one out, instead
+    of whatever a spline happens to do through the same points.
+
+    At a corner P between neighbours A and C: the arc is tangent to both
+    legs, so it starts a tangent distance ``r / tan(theta/2)`` back along each
+    (theta being the interior angle at P). That distance is clamped to half of
+    the shorter leg, so a radius too large for its corner tightens instead of
+    overshooting into the neighbouring segment. Endpoints are never moved.
+
+    Degenerate corners are left alone: a straight run has nothing to fillet,
+    and a doubled-back one has no tangent solution. Mirrored 1:1 in
+    ``frontend/src/shapes.ts``.
+    """
+    pts = [tuple(float(v) for v in p) for p in path]
+    if radius <= 0 or len(pts) < 3:
+        return [(p[0], p[1], p[2]) for p in pts]
+
+    out: List[Tuple[float, float, float]] = [pts[0]]
+    for i in range(1, len(pts) - 1):
+        a, p, c = pts[i - 1], pts[i], pts[i + 1]
+        v1 = [a[k] - p[k] for k in range(3)]
+        v2 = [c[k] - p[k] for k in range(3)]
+        l1 = math.dist(a, p)
+        l2 = math.dist(c, p)
+        if l1 < 1e-9 or l2 < 1e-9:
+            out.append(p)
+            continue
+        u1 = [v / l1 for v in v1]
+        u2 = [v / l2 for v in v2]
+        cos_t = max(-1.0, min(1.0, sum(u1[k] * u2[k] for k in range(3))))
+        theta = math.acos(cos_t)
+        # straight through (theta ~ pi) or doubled back (theta ~ 0): no arc
+        if theta < 1e-6 or abs(math.pi - theta) < 1e-6:
+            out.append(p)
+            continue
+        tan_half = math.tan(theta / 2.0)
+        t = min(radius / tan_half, l1 / 2.0, l2 / 2.0)
+        r_eff = t * tan_half  # the radius that distance actually buys
+        t1 = tuple(p[k] + u1[k] * t for k in range(3))
+        t2 = tuple(p[k] + u2[k] * t for k in range(3))
+        # arc centre: along the corner bisector, r/sin(theta/2) from P
+        bis = [u1[k] + u2[k] for k in range(3)]
+        bis_len = math.sqrt(sum(v * v for v in bis))
+        if bis_len < 1e-9:
+            out.append(p)
+            continue
+        bis = [v / bis_len for v in bis]
+        d = r_eff / math.sin(theta / 2.0)
+        centre = [p[k] + bis[k] * d for k in range(3)]
+        # slerp the arc from t1 to t2 about the centre
+        w1 = [t1[k] - centre[k] for k in range(3)]
+        w2 = [t2[k] - centre[k] for k in range(3)]
+        n1 = math.sqrt(sum(v * v for v in w1))
+        n2 = math.sqrt(sum(v * v for v in w2))
+        if n1 < 1e-9 or n2 < 1e-9:
+            out.append(p)
+            continue
+        cos_phi = max(-1.0, min(1.0, sum(w1[k] * w2[k] for k in range(3)) / (n1 * n2)))
+        phi = math.acos(cos_phi)
+        if phi < 1e-9:
+            out.append(p)
+            continue
+        sin_phi = math.sin(phi)
+        for s in range(segments + 1):
+            f = s / segments
+            k1 = math.sin((1.0 - f) * phi) / sin_phi
+            k2 = math.sin(f * phi) / sin_phi
+            out.append(tuple(
+                centre[k] + w1[k] * k1 + w2[k] * k2 for k in range(3)
+            ))
+    out.append(pts[-1])
+    return out

@@ -13,6 +13,7 @@ from typing import List
 
 from .base import Primitive, spec_params, spec_toggles
 from .expr import safe_eval
+from .shapes import fillet_path
 
 
 def expression_env(spec: dict) -> dict:
@@ -56,6 +57,12 @@ def _eval_params(raw_params: dict, env: dict) -> dict:
             params[key] = tuple(safe_eval(v, env) for v in value)
         else:
             params[key] = safe_eval(value, env)
+    # A called-out bend is baked into the path HERE, once, so everything
+    # downstream — the AABB, the preview, the Blender curve, the takeoff —
+    # reads the same filleted polyline and can never disagree about it.
+    bend = params.get("bend_radius")
+    if params.get("path") and isinstance(bend, (int, float)) and bend > 0:
+        params["path"] = tuple(fillet_path(params["path"], float(bend)))
     return params
 
 

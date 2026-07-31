@@ -2351,3 +2351,22 @@ hr {
     border: none;
   }
 }
+
+/* detail callout ring on a parent view (ShopDrawing) */
+.sd__balloon {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.9;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+
+/* a swept member is drawn as its path stroked at the tube diameter, not as
+ * a bounding rectangle — a bent U rack must read as a bent tube */
+.sd__swept {
+  fill: none;
+  stroke: var(--text);
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0.65;
+}

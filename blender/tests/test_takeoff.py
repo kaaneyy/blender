@@ -197,3 +197,97 @@ class TestSquareTubeJoints:
         # every hole is a clearance fit over its bolt, never a press fit
         for hole, bolt in zip(holes, bolts):
             assert hole.params["radius"] > bolt.params["radius"]
+
+
+class TestBendRadius:
+    """A called-out bend, the way a drawing specifies one — the reference
+    sheet's radiused corners on the inverted U."""
+
+    def _u_path(self):
+        # a 0.6 x 0.889 inverted U, square corners before filleting
+        return [(0, 0, 0), (0, 0, 0.889), (0.6, 0, 0.889), (0.6, 0, 0)]
+
+    def _sweep_spec(self, bend):
+        params = {"path": [list(p) for p in self._u_path()], "radius": 0.0254}
+        if bend is not None:
+            params["bend_radius"] = bend
+        return {
+            "name": "Rack", "asset_type": "custom", "units": "imperial",
+            "parameters": [], "toggles": [],
+            "materials": [{"slot": "frame", "preset": "galvanized_steel"}],
+            "primitives": [{"kind": "sweep", "name": "u", "component": "frame",
+                            "location": [0, 0, 0], "material_slot": "frame",
+                            "params": params}],
+        }
+
+    def test_arc_points_lie_exactly_on_the_called_out_radius(self):
+        """Not "roughly curved": every inserted point is exactly `r` from the
+        arc centre, which is what makes it a specified bend."""
+        from blender.builders.shapes import fillet_path
+
+        r = 0.25
+        out = fillet_path([(0, 0, 0), (1, 0, 0), (1, 0, 1)], r)
+        centre = (1 - r, 0, r)  # tangent distance r back along each leg
+        for pt in out[1:-1]:
+            assert math.dist(pt, centre) == pytest.approx(r, abs=1e-9)
+
+    def test_endpoints_are_never_moved(self):
+        from blender.builders.shapes import fillet_path
+
+        path = self._u_path()
+        out = fillet_path(path, 0.15)
+        assert out[0] == pytest.approx(path[0])
+        assert out[-1] == pytest.approx(path[-1])
+
+    def test_a_straight_run_is_left_alone(self):
+        from blender.builders.shapes import fillet_path
+
+        straight = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+        assert fillet_path(straight, 0.3) == [tuple(map(float, p)) for p in straight]
+
+    def test_an_oversized_radius_tightens_instead_of_overshooting(self):
+        """A 10 m radius on a 1 m corner can't run past its neighbours — it
+        clamps to half the shorter leg, so the path stays inside its legs."""
+        from blender.builders.shapes import fillet_path
+
+        out = fillet_path([(0, 0, 0), (1, 0, 0), (1, 0, 1)], 10.0)
+        xs = [p[0] for p in out]
+        zs = [p[2] for p in out]
+        assert min(xs) >= -1e-9 and max(xs) <= 1 + 1e-9
+        assert min(zs) >= -1e-9 and max(zs) <= 1 + 1e-9
+
+    def test_bend_radius_rounds_the_built_path(self):
+        spec = self._sweep_spec(0.15)
+        prim = compute_primitives(spec)[0]
+        assert len(prim.params["path"]) > 4, "corners became arcs"
+        # the sharp corner vertex itself is gone, replaced by tangent + arc
+        assert (0.0, 0.0, 0.889) not in prim.params["path"]
+
+    def test_no_bend_radius_keeps_the_path_verbatim(self):
+        prim = compute_primitives(self._sweep_spec(None))[0]
+        assert len(prim.params["path"]) == 4
+
+    def test_a_filleted_corner_is_shorter_than_the_square_one(self):
+        """Cutting the corner shortens the run — the reason a bent rack uses
+        less stock than a mitred one."""
+        from blender.builders.shapes import fillet_path
+
+        def length(path):
+            return sum(math.dist(a, b) for a, b in zip(path, path[1:]))
+
+        square = self._u_path()
+        assert length(fillet_path(square, 0.15)) < length(square)
+
+    def test_a_bent_member_reads_as_bent_stock(self):
+        """The shop note for a bent tube is its diameter AND its called-out
+        radius — an unbent sweep has no such note."""
+        bent = Primitive(kind="sweep", name="u", component="frame",
+                         location=(0, 0, 0), material_slot="frame",
+                         params={"path": [(0, 0, 0), (0, 0, 0.9), (0.6, 0, 0.9)],
+                                 "radius": 1.0 * IN, "bend_radius": 0.1})
+        straight = Primitive(kind="sweep", name="arm", component="arm",
+                             location=(0, 0, 0), material_slot="pole",
+                             params={"path": [(0, 0, 0), (1, 0, 0)], "radius": 0.05})
+        note = stock_callout(bent)
+        assert "bent tube" in note and "bend" in note
+        assert stock_callout(straight) is None

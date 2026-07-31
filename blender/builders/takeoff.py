@@ -262,9 +262,19 @@ def compute_takeoff(primitives: List[Primitive], spec: Optional[dict] = None) ->
 def stock_callout(prim: Primitive, imperial: bool = True) -> Optional[str]:
     """Shop description of a member's stock, e.g. "2.0 SQ x 0.188 wall tube"
     or "3.5 OD x 0.125 wall pipe" — None for parts that aren't stock shapes."""
+    p = prim.params
+    if prim.kind == "sweep":
+        # a bent member's shop note is its diameter and its called-out radius
+        bend = p.get("bend_radius")
+        if not bend:
+            return None
+        across = 2.0 * float(p["radius"])
+        r = float(bend)
+        if imperial:
+            return f"{across / 0.0254:.3g} OD bent tube, R {r / 0.0254:.3g} bend"
+        return f"{across * 1000:.3g} mm OD bent tube, R {r * 1000:.3g} mm bend"
     if prim.kind != "tube":
         return None
-    p = prim.params
     wall = float(p.get("wall", 0.0) or 0.0)
     across = 2.0 * float(p["radius"])
     if imperial:

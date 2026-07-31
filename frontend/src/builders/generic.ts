@@ -1,3 +1,4 @@
+import { filletPath } from "../shapes";
 /** Mirror of blender/builders/generic.py — realizes the spec's own
  * `primitives` array (the LLM "generate anything" path). */
 import type { AssetSpec, LoftProfile, Primitive, Vec3 } from "../types";
@@ -42,6 +43,7 @@ function evalParams(rp: NonNullable<AssetSpec["primitives"]>[number]["params"], 
   if (rp.path !== undefined) {
     params.path = rp.path.map((pt) => vec3(pt, env, [0, 0, 0]));
   }
+  if (rp.bend_radius !== undefined) params.bend_radius = evalExpr(rp.bend_radius, env);
   for (const key of ["profile_start", "profile_end"] as const) {
     const v = rp[key];
     if (v !== undefined) {
@@ -51,6 +53,12 @@ function evalParams(rp: NonNullable<AssetSpec["primitives"]>[number]["params"], 
         h: evalExpr(v.h, env),
       };
     }
+  }
+  // A called-out bend is baked into the path HERE, once, so everything
+  // downstream — the AABB, the preview, the Blender curve, the takeoff —
+  // reads the same filleted polyline and can never disagree about it.
+  if (params.path && typeof params.bend_radius === "number" && params.bend_radius > 0) {
+    params.path = filletPath(params.path, params.bend_radius);
   }
   return params;
 }
